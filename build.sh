@@ -20,10 +20,10 @@ BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
 ks=${OBSCURIFY_KEYSTORE:-$HOME/.config/obscurify-android/release.keystore}
 arch=${1:-aarch64}
 
-# versionCode follows the Cargo version (0.4.0 -> 1000400), so every build of a release is the same.
+# versionCode comes from Cargo.toml ([package.metadata.android] version-code), so every build of a
+# release has the same one and F-Droid can read it.
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-IFS=. read -r major minor patch <<< "$version"
-code=$(( 1000000 + major * 10000 + minor * 100 + patch ))
+code=$(sed -n 's/^version-code = \([0-9]*\)/\1/p' Cargo.toml | head -1)
 
 dx build --platform android --release --target $arch-linux-android
 gen=target/dx/obscurify/release/android/app

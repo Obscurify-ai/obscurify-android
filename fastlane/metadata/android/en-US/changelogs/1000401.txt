@@ -1,0 +1,1 @@
+Builds with a fixed versionCode from Cargo.toml, for F-Droid.

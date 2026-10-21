@@ -41,7 +41,7 @@ Requirements:
 ./build.sh x86_64   # emulator
 ```
 
-The versionCode follows the Cargo version: 0.4.0 becomes 1000400.
+The versionCode is `version-code` in `Cargo.toml` (1000000 + major·10000 + minor·100 + patch); bump it with the version.
 
 Releases are signed with the Obscurify release key, so updates install over each other. The key isn't
 in this repo. A build without it is unsigned, and you can sign it with your own key.
