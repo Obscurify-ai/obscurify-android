@@ -16,7 +16,6 @@ if [ -z "${JAVA_HOME:-}" ] && command -v mise >/dev/null; then JAVA_HOME=$(mise 
 [ -n "${JAVA_HOME:-}" ] && export JAVA_HOME PATH="$JAVA_HOME/bin:$PATH"
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
 export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | tail -1)}"
-BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
 ks=${OBSCURIFY_KEYSTORE:-$HOME/.config/obscurify-android/release.keystore}
 arch=${1:-aarch64}
 
@@ -39,12 +38,17 @@ find $gen/app/src/main/jniLibs -mindepth 1 -maxdepth 1 ! -name $abi -exec rm -rf
 (cd $gen && ./gradlew --quiet assembleRelease)
 out=$gen/app/build/outputs/apk/release/app-release-unsigned.apk
 rm -f target/obscurify.apk target/obscurify-unsigned.apk
+# Build tools may only exist once Gradle has installed them (as on F-Droid's build server).
+BT=$(ls -d "$ANDROID_HOME"/build-tools/* 2>/dev/null | sort -V | tail -1 || true)
 if [ -f "$ks" ]; then
   pass=${OBSCURIFY_KEYSTORE_PASS:-$(cat "$(dirname "$ks")/keystore-pass")}
   "$BT/zipalign" -f 4 $out target/obscurify-aligned.apk
   "$BT/apksigner" sign --ks "$ks" --ks-pass "pass:$pass" --out target/obscurify.apk target/obscurify-aligned.apk
   echo "built $(pwd)/target/obscurify.apk ($version, $code)"
-else
+elif [ -n "$BT" ]; then
   "$BT/zipalign" -f 4 $out target/obscurify-unsigned.apk
   echo "built $(pwd)/target/obscurify-unsigned.apk ($version, $code); no keystore at $ks, so not signed"
+else
+  cp $out target/obscurify-unsigned.apk
+  echo "built $(pwd)/target/obscurify-unsigned.apk ($version, $code); unsigned, not zipaligned (no build tools found)"
 fi
