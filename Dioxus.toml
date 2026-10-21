@@ -1,0 +1,10 @@
+[application]
+name = "Obscurify"
+
+[bundle]
+identifier = "ai.obscurify.android"
+publisher = "Obscurify"
+icon = ["assets/icon.png"]
+
+[android]
+min_sdk = 24

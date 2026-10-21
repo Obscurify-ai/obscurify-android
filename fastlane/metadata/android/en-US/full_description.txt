@@ -1,0 +1,9 @@
+<p>Obscurify is private AI chat with hundreds of models behind one anonymous account. There's no email, username or password, only a 16-digit account number.</p>
+<ul>
+<li>Chat with frontier, open and uncensored models, with streamed answers, web search and image attachments</li>
+<li>Your chats are stored only on your phone</li>
+<li>Search models, browse them by category and keep favorites</li>
+<li>Prepaid balance and plans, plus an API key for the Pro plan</li>
+<li>Add funds by card, Bitcoin, Lightning or Monero through blind-signed vouchers: the server signs them without seeing them, so a payment can't be linked to the account it funds</li>
+</ul>
+<p>The app is a small native Rust client and is open source (GPL-3.0). The Obscurify service it connects to is not.</p>

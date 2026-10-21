@@ -1,0 +1,24 @@
+[package]
+name = "obscurify"
+version = "0.4.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Obscurify for Android: private AI chat, paid for with unlinkable vouchers"
+repository = "https://github.com/Obscurify-ai/obscurify-android"
+
+[dependencies]
+dioxus = { version = "0.7.10", features = ["mobile"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde_json = "1"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+futures-util = "0.3"
+blind-rsa-signatures = { version = "0.18", default-features = false }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+base64 = "0.22"
+serde = { version = "1.0.229", features = ["derive"] }
+rand = "0.10"
+
+[profile.release]
+opt-level = "s"
+strip = true
+lto = true
