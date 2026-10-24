@@ -2,7 +2,7 @@
 //! picker. Chats live only on the phone (`chats.json` lists them, `chat-<id>.json` holds each), the
 //! same as the web, which keeps them in the browser.
 
-use crate::{App, Model, Overlay, Screen, api, bg, js, store, usd};
+use crate::{Access, App, Model, Overlay, Screen, api, bg, js, store, usd};
 use dioxus::prelude::*;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -452,23 +452,37 @@ const ROLEPLAY: [&str; 15] = ["*mythomax*", "*remm-slerp*", "*rocinante*", "*mag
 const REASONING: [&str; 5] = ["*thinking*", "*reasoning*", "*deepseek-r1*", "*-r1-*", "*magistral*"];
 const CATEGORIES: [&str; 8] = ["Favorites", "All", "Free", "Cheap", "Reasoning", "Uncensored", "Roleplay", "Frontier"];
 
+/// The plan a model needs that the account doesn't have (uncensored models need Pro, frontier
+/// models Casual or Pro, as the server enforces). Nothing is locked until the plan is known.
+fn needs_plan(id: &str, access: Option<Access>, frontier: &[String], uncensored: &[String]) -> Option<&'static str> {
+    let a = access?;
+    if !a.uncensored && uncensored.iter().any(|p| glob(id, p)) {
+        Some("Pro")
+    } else if !a.frontier && frontier.iter().any(|p| glob(id, p)) {
+        Some("Casual or Pro")
+    } else {
+        None
+    }
+}
+
 #[component]
 fn Models() -> Element {
     let mut app = use_context::<App>();
     let favs = app.settings.read().favorites.clone();
     let mut cat = use_signal(move || if favs.is_empty() { "All" } else { "Favorites" });
     let mut q = use_signal(String::new);
-    let current = app.settings.read().model.clone();
     let favs = app.settings.read().favorites.clone();
     let frontier = app.frontier.read().clone();
     let uncensored = app.uncensored.read().clone();
+    let access = *app.access.read();
+    let models = app.models.read().clone();
     let query = q.read().to_lowercase();
     let c = *cat.read();
     let any = |id: &str, pats: &[&str]| pats.iter().any(|p| glob(id, p));
-    let list: Vec<Model> = app.models.read().iter().filter(|m| {
+    let needs = |id: &str| needs_plan(id, access, &frontier, &uncensored);
+    let in_cat = |m: &Model, k: &str| {
         let free = m.prompt == 0.0 && m.completion == 0.0;
-        // A search looks through every model, whatever category is picked.
-        let ok = !query.is_empty() || match c {
+        match k {
             "Favorites" => favs.contains(&m.id),
             "Free" => free,
             "Cheap" => free || (m.prompt <= 0.000_000_25 && m.completion <= 0.000_000_5),
@@ -477,9 +491,23 @@ fn Models() -> Element {
             "Uncensored" => uncensored.iter().any(|p| glob(&m.id, p)),
             "Frontier" => frontier.iter().any(|p| glob(&m.id, p)),
             _ => true,
-        };
-        ok && (query.is_empty() || m.name.to_lowercase().contains(&query) || m.id.to_lowercase().contains(&query))
-    }).cloned().collect();
+        }
+    };
+    // Categories with models the plan can use come first and ones it can't use any of last;
+    // empty ones are hidden (Favorites stays, to say how to fill it).
+    let mut chips: Vec<(&'static str, bool)> = CATEGORIES.iter().filter_map(|&k| {
+        let mut ms = models.iter().filter(|m| in_cat(m, k)).peekable();
+        if ms.peek().is_none() { return (k == "Favorites" || k == "All").then_some((k, false)) }
+        Some((k, ms.all(|m| needs(&m.id).is_some())))
+    }).collect();
+    chips.sort_by_key(|&(_, locked)| locked);
+    // A search looks through every model, whatever category is picked.
+    let (usable, locked): (Vec<Model>, Vec<Model>) = models.iter()
+        .filter(|m| !query.is_empty() || in_cat(m, c))
+        .filter(|m| query.is_empty() || m.name.to_lowercase().contains(&query) || m.id.to_lowercase().contains(&query))
+        .cloned()
+        .partition(|m| needs(&m.id).is_none());
+    let locked: Vec<(Model, &'static str)> = locked.into_iter().map(|m| { let n = needs(&m.id).unwrap_or(""); (m, n) }).collect();
 
     rsx! {
         div { class: "drawer", "data-back": "1", style: "width: 100%; max-width: none; border: 0",
@@ -490,32 +518,51 @@ fn Models() -> Element {
             }
             input { class: "search", placeholder: "Search models", oninput: move |e| q.set(e.value()) }
             div { class: "toggles", style: "padding: 0 12px 8px",
-                for k in CATEGORIES {
-                    button { class: if c == k && query.is_empty() { "chip on" } else { "chip" }, onclick: move |_| cat.set(k), "{k}" }
+                for (k, off) in chips {
+                    button { class: format!("chip{}{}", if c == k && query.is_empty() { " on" } else { "" }, if off { " locked" } else { "" }), onclick: move |_| cat.set(k), "{k}" }
                 }
             }
             div { class: "scroll", style: "padding: 0",
-                if list.is_empty() { p { class: "muted", style: "padding: 16px", if c == "Favorites" { "Star models to keep them here. The first one is used for new chats." } else { "No models" } } }
-                for m in list {
-                    div { key: "{m.id}", class: if m.id == current { "pick row on" } else { "pick row" }, style: "padding: 10px 16px",
-                        div { class: "grow", onclick: { let id = m.id.clone(); move |_| {
-                                app.settings.write().model = id.clone();
-                                app.save_settings();
-                                app.overlay.set(Overlay::None);
-                            } },
-                            div { "{m.name}" }
-                            div { class: "price", {per_million(&m)} }
-                        }
-                        button { class: "bare", style: if favs.contains(&m.id) { "color: var(--g)" } else { "" },
-                            onclick: { let id = m.id.clone(); move |_| {
-                                let mut s = app.settings.write();
-                                if let Some(i) = s.favorites.iter().position(|f| f == &id) { s.favorites.remove(i); } else if s.favorites.len() < 20 { s.favorites.push(id.clone()) }
-                                drop(s);
-                                app.save_settings();
-                            } }, if favs.contains(&m.id) { "★" } else { "☆" } }
-                    }
-                }
+                if usable.is_empty() && locked.is_empty() { p { class: "muted", style: "padding: 16px", if c == "Favorites" { "Star models to keep them here. The first one is used for new chats." } else { "No models" } } }
+                for m in usable { ModelRow { key: "{m.id}", m: m.clone(), needs: None } }
+                if !locked.is_empty() { h2 { class: "group", "Upgrade to use" } }
+                for (m, n) in locked { ModelRow { key: "{m.id}", m: m.clone(), needs: Some(n) } }
             }
+        }
+    }
+}
+
+/// A model in the picker. One the plan doesn't include (`needs` names the plan it needs) opens
+/// Account, where the plan can be changed, instead of being chosen.
+#[component]
+fn ModelRow(m: Model, needs: Option<&'static str>) -> Element {
+    let mut app = use_context::<App>();
+    let current = app.settings.read().model.clone();
+    let fav = app.settings.read().favorites.contains(&m.id);
+    let class = format!("pick row{}{}", if m.id == current { " on" } else { "" }, if needs.is_some() { " locked" } else { "" });
+    rsx! {
+        div { class, style: "padding: 10px 16px",
+            div { class: "grow", onclick: { let m = m.clone(); move |_| {
+                    if let Some(plan) = needs {
+                        app.say(format!("{} needs the {plan} plan", m.name));
+                        app.overlay.set(Overlay::None);
+                        app.screen.set(Screen::Account);
+                        return;
+                    }
+                    app.settings.write().model = m.id.clone();
+                    app.save_settings();
+                    app.overlay.set(Overlay::None);
+                } },
+                div { "{m.name}" }
+                div { class: "price", if let Some(plan) = needs { "Needs {plan} · " } {per_million(&m)} }
+            }
+            button { class: "bare", style: if fav { "color: var(--g)" } else { "" },
+                onclick: { let id = m.id.clone(); move |_| {
+                    let mut s = app.settings.write();
+                    if let Some(i) = s.favorites.iter().position(|f| f == &id) { s.favorites.remove(i); } else if s.favorites.len() < 20 { s.favorites.push(id.clone()) }
+                    drop(s);
+                    app.save_settings();
+                } }, if fav { "★" } else { "☆" } }
         }
     }
 }

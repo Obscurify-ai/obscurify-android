@@ -94,6 +94,10 @@ impl Default for Settings {
 #[derive(Clone, PartialEq)]
 struct Model { id: String, name: String, prompt: f64, completion: f64 }
 
+/// What the account's plan lets it chat with, from `/account_tier`.
+#[derive(Clone, Copy, PartialEq)]
+struct Access { frontier: bool, uncensored: bool }
+
 #[derive(Clone, Copy)]
 struct App {
     screen: Signal<Screen>,
@@ -102,6 +106,7 @@ struct App {
     models: Signal<Vec<Model>>,
     frontier: Signal<Vec<String>>,
     uncensored: Signal<Vec<String>>,
+    access: Signal<Option<Access>>,
     convs: Signal<Vec<Meta>>,
     conv: Signal<Conv>,
     live: Signal<Option<Msg>>,
@@ -132,10 +137,18 @@ impl App {
     fn model_name(&self, id: &str) -> String {
         self.models.peek().iter().find(|m| m.id == id).map(|m| m.name.clone()).unwrap_or_else(|| id.rsplit('/').next().unwrap_or(id).to_string())
     }
+    /// Balance, and what the plan unlocks (the model picker lists the rest last).
     fn refresh_balance(mut self) {
         bg(async move {
             if let Ok(v) = api::get("/get_user_balance").await {
                 self.balance.set(v["balance"].as_f64())
+            }
+            if let Ok(v) = api::get("/account_tier").await {
+                let tier = v["tier"].as_str().unwrap_or("");
+                self.access.set(Some(Access {
+                    frontier: v["can_access_frontier"].as_bool().unwrap_or(tier != "pay_as_you_go"),
+                    uncensored: v["can_access_uncensored"].as_bool().unwrap_or(tier == "pro"),
+                }))
             }
         })
     }
@@ -152,6 +165,7 @@ impl App {
         self.convs.set(vec![]);
         self.conv.set(Conv::new());
         self.balance.set(None);
+        self.access.set(None);
         self.screen.set(Screen::Login);
     }
 
@@ -197,6 +211,7 @@ fn Root() -> Element {
             models: Signal::new(vec![]),
             frontier: Signal::new(vec![]),
             uncensored: Signal::new(vec![]),
+            access: Signal::new(None),
             convs: Signal::new(convs),
             conv: Signal::new(conv),
             live: Signal::new(None),

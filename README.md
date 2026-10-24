@@ -18,7 +18,7 @@ are stored only on the phone.
   - Web search, image attachments (shrunk on the phone before upload) and collapsible reasoning.
   - Copy, Retry, Edit and Stop.
   - Markdown is rendered safely: raw HTML shows as text, links open in your browser, and remote images become links, so they never load by themselves and reveal your IP.
-- **Models.** Search, categories (Free, Cheap, Reasoning, Uncensored, Roleplay, Frontier) and favorites.
+- **Models.** Search, categories (Free, Cheap, Reasoning, Uncensored, Roleplay, Frontier) and favorites. Models and categories your plan includes come first; the rest are listed last.
 - **Account.** Balance, plans (paid from the balance), API key, referral link and transactions.
 - **Add funds with unlinkable vouchers.**
   - Pay by card, Bitcoin, Lightning or Monero.
@@ -74,6 +74,7 @@ OBSCURIFY_API=https://<dev server> DEVTOOLS=1 ./build.sh x86_64 && adb install -
 cd e2e && npm i playwright
 BTC_RPC_PASSWORD=… node app.mjs   # sign-up, BTC voucher top-up, chat, web search, models, restart, new number, sign in
 node card.mjs                     # image picker and a vision model; Stripe test-card top-up
+ACCOUNT=… PLAN=casual node plans.mjs  # models the plan can use first, the rest under "Upgrade to use"
 ```
 
 ## License
