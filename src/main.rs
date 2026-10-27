@@ -5,6 +5,7 @@
 
 mod api;
 mod chat;
+mod code;
 mod store;
 mod wallet;
 
@@ -28,6 +29,8 @@ document.addEventListener('click', e => {
 }, true);
 window.obsBack = () => { const open = !!document.querySelector('[data-back]'); if (open) dioxus.send({back: true}); return open; };
 window.obsOnline = () => dioxus.send({online: true});
+// Code Mode: messages from the sandbox WebView, relayed by MainActivity.
+window.obsSandbox = (s) => dioxus.send({sandbox: s});
 document.addEventListener('visibilitychange', () => dioxus.send({visible: !document.hidden}));
 // Photos are shrunk to 1600 px JPEGs before they're attached: phone photos are far over the API's limit.
 async function shrink(f) {
@@ -92,7 +95,7 @@ impl Default for Settings {
 }
 
 #[derive(Clone, PartialEq)]
-struct Model { id: String, name: String, prompt: f64, completion: f64 }
+struct Model { id: String, name: String, prompt: f64, completion: f64, tools: bool }
 
 /// What the account's plan lets it chat with, from `/account_tier`.
 #[derive(Clone, Copy, PartialEq)]
@@ -116,6 +119,8 @@ struct App {
     balance: Signal<Option<f64>>,
     toast: Signal<Option<String>>,
     visible: Signal<bool>,
+    /// Code Mode settings from the server (`GET /code_mode`).
+    code: Signal<code::Config>,
 }
 
 impl App {
@@ -140,6 +145,7 @@ impl App {
     /// Balance, and what the plan unlocks (the model picker lists the rest last).
     fn refresh_balance(mut self) {
         bg(async move {
+            code::load(self).await;
             if let Ok(v) = api::get("/get_user_balance").await {
                 self.balance.set(v["balance"].as_f64())
             }
@@ -221,6 +227,7 @@ fn Root() -> Element {
             balance: Signal::new(None),
             toast: Signal::new(None),
             visible: Signal::new(true),
+            code: Signal::new(code::Config::default()),
         }
     });
 
@@ -228,6 +235,8 @@ fn Root() -> Element {
         let mut app = app;
         if *app.screen.peek() == Screen::Chat {
             app.refresh_balance()
+        } else {
+            code::load(app).await
         }
         if let Ok(v) = api::public("GET", "/models", None).await {
             let mut models: Vec<Model> = v["data"].as_array().into_iter().flatten().map(|m| Model {
@@ -235,6 +244,7 @@ fn Root() -> Element {
                 name: m["name"].as_str().or(m["id"].as_str()).unwrap_or("").into(),
                 prompt: m["pricing"]["prompt"].as_f64().unwrap_or(0.0),
                 completion: m["pricing"]["completion"].as_f64().unwrap_or(0.0),
+                tools: m["tools"].as_bool().unwrap_or(true),
             }).collect();
             models.sort_by_key(|m| m.name.to_lowercase());
             app.models.set(models);
@@ -273,7 +283,9 @@ fn Root() -> Element {
         let mut app = app;
         let mut e = document::eval(BRIDGE);
         while let Ok(v) = e.recv::<Value>().await {
-            if let Some(url) = v["link"].as_str() {
+            if let Some(s) = v["sandbox"].as_str() {
+                code::on_sandbox(s)
+            } else if let Some(url) = v["link"].as_str() {
                 open_url(url)
             } else if v["back"] == true {
                 if *app.overlay.peek() != Overlay::None {

@@ -104,3 +104,25 @@ h2.group { font-size: 13px; font-weight: 500; text-transform: uppercase; letter-
 .check { display: flex; gap: 10px; align-items: center; color: var(--t); font-size: 15px; justify-content: center; }
 .check input { width: 20px; height: 20px; accent-color: var(--g); }
 .login a { cursor: pointer; }
+
+/* Code Mode: code the model ran, its tools, output, charts and pages */
+.run { margin: 10px 0; border: 1px solid #23262c; border-left: 3px solid #555; border-radius: 10px; background: #0f1114; overflow: hidden; }
+.run.going { border-left-color: #fbbf24; }
+.run.ok { border-left-color: var(--g); }
+.run.err { border-left-color: #ff5454; }
+.run-head { display: flex; gap: 10px; align-items: center; padding: 6px 12px; font-size: 13px; color: var(--m); background: #15171b; }
+.run-lang { color: var(--t); font-weight: 600; }
+.run-cost { margin-left: auto; color: #fc885a; font-variant-numeric: tabular-nums; }
+.run-code summary { padding: 4px 12px; font-size: 13px; color: var(--m); }
+.run-code pre, .run-out { margin: 0; padding: 8px 12px; max-height: 360px; overflow: auto; font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; background: #08090b; }
+.run-out { border-top: 1px solid #23262c; color: #cfcfcf; }
+.run-err { color: #ff8a8a; }
+.run-tools { display: flex; flex-direction: column; gap: 4px; padding: 6px 12px; border-top: 1px solid #23262c; font-size: 13px; color: #bbb; }
+.run-tools .tool { display: flex; gap: 6px; min-width: 0; }
+.run-tools .tool-name { color: var(--t); font-family: monospace; }
+.run-tools .tool-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.run-tools .tool.failed .tool-name { color: #ff8a8a; text-decoration: line-through; }
+.run-tools .tool.going { opacity: 0.6; }
+.run-img { display: block; max-width: calc(100% - 24px); margin: 10px 12px; border-radius: 6px; background: #fff; }
+.page-btn { display: block; margin: 8px 12px 10px; padding: 10px 14px; border: 1px solid var(--g); border-radius: 10px; background: transparent; color: var(--g); font-size: 15px; text-align: left; }
+.msg > .page-btn { margin: 8px 0; }

@@ -18,6 +18,9 @@ are stored only on the phone.
   - Web search, image attachments (shrunk on the phone before upload) and collapsible reasoning.
   - Copy, Retry, Edit and Stop.
   - Markdown is rendered safely: raw HTML shows as text, links open in your browser, and remote images become links, so they never load by themselves and reveal your IP.
+- **Code Mode.** The assistant can run Python (numpy, pandas, matplotlib) and JavaScript on the phone to calculate, analyze data and draw charts; build pages and small apps that open full screen; search the web; and use paid tools billed to your balance (at most $1 per reply).
+  - Code runs in a WebView of its own with none of the app's bridges. It loads only the server's `/sandbox/` pages, whose CSP gives them an opaque origin and no network, and every other request is refused at the native layer. It talks to the app over one native message port.
+  - Code, data and results stay on the phone; only tool calls leave it.
 - **Models.** Search, categories (Free, Cheap, Reasoning, Uncensored, Roleplay, Frontier) and favorites. Models and categories your plan includes come first; the rest are listed last.
 - **Account.** Balance, plans (paid from the balance), API key, referral link and transactions.
 - **Add funds with unlinkable vouchers.**
@@ -58,10 +61,11 @@ obscurify.ai/android links through `releases/latest/download/obscurify.apk`. Upl
 |---|---|
 | `src/main.rs` | App state, the JS bridge (links, Back, image picker, pinned scrolling), sign-in, sign-up, Account, Add funds |
 | `src/chat.rs` | Chat, streaming, chats on the phone, model picker, safe markdown |
+| `src/code.rs` | Code Mode: the agent loop, the sandbox bridge, tools and budgets, runs on the message |
 | `src/api.rs` | HTTP. Signed-in calls carry the session; voucher calls carry nothing |
 | `src/wallet.rs` | Voucher orders: blind, sign, unblind, redeem |
 | `src/store.rs` | JSON files in the app's private storage |
-| `MainActivity.kt` | The only Kotlin: Back asks the page first; opening links and wallet URIs; copy |
+| `MainActivity.kt` | The only Kotlin: Back asks the page first; opening links and wallet URIs; copy; Code Mode's sandbox WebView and full-screen pages |
 | `assets/style.css` | OLED black, green trim |
 
 ## Tests
@@ -75,6 +79,7 @@ cd e2e && npm i playwright
 BTC_RPC_PASSWORD=… node app.mjs   # sign-up, BTC voucher top-up, chat, web search, models, restart, new number, sign in
 node card.mjs                     # image picker and a vision model; Stripe test-card top-up
 ACCOUNT=… PLAN=casual node plans.mjs  # models the plan can use first, the rest under "Upgrade to use"
+ACCOUNT=… node code.mjs              # Code Mode: Python, a chart, a paid tool, a page full screen, the sandbox sealed off
 ```
 
 ## License

@@ -1,0 +1,1 @@
+Code Mode: the assistant can run Python and JavaScript on your phone, in a sealed sandbox with no network, to calculate, analyze data and draw charts. It can build pages and apps that open full screen, search the web, and use paid tools billed to your balance (at most $1 per reply).

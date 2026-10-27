@@ -32,6 +32,11 @@ pub struct Msg {
     pub model: String,
     #[serde(default)]
     pub error: bool,
+    /// Code Mode: the code the model ran for this answer, and the tool turns to replay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<crate::code::Run>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trace: Vec<Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
@@ -54,6 +59,8 @@ impl Conv {
 }
 
 /// Saves the open chat and moves it to the top of the list.
+pub(crate) fn save_chat(app: App) { save(app) }
+
 fn save(mut app: App) {
     let c = app.conv.peek().clone();
     if c.messages.is_empty() {
@@ -99,7 +106,7 @@ fn split_think(s: &str) -> (&str, &str) {
 }
 
 /// Some providers stream whole snapshots instead of deltas, and some repeat a chunk.
-fn merge(cur: &mut String, inc: &str) {
+pub(crate) fn merge(cur: &mut String, inc: &str) {
     if inc.is_empty() || cur.ends_with(inc) && !cur.is_empty() {
         return;
     }
@@ -111,7 +118,7 @@ fn merge(cur: &mut String, inc: &str) {
 }
 
 /// Fragments of one reasoning block share an `index`; their text is joined, late fields filled in.
-fn merge_details(acc: &mut Vec<Value>, inc: &Value) {
+pub(crate) fn merge_details(acc: &mut Vec<Value>, inc: &Value) {
     for item in inc.as_array().into_iter().flatten() {
         let Some(obj) = item.as_object() else { continue };
         let target = match item["index"].as_i64() {
@@ -133,22 +140,95 @@ fn merge_details(acc: &mut Vec<Value>, inc: &Value) {
 
 /// The history as the API wants it: text plus image parts for user turns, the clean answer for
 /// assistant turns, and reasoning_details only when it's the same model (signed reasoning isn't portable).
-fn wire(msgs: &[Msg], model: &str) -> Vec<Value> {
-    msgs.iter().filter(|m| !m.error).map(|m| {
+/// A Code Mode answer replays its tool turns when the request offers tools (`tools`), and is
+/// otherwise flattened into text: its code, what the code printed, and the answer.
+pub(crate) fn wire(msgs: &[Msg], model: &str, tools: bool) -> Vec<Value> {
+    msgs.iter().filter(|m| !m.error).flat_map(|m| {
         if m.role == "user" {
             if m.images.is_empty() {
-                return json!({"role": "user", "content": m.content});
+                return vec![json!({"role": "user", "content": m.content})];
             }
             let mut parts = vec![json!({"type": "text", "text": m.content})];
             parts.extend(m.images.iter().map(|u| json!({"type": "image_url", "image_url": {"url": u}})));
-            return json!({"role": "user", "content": parts});
+            return vec![json!({"role": "user", "content": parts})];
         }
-        let mut v = json!({"role": "assistant", "content": split_think(&m.content).1.trim()});
-        if m.model == model && !m.details.is_empty() {
+        let answer = split_think(&m.content).1.trim().to_string();
+        if !m.trace.is_empty() && tools {
+            let mut out: Vec<Value> = m.trace.iter().map(|t| {
+                let mut t = t.clone();
+                if m.model != model && let Some(o) = t.as_object_mut() { o.remove("reasoning_details"); }
+                t
+            }).collect();
+            out.push(json!({"role": "assistant", "content": answer}));
+            return out;
+        }
+        let mut text = String::new();
+        for r in &m.runs {
+            text.push_str(&format!("```{}\n{}\n```\n", r.language, r.code));
+            let o = r.output.trim();
+            if !o.is_empty() { text.push_str(&format!("Output:\n```\n{}\n```\n", o.chars().take(2000).collect::<String>())) }
+        }
+        text.push_str(&answer);
+        let mut v = json!({"role": "assistant", "content": text.trim()});
+        if m.model == model && !m.details.is_empty() && m.runs.is_empty() {
             v["reasoning_details"] = json!(m.details);
         }
-        v
+        vec![v]
     }).collect()
+}
+
+/// What one streamed completion asked for besides its text.
+pub(crate) struct Step {
+    pub tool_calls: Vec<Value>,
+    pub details: Vec<Value>,
+}
+
+/// Streams one completion into `msg` (content and reasoning), calling `show` as it grows. Returns
+/// the tool calls it made (OpenAI shape) and its reasoning_details.
+pub(crate) async fn stream(body: &Value, msg: &mut Msg, stop: &impl Fn() -> bool, show: &mut impl FnMut(&Msg)) -> Result<Step, String> {
+    let resp = api::chat(body).await?;
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = vec![];
+    let mut calls: Vec<Value> = vec![];
+    let mut details: Vec<Value> = vec![];
+    let mut got_any = false;
+    'read: while let Some(chunk) = stream.next().await {
+        if stop() { break }
+        let Ok(chunk) = chunk else { if !got_any { return Err("The connection dropped.".into()) } break };
+        buf.extend_from_slice(&chunk);
+        while let Some(nl) = buf.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = buf.drain(..=nl).collect();
+            let line = String::from_utf8_lossy(&line);
+            let Some(data) = line.trim().strip_prefix("data:") else { continue };
+            let data = data.trim();
+            if data == "[DONE]" { break 'read }
+            let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
+            if !v["error"].is_null() {
+                return Err(v["error"]["message"].as_str().or(v["error"].as_str()).unwrap_or("The model returned an error").to_string());
+            }
+            let d = &v["choices"][0]["delta"];
+            if let Some(s) = d["content"].as_str() { merge(&mut msg.content, s); got_any = true }
+            if let Some(s) = d["reasoning"].as_str() { merge(&mut msg.reasoning, s); got_any = true }
+            if d["reasoning_details"].is_array() { merge_details(&mut details, &d["reasoning_details"]) }
+            for tc in d["tool_calls"].as_array().into_iter().flatten() {
+                got_any = true;
+                let i = tc["index"].as_u64().map(|i| i as usize).unwrap_or(calls.len());
+                while calls.len() <= i { calls.push(json!({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})) }
+                let c = &mut calls[i];
+                if let Some(id) = tc["id"].as_str() { c["id"] = json!(id) }
+                if let Some(n) = tc["function"]["name"].as_str() { c["function"]["name"] = json!(n) }
+                if let Some(a) = tc["function"]["arguments"].as_str() {
+                    let old = c["function"]["arguments"].as_str().unwrap_or("").to_string();
+                    c["function"]["arguments"] = json!(old + a);
+                }
+            }
+            show(msg);
+        }
+    }
+    for (i, c) in calls.iter_mut().enumerate() {
+        if c["id"].as_str().unwrap_or("").is_empty() { c["id"] = json!(format!("call_{}_{i}", store::now())) }
+    }
+    Ok(Step { tool_calls: calls, details })
 }
 
 /// Asks for the next answer and streams it into `live`, then appends it to the chat.
@@ -157,12 +237,15 @@ fn run(mut app: App) {
         return;
     }
     let model = app.settings.peek().model.clone();
+    if crate::code::active(&app, &model) {
+        return crate::code::turn(app);
+    }
     let web_search = app.settings.peek().web_search;
     app.stop.set(false);
     app.live.set(Some(Msg { role: "assistant".into(), model: model.clone(), ..Default::default() }));
     js("const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }");
     bg(async move {
-        let mut body = json!({"model": model, "messages": wire(&app.conv.peek().messages, &model), "stream": true});
+        let mut body = json!({"model": model, "messages": wire(&app.conv.peek().messages, &model, false), "stream": true});
         if web_search {
             body["web_search"] = json!(true);
         }
@@ -297,6 +380,7 @@ pub fn ChatView() -> Element {
     let live = app.live.read().clone();
     let model = app.settings.read().model.clone();
     let streaming = live.is_some();
+    let code_on = app.code.read().enabled && app.models.read().iter().find(|m| m.id == model).is_none_or(|m| m.tools);
     let n = c.messages.len();
     let last_user = c.messages.iter().rposition(|m| m.role == "user");
 
@@ -325,8 +409,11 @@ pub fn ChatView() -> Element {
             }
             div { class: "composer",
                 div { class: "toggles",
-                    button { class: if app.settings.read().web_search { "chip on" } else { "chip" },
-                        onclick: move |_| { let v = !app.settings.peek().web_search; app.settings.write().web_search = v; app.save_settings() }, "Web search" }
+                    // With Code Mode, web search is one of the model's tools: nothing to switch.
+                    if !code_on {
+                        button { class: if app.settings.read().web_search { "chip on" } else { "chip" },
+                            onclick: move |_| { let v = !app.settings.peek().web_search; app.settings.write().web_search = v; app.save_settings() }, "Web search" }
+                    }
                     // Opens the picker through the bridge's own file input (see BRIDGE in main.rs).
                     span { class: "chip file", "Image" }
                 }
@@ -390,8 +477,19 @@ fn MsgView(m: Msg, last: bool, edit_at: Option<usize>, #[props(default)] live: b
                     div { class: "think", "{reasoning}" }
                 }
             }
+            for (ri, r) in m.runs.iter().enumerate() {
+                div { key: "run-{ri}",
+                    if !r.intro.trim().is_empty() { div { dangerous_inner_html: md(&r.intro) } }
+                    RunView { r: r.clone() }
+                }
+            }
             if m.error { p { "{m.content}" } }
             else { div { class: if live { "cursor" } else { "" }, dangerous_inner_html: "{html}" } }
+            if !live {
+                for (pi, page) in crate::code::html_blocks(answer, &m.runs.iter().flat_map(|r| r.pages.iter().map(|p| p.html.as_str())).collect::<Vec<_>>()).into_iter().enumerate() {
+                    button { key: "page-{pi}", class: "page-btn", onclick: move |_| crate::code::open_page(&app, "Page", &page), "▶ Open this page" }
+                }
+            }
             if last {
                 div { class: "meta",
                     if !m.error {
@@ -406,6 +504,54 @@ fn MsgView(m: Msg, last: bool, edit_at: Option<usize>, #[props(default)] live: b
                         }, "Edit" }
                     }
                     if !m.model.is_empty() { span { " · {app.model_name(&m.model)}" } }
+                }
+            }
+        }
+    }
+}
+
+/// One piece of code the model ran: its code, the tools it called, what it printed, its charts,
+/// and the pages it built (they open full screen).
+#[component]
+fn RunView(r: crate::code::Run) -> Element {
+    let app = use_context::<App>();
+    let lang = if r.language.starts_with('j') { "JavaScript" } else { "Python" };
+    let lines = r.code.lines().count();
+    let class = if !r.done { "run going" } else if r.ok { "run ok" } else { "run err" };
+    rsx! {
+        div { class,
+            div { class: "run-head",
+                span { class: "run-lang", "{lang}" }
+                span { "{r.status}" }
+                if r.cost > 0.0 { span { class: "run-cost", {usd(r.cost)} } }
+            }
+            details { class: "run-code", open: lines <= 12,
+                summary { "Code · {lines} " if lines == 1 { "line" } else { "lines" } }
+                pre { "{r.code}" }
+            }
+            if !r.tools.is_empty() {
+                div { class: "run-tools",
+                    for (i, u) in r.tools.iter().enumerate() {
+                        div { key: "{i}", class: match u.ok { None => "tool going", Some(true) => "tool", Some(false) => "tool failed" },
+                            span { {match u.name.as_str() { "web_search" => "🔍", "search" => "🧰", "inspect" => "📋", "call" => "💳", _ => "•" }} }
+                            span { class: "tool-name", " {u.name} " }
+                            span { class: "tool-detail", "{u.detail}" }
+                            if u.cost > 0.0 { span { class: "run-cost", " {usd(u.cost)}" } }
+                        }
+                    }
+                }
+            }
+            if !r.output.is_empty() || !r.error.is_empty() {
+                pre { class: "run-out",
+                    "{r.output}"
+                    if !r.error.is_empty() { span { class: "run-err", if r.output.is_empty() { "{r.error}" } else { "\n{r.error}" } } }
+                }
+            }
+            for (i, img) in r.images.iter().enumerate() { img { key: "{i}", class: "run-img", src: "{img}" } }
+            for (i, p) in r.pages.iter().enumerate() {
+                button { key: "{i}", class: "page-btn",
+                    onclick: { let p = p.clone(); move |_| crate::code::open_page(&app, &p.title, &p.html) },
+                    "▶ Open " {if p.title.is_empty() { "page".to_string() } else { p.title.clone() }}
                 }
             }
         }

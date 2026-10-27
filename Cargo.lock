@@ -3195,11 +3195,12 @@ dependencies = [
 
 [[package]]
 name = "obscurify"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
  "blind-rsa-signatures",
  "dioxus",
+ "futures-channel",
  "futures-util",
  "pulldown-cmark",
  "qrcode",

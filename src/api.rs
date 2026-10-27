@@ -189,3 +189,35 @@ pub async fn chat(body: &Value) -> Result<reqwest::Response, String> {
         }
     }
 }
+
+/// A signed-in POST to a web endpoint (`/web/...`), which wants the CSRF token as well as the
+/// session (Code Mode's tools).
+pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, String> {
+    for attempt in 0..2 {
+        let token = csrf().await?;
+        let r = with_session(client().post(format!("{BASE}{path}")))
+            .timeout(Duration::from_secs(timeout))
+            .header("X-CSRF-Token", token)
+            .json(body)
+            .send()
+            .await
+            .map_err(|_| error_text(0, &Value::Null, ""))?;
+        let status = r.status().as_u16();
+        let text = r.text().await.unwrap_or_default();
+        let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        if (200..300).contains(&status) {
+            return Ok(v);
+        }
+        let m = error_text(status, &v, &text);
+        if status == 401 {
+            expire();
+            return Err(m);
+        }
+        if status == 403 && m.to_lowercase().contains("csrf") && attempt == 0 {
+            *CSRF.lock().unwrap() = None;
+            continue;
+        }
+        return Err(m);
+    }
+    Err("The request failed".into())
+}
