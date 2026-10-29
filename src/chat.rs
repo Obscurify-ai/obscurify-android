@@ -22,6 +22,9 @@ pub struct Msg {
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
+    /// Files attached to a user message, as text (see files.rs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<crate::files::Doc>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reasoning: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -145,10 +148,11 @@ pub(crate) fn merge_details(acc: &mut Vec<Value>, inc: &Value) {
 pub(crate) fn wire(msgs: &[Msg], model: &str, tools: bool) -> Vec<Value> {
     msgs.iter().filter(|m| !m.error).flat_map(|m| {
         if m.role == "user" {
+            let text = crate::files::for_model(&m.content, &m.files);
             if m.images.is_empty() {
-                return vec![json!({"role": "user", "content": m.content})];
+                return vec![json!({"role": "user", "content": text})];
             }
-            let mut parts = vec![json!({"type": "text", "text": m.content})];
+            let mut parts = vec![json!({"type": "text", "text": text})];
             parts.extend(m.images.iter().map(|u| json!({"type": "image_url", "image_url": {"url": u}})));
             return vec![json!({"role": "user", "content": parts})];
         }
@@ -304,17 +308,18 @@ fn run(mut app: App) {
 }
 
 fn send(mut app: App, text: String) {
-    let images = std::mem::take(&mut *app.attach.write());
-    if app.live.peek().is_some() || (text.trim().is_empty() && images.is_empty()) {
+    if app.live.peek().is_some() || (text.trim().is_empty() && app.attach.peek().is_empty() && app.docs.peek().is_empty()) {
         return;
     }
+    let images = std::mem::take(&mut *app.attach.write());
+    let files = std::mem::take(&mut *app.docs.write());
     {
         let mut c = app.conv.write();
         if c.title.is_empty() {
             c.title = text.trim().chars().take(60).collect();
-            if c.title.is_empty() { c.title = "Image".into() }
+            if c.title.is_empty() { c.title = files.first().map_or("Image".into(), |f| f.name.clone()) }
         }
-        c.messages.push(Msg { role: "user".into(), content: text.trim().to_string(), images, ..Default::default() });
+        c.messages.push(Msg { role: "user".into(), content: text.trim().to_string(), images, files, ..Default::default() });
     }
     save(app);
     run(app);
@@ -416,6 +421,14 @@ pub fn ChatView() -> Element {
                     }
                     // Opens the picker through the bridge's own file input (see BRIDGE in main.rs).
                     span { class: "chip file", "Image" }
+                    span { class: "chip doc", "File" }
+                }
+                if !app.docs.read().is_empty() {
+                    div { class: "docs",
+                        for (i, d) in app.docs.read().iter().enumerate() {
+                            span { key: "{i}", class: "chip on", onclick: move |_| { app.docs.write().remove(i); }, "📄 {d.name} ✕" }
+                        }
+                    }
                 }
                 if !app.attach.read().is_empty() {
                     div { class: "thumbs",
@@ -431,7 +444,7 @@ pub fn ChatView() -> Element {
                             svg { view_box: "0 0 24 24", width: "18", height: "18", rect { x: "5", y: "5", width: "14", height: "14", rx: "2", fill: "currentColor" } }
                         }
                     } else {
-                        button { class: if text.read().trim().is_empty() && app.attach.read().is_empty() { "send idle" } else { "send" }, aria_label: "Send", onclick: move |_| do_send(),
+                        button { class: if text.read().trim().is_empty() && app.attach.read().is_empty() && app.docs.read().is_empty() { "send idle" } else { "send" }, aria_label: "Send", onclick: move |_| do_send(),
                             svg { view_box: "0 0 24 24", width: "22", height: "22",
                                 path { d: "M12 19V5M5.5 11.5L12 5l6.5 6.5", fill: "none", stroke: "currentColor", stroke_width: "2.5", stroke_linecap: "round", stroke_linejoin: "round" }
                             }
@@ -455,6 +468,9 @@ fn MsgView(m: Msg, last: bool, edit_at: Option<usize>, #[props(default)] live: b
         return rsx! {
             div { class: "msg user",
                 for src in m.images.iter() { img { src: "{src}" } }
+                for d in m.files.iter() {
+                    div { class: "doc", "📄 {d.name}" span { class: "muted", " · {d.kind}, {crate::files::size(d)}" if d.truncated { " (cut)" } } }
+                }
                 "{m.content}"
             }
         };

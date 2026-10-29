@@ -6,6 +6,7 @@
 mod api;
 mod chat;
 mod code;
+mod files;
 mod store;
 mod wallet;
 
@@ -48,6 +49,20 @@ const pick = Object.assign(document.createElement('input'), {type: 'file', accep
 pick.style.display = 'none';
 document.body.appendChild(pick);
 document.addEventListener('click', e => { if (e.target.closest('.chip.file')) pick.click(); }, true);
+// Other files go to the app whole (base64), one at a time; it reads them (files.rs).
+const pickDoc = Object.assign(document.createElement('input'), {type: 'file', accept: '*/*', multiple: true, id: 'pickdoc'});
+pickDoc.style.display = 'none';
+document.body.appendChild(pickDoc);
+document.addEventListener('click', e => { if (e.target.closest('.chip.doc')) pickDoc.click(); }, true);
+document.addEventListener('change', async e => {
+  if (e.target.id !== 'pickdoc') return;
+  const files = [...e.target.files].slice(0, 4); e.target.value = '';
+  for (const f of files) {
+    if (f.size > 25 * 1024 * 1024) { dioxus.send({doc_error: f.name + ' is over 25 MB.'}); continue; }
+    const url = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(f); }).catch(() => '');
+    dioxus.send({doc: {name: f.name, data: String(url).split(',')[1] || ''}});
+  }
+});
 document.addEventListener('change', async e => {
   if (e.target.id !== 'pick') return;
   const files = [...e.target.files].slice(0, 4); e.target.value = '';
@@ -115,6 +130,8 @@ struct App {
     live: Signal<Option<Msg>>,
     stop: Signal<bool>,
     attach: Signal<Vec<String>>,
+    /// Files read for the next message (see files.rs).
+    docs: Signal<Vec<files::Doc>>,
     wallet: Signal<Wallet>,
     balance: Signal<Option<f64>>,
     toast: Signal<Option<String>>,
@@ -203,6 +220,32 @@ impl App {
 
 fn main() { dioxus::launch(Root) }
 
+/// Reads a picked file off the UI thread (a long PDF takes a while) and adds it to the next message.
+fn read_doc(app: App, name: String, b64: String) {
+    use base64::Engine;
+    app.say(format!("Reading {name}…"));
+    let (tx, rx) = futures_channel::oneshot::channel();
+    std::thread::spawn(move || {
+        let r = match base64::engine::general_purpose::STANDARD.decode(b64) {
+            Ok(bytes) => files::read(&name, &bytes),
+            Err(_) => Err(format!("Couldn't read {name}.")),
+        };
+        let _ = tx.send(r);
+    });
+    bg(async move {
+        let mut app = app;
+        match rx.await {
+            Ok(Ok(d)) => {
+                app.say(format!("{} added ({})", d.name, files::size(&d)));
+                let mut docs = app.docs.write();
+                if docs.len() < 4 { docs.push(d) }
+            }
+            Ok(Err(e)) => app.say(e),
+            Err(_) => app.say("Couldn't read the file."),
+        }
+    });
+}
+
 #[component]
 fn Root() -> Element {
     store::remove("account.json"); // 0.2.0 kept the number; the app only keeps the session now
@@ -223,6 +266,7 @@ fn Root() -> Element {
             live: Signal::new(None),
             stop: Signal::new(false),
             attach: Signal::new(vec![]),
+            docs: Signal::new(vec![]),
             wallet: Signal::new(Wallet::load()),
             balance: Signal::new(None),
             toast: Signal::new(None),
@@ -301,6 +345,10 @@ fn Root() -> Element {
                 if vis {
                     app.work_wallet(false)
                 }
+            } else if let Some(e) = v["doc_error"].as_str() {
+                app.say(e)
+            } else if let Some(name) = v["doc"]["name"].as_str() {
+                read_doc(app, name.to_string(), v["doc"]["data"].as_str().unwrap_or("").to_string())
             } else if let Some(imgs) = v["images"].as_array() {
                 let mut a = app.attach.write();
                 a.extend(imgs.iter().filter_map(|i| i.as_str().map(String::from)));

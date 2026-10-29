@@ -126,3 +126,5 @@ h2.group { font-size: 13px; font-weight: 500; text-transform: uppercase; letter-
 .run-img { display: block; max-width: calc(100% - 24px); margin: 10px 12px; border-radius: 6px; background: #fff; }
 .page-btn { display: block; margin: 8px 12px 10px; padding: 10px 14px; border: 1px solid var(--g); border-radius: 10px; background: transparent; color: var(--g); font-size: 15px; text-align: left; }
 .msg > .page-btn { margin: 8px 0; }
+.docs { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; }
+.msg.user .doc { font-size: 14px; margin-bottom: 6px; white-space: normal; }

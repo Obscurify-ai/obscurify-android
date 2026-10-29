@@ -16,6 +16,7 @@ are stored only on the phone.
 - **Chat.**
   - Answers stream in as they're written.
   - Web search, image attachments (shrunk on the phone before upload) and collapsible reasoning.
+  - Files: PDFs, spreadsheets (CSV, TSV, Excel, OpenDocument), Word, PowerPoint and text or code files are read on the phone and sent as text, so every model can use them. The file itself never leaves the phone.
   - Copy, Retry, Edit and Stop.
   - Markdown is rendered safely: raw HTML shows as text, links open in your browser, and remote images become links, so they never load by themselves and reveal your IP.
 - **Code Mode.** The assistant can run Python (numpy, pandas, matplotlib) and JavaScript on the phone to calculate, analyze data and draw charts; build pages and small apps that open full screen; search the web; and use paid tools billed to your balance (at most $1 per reply).
@@ -61,6 +62,7 @@ obscurify.ai/android links through `releases/latest/download/obscurify.apk`. Upl
 |---|---|
 | `src/main.rs` | App state, the JS bridge (links, Back, image picker, pinned scrolling), sign-in, sign-up, Account, Add funds |
 | `src/chat.rs` | Chat, streaming, chats on the phone, model picker, safe markdown |
+| `src/files.rs` | Reading attached files into text: PDF, spreadsheets, Word, PowerPoint, OpenDocument, text |
 | `src/code.rs` | Code Mode: the agent loop, the sandbox bridge, tools and budgets, runs on the message |
 | `src/api.rs` | HTTP. Signed-in calls carry the session; voucher calls carry nothing |
 | `src/wallet.rs` | Voucher orders: blind, sign, unblind, redeem |
@@ -80,6 +82,7 @@ BTC_RPC_PASSWORD=… node app.mjs   # sign-up, BTC voucher top-up, chat, web sea
 node card.mjs                     # image picker and a vision model; Stripe test-card top-up
 ACCOUNT=… PLAN=casual node plans.mjs  # models the plan can use first, the rest under "Upgrade to use"
 ACCOUNT=… node code.mjs              # Code Mode: Python, a chart, a paid tool, a page full screen, the sandbox sealed off
+ACCOUNT=… node files.mjs             # files: PDF, CSV, Excel, Word, PowerPoint, OpenDocument, text; refusals; a long file cut
 ```
 
 ## License
