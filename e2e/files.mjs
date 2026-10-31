@@ -15,21 +15,29 @@ await page.locator('.title.model').click();
 await page.locator('input.search').fill('Llama 3.3 70b Instruct');
 await page.locator('.pick', { hasText: 'Meta: Llama 3.3 70b Instruct' }).first().locator('.grow').click();
 
-ok(await page.locator('.chip.doc', { hasText: 'File' }).count() === 1, 'a File button next to Image');
+ok(await page.locator('.attach').count() === 1, 'one attach button');
+await page.waitForSelector('.tools-switch', { timeout: 20000 });
+if (await page.locator('.tools-switch.on').count()) await page.locator('.tools-switch').click();
 const attach = async (names) => {
-  await page.setInputFiles('#pickdoc', names.map(n => fx + n));
+  await page.setInputFiles('#pick', names.map(n => fx + n));
   await page.waitForFunction(n => document.querySelectorAll('.docs .chip').length === n, names.length, { timeout: 60000 });
   const chips = await page.locator('.docs .chip').allTextContents();
   for (const n of names) ok(chips.some(c => c.includes(n)), `${n} read and attached`);
 };
 
 // Errors: an image-only PDF and a binary file are refused with a reason, not sent.
-await page.setInputFiles('#pickdoc', [fx + 'scanned.pdf']);
+await page.setInputFiles('#pick', [fx + 'scanned.pdf']);
 await toast('no text to read');
 ok(true, 'a scanned PDF is refused: attach it as images instead');
-await page.setInputFiles('#pickdoc', [fx + 'photo.png']);
+await page.setInputFiles('#pick', [fx + 'data.bin']);
 await toast('not this kind of file');
 ok(await page.locator('.docs .chip').count() === 0, 'a binary file is refused and nothing is attached');
+
+// One button: a photo is recognized and attached as a photo.
+await page.setInputFiles('#pick', [fx + 'photo.png']);
+await page.waitForSelector('.thumbs img', { timeout: 15000 });
+ok(await page.locator('.docs .chip').count() === 0, 'a photo goes in as a photo, not a file');
+await page.locator('.thumbs img').click();
 
 // Four files in one message: PDF, CSV, Excel, Word.
 await attach(['report.pdf', 'sales.csv', 'budget.xlsx', 'memo.docx']);

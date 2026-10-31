@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use wallet::Wallet;
 
 const CSS: &str = include_str!("../assets/style.css");
-const FREE_MODEL: &str = "meta-llama/llama-3.3-70b-instruct";
+pub const FREE_MODEL: &str = "meta-llama/llama-3.3-70b-instruct";
 
 // ---- JS bridge: links, Back, visibility, picked images, the chat pinned to the bottom ----
 
@@ -45,30 +45,26 @@ async function shrink(f) {
 }
 // The file input lives outside the Dioxus tree: Dioxus intercepts clicks on file inputs it renders
 // to open a desktop file dialog, which doesn't exist on Android, so the picker never opened.
-const pick = Object.assign(document.createElement('input'), {type: 'file', accept: 'image/*', multiple: true, id: 'pick'});
+const pick = Object.assign(document.createElement('input'), {type: 'file', accept: '*/*', multiple: true, id: 'pick'});
 pick.style.display = 'none';
 document.body.appendChild(pick);
-document.addEventListener('click', e => { if (e.target.closest('.chip.file')) pick.click(); }, true);
-// Other files go to the app whole (base64), one at a time; it reads them (files.rs).
-const pickDoc = Object.assign(document.createElement('input'), {type: 'file', accept: '*/*', multiple: true, id: 'pickdoc'});
-pickDoc.style.display = 'none';
-document.body.appendChild(pickDoc);
-document.addEventListener('click', e => { if (e.target.closest('.chip.doc')) pickDoc.click(); }, true);
-document.addEventListener('change', async e => {
-  if (e.target.id !== 'pickdoc') return;
-  const files = [...e.target.files].slice(0, 4); e.target.value = '';
-  for (const f of files) {
-    if (f.size > 25 * 1024 * 1024) { dioxus.send({doc_error: f.name + ' is over 25 MB.'}); continue; }
-    const url = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(f); }).catch(() => '');
-    dioxus.send({doc: {name: f.name, data: String(url).split(',')[1] || ''}});
-  }
-});
+document.addEventListener('click', e => { if (e.target.closest('.attach')) pick.click(); }, true);
+// One button for everything: photos go to vision models; other files go to the app whole
+// (base64), one at a time, and it reads them (files.rs).
 document.addEventListener('change', async e => {
   if (e.target.id !== 'pick') return;
   const files = [...e.target.files].slice(0, 4); e.target.value = '';
   const images = [];
-  for (const f of files) { try { images.push(await shrink(f)); } catch (_) {} }
-  dioxus.send({images});
+  for (const f of files) {
+    if (f.type.startsWith('image/')) {
+      try { images.push(await shrink(f)); } catch (_) { dioxus.send({doc_error: "Couldn't read " + f.name + '.'}); }
+      continue;
+    }
+    if (f.size > 25 * 1024 * 1024) { dioxus.send({doc_error: f.name + ' is over 25 MB.'}); continue; }
+    const url = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(f); }).catch(() => '');
+    dioxus.send({doc: {name: f.name, data: String(url).split(',')[1] || ''}});
+  }
+  if (images.length) dioxus.send({images});
 });
 setInterval(() => {
   const el = document.getElementById('msgs');
@@ -103,14 +99,19 @@ struct Settings {
     model: String,
     web_search: bool,
     favorites: Vec<String>,
+    /// Code Mode's tools, on unless switched off (settings saved before this have no such field).
+    #[serde(default = "yes")]
+    tools: bool,
 }
 
+fn yes() -> bool { true }
+
 impl Default for Settings {
-    fn default() -> Self { Settings { model: FREE_MODEL.into(), web_search: true, favorites: vec![] } }
+    fn default() -> Self { Settings { model: FREE_MODEL.into(), web_search: true, favorites: vec![], tools: true } }
 }
 
 #[derive(Clone, PartialEq)]
-struct Model { id: String, name: String, prompt: f64, completion: f64, tools: bool }
+struct Model { id: String, name: String, prompt: f64, completion: f64, tools: bool, context: u64 }
 
 /// What the account's plan lets it chat with, from `/account_tier`.
 #[derive(Clone, Copy, PartialEq)]
@@ -161,6 +162,7 @@ impl App {
     }
     /// Balance, and what the plan unlocks (the model picker lists the rest last).
     fn refresh_balance(mut self) {
+        if !api::has_session() { return }
         bg(async move {
             code::load(self).await;
             if let Ok(v) = api::get("/get_user_balance").await {
@@ -289,6 +291,7 @@ fn Root() -> Element {
                 prompt: m["pricing"]["prompt"].as_f64().unwrap_or(0.0),
                 completion: m["pricing"]["completion"].as_f64().unwrap_or(0.0),
                 tools: m["tools"].as_bool().unwrap_or(true),
+                context: m["context_length"].as_u64().unwrap_or(0),
             }).collect();
             models.sort_by_key(|m| m.name.to_lowercase());
             app.models.set(models);
@@ -409,6 +412,8 @@ fn Login() -> Element {
                 "Don't have an account? "
                 a { onclick: move |_| app.screen.set(Screen::Signup), "Create one" }
             }
+            button { class: "bare guest", onclick: move |_| { app.screen.set(Screen::Chat); bg(code::load(app)) }, "Chat as a guest" }
+            p { class: "muted center", "No account, a free model, up to 30 messages an hour." }
         }
     }
 }
@@ -421,6 +426,8 @@ fn Signup() -> Element {
     let mut busy = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
     let mut created = use_signal(|| None::<String>);
+    let mut credit = use_signal(|| None::<f64>);
+    let mut referral = use_signal(String::new);
 
     // The number is shown once. We only keep a scrambled copy and can't show it again.
     if let Some(n) = created.read().clone() {
@@ -428,6 +435,7 @@ fn Signup() -> Element {
             div { class: "login center",
                 h1 { "Your account number" }
                 p { class: "muted", "Write it down or keep it in a password manager. If you lose it, the account and its balance are gone." }
+                if let Some(c) = *credit.read() { p { class: "ok", "{usd(c)} of starter credit is on your balance." } }
                 div { class: "number mono", "{n}" }
                 button { onclick: { let n = n.clone(); move |_| app.copy(&n, "Account number") }, "Copy" }
                 label { class: "check",
@@ -447,8 +455,9 @@ fn Signup() -> Element {
         busy.set(true);
         error.set(None);
         bg(async move {
-            match api::create_account().await {
-                Ok(n) => created.set(Some(n)),
+            let code = referral.peek().clone();
+            match api::create_account(&code).await {
+                Ok((n, c)) => { credit.set(c); created.set(Some(n)) }
                 Err(e) => error.set(Some(e)),
             }
             busy.set(false);
@@ -464,9 +473,10 @@ fn Signup() -> Element {
             }
             label { class: "check",
                 input { r#type: "checkbox", onchange: move |e| tos.set(e.checked()) }
-                "I agree to the "
+                "I'm 18 or older and agree to the "
                 a { href: "{api::BASE}/terms", "Terms of Service" }
             }
+            input { class: "field", autocomplete: "off", placeholder: "Referral code (optional)", oninput: move |e| referral.set(e.value()) }
             button { class: "go", disabled: *busy.read(), onclick: create, "Generate Account Number" }
             if let Some(e) = error.read().clone() { p { class: "err", "{e}" } }
             p { class: "muted center", style: "margin-top: 16px",
@@ -491,6 +501,8 @@ fn Account() -> Element {
     let mut new_number = use_signal(|| None::<String>);
     let mut confirm = use_signal(|| None::<&'static str>);
     let mut tx_shown = use_signal(|| 20usize);
+    let mut plan_ask = use_signal(|| None::<String>);
+    let mut deleting = use_signal(|| false);
 
     let load = move || {
         app.refresh_balance();
@@ -550,6 +562,12 @@ fn Account() -> Element {
                             let id = x["tier"].as_str().unwrap_or("").to_string();
                             let on = id == current;
                             let fee = x["monthly_fee"].as_f64().unwrap_or(0.0);
+                            let now_fee = tiers.read()["tiers"].as_array().into_iter().flatten().find(|y| y["tier"].as_str() == Some(current.as_str())).and_then(|y| y["monthly_fee"].as_f64()).unwrap_or(0.0);
+                            let up = fee > now_fee;
+                            let bal = app.balance.read().unwrap_or(0.0);
+                            let asking = plan_ask.read().as_deref() == Some(id.as_str());
+                            let name = tier_name(&id);
+                            let pay = id.clone();
                             let credit = x["included_credit"].as_f64().unwrap_or(0.0);
                             let what = match id.as_str() {
                                 "casual" => format!("Frontier models, {} of usage included", usd(credit)),
@@ -563,7 +581,20 @@ fn Account() -> Element {
                                         div { class: "muted", "{what}" }
                                     }
                                     if on { span { class: "ok", "Current" } }
-                                    else { button { onclick: move |_| change_tier(id.clone()), "Switch" } }
+                                    else { button { onclick: { let i = id.clone(); move |_| plan_ask.set(Some(i.clone())) }, if up { "Upgrade" } else { "Switch" } } }
+                                }
+                                if asking && up && bal < fee {
+                                    p { class: "muted", "{name} costs {usd(fee)} a month and your balance is {usd(bal)}." }
+                                    div { class: "row", style: "border: 0",
+                                        button { class: "go", onclick: move |_| { plan_ask.set(None); let mut s = app.screen; s.set(Screen::Funds) }, "Add funds" }
+                                        button { class: "bare", onclick: move |_| plan_ask.set(None), "Cancel" }
+                                    }
+                                } else if asking {
+                                    p { class: "muted", if up { "Pay {usd(fee)} from your balance ({usd(bal)}) for {name}? It renews monthly while your balance covers it." } else { "Switch to {name}? Your current plan ends now." } }
+                                    div { class: "row", style: "border: 0",
+                                        button { class: "go", onclick: move |_| { plan_ask.set(None); change_tier(pay.clone()) }, if up { "Pay {usd(fee)}" } else { "Switch" } }
+                                        button { class: "bare", onclick: move |_| plan_ask.set(None), "Cancel" }
+                                    }
                                 }
                             }
                         }
@@ -636,6 +667,7 @@ fn Account() -> Element {
                             div { class: "grow mono", style: "font-size: 13px", "{link}" }
                             button { class: "bare", onclick: { let l = link.clone(); move |_| app.copy(&l, "Link") }, "Copy" }
                         }
+                        if referral.read()["has_pending_bonus"] == true { p { class: "ok", "Your referral bonus is waiting: it's added once you've deposited ${referral.read()[\"deposit_threshold\"].as_str().unwrap_or(\"\")}." } }
                         p { class: "muted", "{referral.read()[\"referral_count\"]} joined · {referral.read()[\"pending_referrals\"]} pending. You both get ${referral.read()[\"bonus_amount\"].as_str().unwrap_or(\"\")} once they add ${referral.read()[\"deposit_threshold\"].as_str().unwrap_or(\"\")}." }
                     }
                 }
@@ -683,6 +715,27 @@ fn Account() -> Element {
                         }
                     } else {
                         button { class: "danger", onclick: move |_| confirm.set(Some("out")), "Sign out" }
+                    }
+                }
+                div { class: "section",
+                    h2 { "Delete account" }
+                    if *confirm.read() == Some("delete") {
+                        p { class: "muted", "Your account number, API key and sign-ins are erased for good, and the balance and plan are lost. Payment records stay, with nothing that links them to you. Chats on this phone are deleted." }
+                        div { class: "row",
+                            button { class: "danger", disabled: *deleting.read(), onclick: move |_| {
+                                deleting.set(true);
+                                bg(async move {
+                                    match api::post("/account/delete", json!({"confirm": true})).await {
+                                        Ok(_) => { app.sign_out(); app.say("Your account is deleted") }
+                                        Err(e) => app.say(e),
+                                    }
+                                    deleting.set(false);
+                                })
+                            }, if *deleting.read() { "Deleting…" } else { "Delete for good" } }
+                            button { class: "bare", onclick: move |_| confirm.set(None), "Cancel" }
+                        }
+                    } else {
+                        button { class: "danger", onclick: move |_| confirm.set(Some("delete")), "Delete account…" }
                     }
                 }
             }
@@ -824,7 +877,12 @@ fn Funds() -> Element {
                                 button { class: if m == id { "on" } else { "" }, onclick: move |_| method.set(id), "{label}" }
                             }
                         }
-                        input { class: "field", inputmode: "decimal", initial_value: "{amount.peek()}", placeholder: if m == "BTC" || m == "XMR" { "Any amount (USD, optional)" } else { "Amount (USD)" },
+                        div { class: "toggles",
+                            for v in ["5", "10", "20", "50", "100"] {
+                                button { class: if *amount.read() == v { "chip on" } else { "chip" }, onclick: move |_| amount.set(v.to_string()), "${v}" }
+                            }
+                        }
+                        input { class: "field", inputmode: "decimal", value: "{amount}", placeholder: if m == "BTC" || m == "XMR" { "Any amount (USD, optional)" } else { "Amount (USD)" },
                             oninput: move |e| amount.set(e.value()) }
                         button { class: "go", disabled: *busy.read(), onclick: pay, if *busy.read() { "…" } else { "Continue" } }
                         if let Some(e) = error.read().clone() { p { class: "err", "{e}" } }

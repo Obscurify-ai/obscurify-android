@@ -30,6 +30,8 @@ pub struct Config {
     pub base: String,
     pub paid_tools: bool,
     pub web_search: bool,
+    /// Tools can be looked up (guests can too; running a paid one takes an account).
+    pub catalog: bool,
     pub reply_budget: f64,
     pub per_call: f64,
     pub result_chars: usize,
@@ -46,6 +48,7 @@ pub async fn load(mut app: App) {
         base: if origin == "self" { api::BASE.to_string() } else { origin.trim_end_matches('/').to_string() },
         paid_tools: v["paid_tools"] == true,
         web_search: v["web_search"] == true,
+        catalog: v["tool_catalog"] == true,
         reply_budget: v["reply_budget_usd"].as_f64().unwrap_or(0.0),
         per_call: v["per_call_usd"].as_f64().unwrap_or(0.0),
         result_chars: v["result_chars"].as_u64().unwrap_or(12_000) as usize,
@@ -54,9 +57,14 @@ pub async fn load(mut app: App) {
     });
 }
 
-/// Code runs for this model: Code Mode is on and the model can call tools.
-pub fn active(app: &App, model: &str) -> bool {
+/// Code can run for this model: Code Mode is on and the model can call tools.
+pub fn capable(app: &App, model: &str) -> bool {
     app.code.peek().enabled && app.models.peek().iter().find(|m| m.id == model).is_none_or(|m| m.tools)
+}
+
+/// Code runs for this model: it can, and the Tools switch is on.
+pub fn active(app: &App, model: &str) -> bool {
+    capable(app, model) && app.settings.peek().tools
 }
 
 // ---- what a run looks like, kept on the message ----
@@ -151,11 +159,21 @@ async fn ensure(rx: &mut UnboundedReceiver<Value>, base: &str) -> Result<(), Str
 /// The reply's spending and tools.
 struct Turn {
     paid: bool,
+    catalog: bool,
     web: bool,
     budget: f64,
     per_call: f64,
     spent: f64,
     result_chars: usize,
+}
+
+/// A tool call to the server: the signed-in route, or the guest one.
+async fn tool_post(path: &str, body: &Value, timeout: u64) -> Result<Value, String> {
+    if api::has_session() {
+        api::web_post(&format!("/web/tools{path}"), body, timeout).await
+    } else {
+        api::guest_post(&format!("/anon/tools{path}"), body, timeout).await
+    }
 }
 
 async fn tool(name: &str, args: &Value, t: &mut Turn) -> Result<Value, String> {
@@ -166,11 +184,12 @@ async fn tool(name: &str, args: &Value, t: &mut Turn) -> Result<Value, String> {
             "remaining_usd": if t.paid { (t.budget - t.spent).max(0.0) } else { 0.0 },
             "per_call_max_usd": if t.paid { t.per_call } else { 0.0 },
         })),
-        "web_search" if t.web => api::web_post("/web/tools/web_search", &json!({"query": s("query")}), 60).await,
+        "web_search" if t.web => tool_post("/web_search", &json!({"query": s("query")}), 60).await,
         "web_search" => Err("Web search is not available.".into()),
-        "search" | "inspect" | "call" if !t.paid => Err("Paid tools need a signed-in Obscurify account.".into()),
-        "search" => api::web_post("/web/tools/search", &json!({"query": s("query"), "limit": args["limit"].as_u64().unwrap_or(8)}), 60).await.map(|v| v["tools"].clone()),
-        "inspect" => api::web_post("/web/tools/inspect", &json!({"id": s("id")}), 60).await,
+        "search" | "inspect" if !t.catalog => Err("Tools are not available right now.".into()),
+        "call" if !t.paid => Err("Running this tool needs a signed-in Obscurify account.".into()),
+        "search" => tool_post("/search", &json!({"query": s("query"), "limit": args["limit"].as_u64().unwrap_or(8)}), 60).await.map(|v| v["tools"].clone()),
+        "inspect" => tool_post("/inspect", &json!({"id": s("id")}), 60).await,
         "call" => {
             let remaining = t.budget - t.spent;
             if remaining < 0.000_001 {
@@ -178,7 +197,7 @@ async fn tool(name: &str, args: &Value, t: &mut Turn) -> Result<Value, String> {
             }
             let asked = args["max_cost_usd"].as_f64().filter(|a| *a > 0.0).unwrap_or(t.per_call);
             let max = t.per_call.min(remaining).min(asked);
-            let v = api::web_post("/web/tools/call", &json!({"id": s("id"), "input": args["input"].clone(), "max_cost_usd": (max * 1e6).round() / 1e6}), 170).await?;
+            let v = tool_post("/call", &json!({"id": s("id"), "input": args["input"].clone(), "max_cost_usd": (max * 1e6).round() / 1e6}), 170).await?;
             t.spent += v["cost_usd"].as_f64().unwrap_or(0.0);
             Ok(v)
         }
@@ -323,6 +342,7 @@ pub fn turn(mut app: App) {
         *EVENTS.lock().unwrap() = Some(tx);
         let mut t = Turn {
             paid: cfg.paid_tools,
+            catalog: cfg.catalog,
             web: cfg.web_search,
             budget: cfg.reply_budget,
             per_call: cfg.per_call.min(cfg.reply_budget),

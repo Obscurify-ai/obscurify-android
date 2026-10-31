@@ -240,11 +240,16 @@ fn run(mut app: App) {
     if app.live.peek().is_some() {
         return;
     }
+    // A guest chats with the one model guests get.
+    if !api::has_session() {
+        app.settings.write().model = crate::FREE_MODEL.into();
+    }
     let model = app.settings.peek().model.clone();
     if crate::code::active(&app, &model) {
         return crate::code::turn(app);
     }
-    let web_search = app.settings.peek().web_search;
+    // With the Tools switch off there's no web search either, as on the web.
+    let web_search = api::has_session() && app.settings.peek().web_search && !crate::code::capable(&app, &model);
     app.stop.set(false);
     app.live.set(Some(Msg { role: "assistant".into(), model: model.clone(), ..Default::default() }));
     js("const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }");
@@ -372,7 +377,14 @@ fn glob(id: &str, pat: &str) -> bool {
 }
 
 fn per_million(m: &Model) -> String {
-    if m.prompt == 0.0 && m.completion == 0.0 { "Free".into() } else { format!("{} / {} per 1M tokens", usd(m.prompt * 1e6), usd(m.completion * 1e6)) }
+    let price = if m.prompt == 0.0 && m.completion == 0.0 { "Free".into() } else { format!("{} / {} per 1M tokens", usd(m.prompt * 1e6), usd(m.completion * 1e6)) };
+    let price = if m.context >= 1000 { format!("{price} · {}k context", m.context / 1000) } else { price };
+    if m.tools { price } else { format!("{price} · no tools") }
+}
+
+/// Who makes a model: "Anthropic" from "Anthropic: Claude Opus 5".
+fn provider(m: &Model) -> String {
+    m.name.split_once(": ").map_or_else(|| m.id.split('/').next().unwrap_or("").to_string(), |(p, _)| p.to_string())
 }
 
 // ---- views ----
@@ -385,9 +397,9 @@ pub fn ChatView() -> Element {
     let live = app.live.read().clone();
     let model = app.settings.read().model.clone();
     let streaming = live.is_some();
-    let code_on = app.code.read().enabled && app.models.read().iter().find(|m| m.id == model).is_none_or(|m| m.tools);
+    let capable = app.code.read().enabled && app.models.read().iter().find(|m| m.id == model).is_none_or(|m| m.tools);
+    let tools_on = app.settings.read().tools;
     let n = c.messages.len();
-    let last_user = c.messages.iter().rposition(|m| m.role == "user");
 
     let mut do_send = move || {
         let t = text.peek().clone();
@@ -400,28 +412,43 @@ pub fn ChatView() -> Element {
         div { class: "screen",
             div { class: "bar",
                 button { class: "icon", onclick: move |_| app.overlay.set(Overlay::Drawer), "☰" }
-                div { class: "title model", onclick: move |_| app.overlay.set(Overlay::Models), {app.model_name(&model)} " ▾" }
+                div { class: "title model", onclick: move |_| {
+                    if api::has_session() { app.overlay.set(Overlay::Models) }
+                    else { app.say("Create an account to choose from every model"); app.screen.set(Screen::Signup) }
+                }, {app.model_name(&model)} " ▾" }
                 button { class: "icon", onclick: move |_| { new_chat(app); }, "＋" }
             }
             div { id: "msgs",
                 if n == 0 && !streaming {
-                    div { class: "empty", "Ask anything." }
+                    div { class: "empty", "Ask anything."
+                        if capable && tools_on {
+                            p { class: "muted", if app.code.read().paid_tools { "It can run code, make charts and pages, search the web and use paid tools billed to your balance." } else { "It can run code, make charts and pages and search the web." } }
+                        }
+                    }
                 }
                 for (i, m) in c.messages.iter().enumerate() {
-                    MsgView { key: "{c.id}-{i}", m: m.clone(), last: i + 1 == n && !streaming, edit_at: if Some(i) == last_user.map(|u| u + 1).filter(|_| i + 1 == n) { last_user } else { None } }
+                    MsgView { key: "{c.id}-{i}", i, m: m.clone(), last: i + 1 == n && !streaming }
                 }
-                if let Some(m) = live { MsgView { key: "{c.id}-live", m, last: false, edit_at: None, live: true } }
+                if let Some(m) = live { MsgView { key: "{c.id}-live", i: n, m, last: false, live: true } }
             }
             div { class: "composer",
-                div { class: "toggles",
-                    // With Code Mode, web search is one of the model's tools: nothing to switch.
-                    if !code_on {
+                // Tools first: whether they work right now, and the switch for them.
+                if app.code.read().enabled {
+                    div { class: "tools-line",
+                        if capable {
+                            span { class: if tools_on { "tools-state on" } else { "tools-state" }, if tools_on { "Tools on" } else { "Tools off" } }
+                            button { class: if tools_on { "tools-switch on" } else { "tools-switch" }, role: "switch", aria_label: "Tools",
+                                onclick: move |_| { let v = !app.settings.peek().tools; app.settings.write().tools = v; app.save_settings() }, span {} }
+                        } else {
+                            span { class: "tools-state", "Tools off for this model" }
+                        }
+                    }
+                }
+                if !capable && api::has_session() {
+                    div { class: "toggles",
                         button { class: if app.settings.read().web_search { "chip on" } else { "chip" },
                             onclick: move |_| { let v = !app.settings.peek().web_search; app.settings.write().web_search = v; app.save_settings() }, "Web search" }
                     }
-                    // Opens the picker through the bridge's own file input (see BRIDGE in main.rs).
-                    span { class: "chip file", "Image" }
-                    span { class: "chip doc", "File" }
                 }
                 if !app.docs.read().is_empty() {
                     div { class: "docs",
@@ -438,6 +465,12 @@ pub fn ChatView() -> Element {
                     }
                 }
                 div { class: "line",
+                    // Any file or photo; the app tells which (see BRIDGE in main.rs).
+                    span { class: "attach", aria_label: "Attach",
+                        svg { view_box: "0 0 24 24", width: "22", height: "22",
+                            path { d: "M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round" }
+                        }
+                    }
                     textarea { id: "composer", rows: 1, placeholder: "Message", oninput: move |e| text.set(e.value()) }
                     if streaming {
                         button { class: "send stop", aria_label: "Stop", onclick: move |_| app.stop.set(true),
@@ -462,8 +495,9 @@ pub fn ChatView() -> Element {
 }
 
 #[component]
-fn MsgView(m: Msg, last: bool, edit_at: Option<usize>, #[props(default)] live: bool) -> Element {
+fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Element {
     let mut app = use_context::<App>();
+    let mut raw = use_signal(|| false);
     if m.role == "user" {
         return rsx! {
             div { class: "msg user",
@@ -500,25 +534,30 @@ fn MsgView(m: Msg, last: bool, edit_at: Option<usize>, #[props(default)] live: b
                 }
             }
             if m.error { p { "{m.content}" } }
+            else if *raw.read() { pre { class: "raw", "{m.content}" } }
             else { div { class: if live { "cursor" } else { "" }, dangerous_inner_html: "{html}" } }
             if !live {
                 for (pi, page) in crate::code::html_blocks(answer, &m.runs.iter().flat_map(|r| r.pages.iter().map(|p| p.html.as_str())).collect::<Vec<_>>()).into_iter().enumerate() {
                     button { key: "page-{pi}", class: "page-btn", onclick: move |_| crate::code::open_page(&app, "Page", &page), "▶ Open this page" }
                 }
             }
-            if last {
+            if last || !live && !m.error {
                 div { class: "meta",
                     if !m.error {
                         button { class: "bare", onclick: { let t = answer.to_string(); move |_| app.copy(&t, "Answer") }, "Copy" }
+                        button { class: "bare", onclick: move |_| { let r = !*raw.peek(); raw.set(r) }, if *raw.read() { "Rendered" } else { "Raw" } }
                     }
-                    button { class: "bare", onclick: move |_| { app.conv.write().messages.pop(); run(app) }, "Retry" }
-                    if let Some(u) = edit_at {
-                        button { class: "bare", onclick: move |_| {
-                            let t = { let mut c = app.conv.write(); let t = c.messages[u].content.clone(); c.messages.truncate(u); t };
-                            js(&format!("const c = document.getElementById('composer'); c.value = {t:?}; c.dispatchEvent(new Event('input', {{bubbles: true}})); c.focus()"));
-                            save(app);
-                        }, "Edit" }
-                    }
+                    if last { button { class: "bare", onclick: move |_| { app.conv.write().messages.pop(); run(app) }, "Retry" } }
+                    // Back to the question this answered: later messages go, as on the web.
+                    button { class: "bare", onclick: move |_| {
+                        let u = app.conv.peek().messages.iter().take(i).rposition(|m| m.role == "user");
+                        let Some(u) = u else { return };
+                        let q = { let mut c = app.conv.write(); let q = c.messages[u].clone(); c.messages.truncate(u); q };
+                        app.attach.set(q.images);
+                        app.docs.set(q.files);
+                        js(&format!("const c = document.getElementById('composer'); c.value = {:?}; c.dispatchEvent(new Event('input', {{bubbles: true}})); c.focus()", q.content));
+                        save(app);
+                    }, "Edit" }
                     if !m.model.is_empty() { span { " · {app.model_name(&m.model)}" } }
                 }
             }
@@ -574,6 +613,20 @@ fn RunView(r: crate::code::Run) -> Element {
     }
 }
 
+/// Obscurify's onion site, opened in a Tor browser.
+const ONION: &str = "http://obscurizgk4wr5bg5fatq5tedqszcjrbgkot6qw7tnip74bakp6oztid.onion/";
+
+/// "3h ago", beside a chat in the list.
+fn ago(ms: i64) -> String {
+    let m = (store::now() - ms).max(0) / 60_000;
+    match m {
+        0 => "just now".into(),
+        1..=59 => format!("{m}m ago"),
+        60..=1439 => format!("{}h ago", m / 60),
+        _ => format!("{}d ago", m / 1440),
+    }
+}
+
 #[component]
 fn Drawer() -> Element {
     let mut app = use_context::<App>();
@@ -593,7 +646,7 @@ fn Drawer() -> Element {
                         div { class: "grow", onclick: { let id = m.id.clone(); move |_| {
                             if app.live.peek().is_none() { app.conv.set(Conv::load(&id)) }
                             app.overlay.set(Overlay::None)
-                        } }, "{m.title}" }
+                        } }, "{m.title}" span { class: "when", {ago(m.updated)} } }
                         if confirm.read().as_deref() == Some(&m.id) {
                             button { class: "danger", style: "padding: 4px 10px", onclick: { let id = m.id.clone(); move |_| { delete(app, &id); confirm.set(None) } }, "Delete" }
                         } else {
@@ -603,8 +656,21 @@ fn Drawer() -> Element {
                 }
             }
             div { class: "foot",
-                button { onclick: move |_| { app.overlay.set(Overlay::None); app.screen.set(Screen::Account) },
-                    "Account" {(*app.balance.read()).map(|b| format!(" · {}", usd(b))).unwrap_or_default()} }
+                div { class: "links",
+                    a { href: "{api::BASE}/tools", "All tools" }
+                    a { href: "{api::BASE}/model_cards", "Model cards" }
+                    a { href: "{ONION}", "Tor" }
+                    a { href: "{api::BASE}/privacy", "Privacy" }
+                    a { href: "{api::BASE}/terms", "Terms" }
+                    a { href: "{api::BASE}/canary", "Canary" }
+                    a { href: "{api::BASE}/contact", "Support" }
+                }
+                if api::has_session() {
+                    button { onclick: move |_| { app.overlay.set(Overlay::None); app.screen.set(Screen::Account) },
+                        "Account" {(*app.balance.read()).map(|b| format!(" · {}", usd(b))).unwrap_or_default()} }
+                } else {
+                    button { onclick: move |_| { app.overlay.set(Overlay::None); app.screen.set(Screen::Login) }, "Sign in" }
+                }
             }
         }
     }
@@ -612,7 +678,7 @@ fn Drawer() -> Element {
 
 const ROLEPLAY: [&str; 15] = ["*mythomax*", "*remm-slerp*", "*rocinante*", "*magnum*", "*hanami*", "*euryale*", "*lunaris*", "*weaver*", "*lumimaid*", "*cydonia*", "*magidonia*", "*storybreaker*", "*tenyxchat*", "*aion-rp*", "*airoboros*"];
 const REASONING: [&str; 5] = ["*thinking*", "*reasoning*", "*deepseek-r1*", "*-r1-*", "*magistral*"];
-const CATEGORIES: [&str; 8] = ["Favorites", "All", "Free", "Cheap", "Reasoning", "Uncensored", "Roleplay", "Frontier"];
+const CATEGORIES: [&str; 9] = ["Favorites", "All", "Tools", "Free", "Cheap", "Reasoning", "Uncensored", "Roleplay", "Frontier"];
 
 /// The plan a model needs that the account doesn't have (uncensored models need Pro, frontier
 /// models Casual or Pro, as the server enforces). Nothing is locked until the plan is known.
@@ -637,7 +703,12 @@ fn Models() -> Element {
     let frontier = app.frontier.read().clone();
     let uncensored = app.uncensored.read().clone();
     let access = *app.access.read();
+    let mut prov = use_signal(|| None::<String>);
     let models = app.models.read().clone();
+    let mut providers: Vec<String> = models.iter().map(provider).collect();
+    providers.sort_by_key(|p| p.to_lowercase());
+    providers.dedup();
+    let chosen = prov.read().clone();
     let query = q.read().to_lowercase();
     let c = *cat.read();
     let any = |id: &str, pats: &[&str]| pats.iter().any(|p| glob(id, p));
@@ -646,6 +717,7 @@ fn Models() -> Element {
         let free = m.prompt == 0.0 && m.completion == 0.0;
         match k {
             "Favorites" => favs.contains(&m.id),
+            "Tools" => m.tools,
             "Free" => free,
             "Cheap" => free || (m.prompt <= 0.000_000_25 && m.completion <= 0.000_000_5),
             "Reasoning" => any(&m.id, &REASONING),
@@ -666,6 +738,7 @@ fn Models() -> Element {
     // A search looks through every model, whatever category is picked.
     let (usable, locked): (Vec<Model>, Vec<Model>) = models.iter()
         .filter(|m| !query.is_empty() || in_cat(m, c))
+        .filter(|m| chosen.as_ref().is_none_or(|p| &provider(m) == p))
         .filter(|m| query.is_empty() || m.name.to_lowercase().contains(&query) || m.id.to_lowercase().contains(&query))
         .cloned()
         .partition(|m| needs(&m.id).is_none());
@@ -682,6 +755,12 @@ fn Models() -> Element {
             div { class: "toggles", style: "padding: 0 12px 8px",
                 for (k, off) in chips {
                     button { class: format!("chip{}{}", if c == k && query.is_empty() { " on" } else { "" }, if off { " locked" } else { "" }), onclick: move |_| cat.set(k), "{k}" }
+                }
+            }
+            div { class: "toggles providers", style: "padding: 0 12px 8px",
+                for p in providers {
+                    button { class: if chosen.as_ref() == Some(&p) { "chip on" } else { "chip" },
+                        onclick: { let p = p.clone(); move |_| { let same = prov.peek().as_ref() == Some(&p); prov.set(if same { None } else { Some(p.clone()) }) } }, "{p}" }
                 }
             }
             div { class: "scroll", style: "padding: 0",

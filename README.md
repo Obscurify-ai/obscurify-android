@@ -9,6 +9,8 @@ are stored only on the phone.
 
 ## Features
 
+- **Tools.** The assistant runs code on the phone, makes charts and pages, searches the web and uses paid tools billed to the balance. A switch above the message box shows whether they're on. Guests get them too, except paid tools.
+- **Chat as a guest**, with no account.
 - **Account number sign-in.**
   - Sign-up shows the number once.
   - The app keeps only the session, never the number.
@@ -16,7 +18,7 @@ are stored only on the phone.
 - **Chat.**
   - Answers stream in as they're written.
   - Web search, image attachments (shrunk on the phone before upload) and collapsible reasoning.
-  - Files: PDFs, spreadsheets (CSV, TSV, Excel, OpenDocument), Word, PowerPoint and text or code files are read on the phone and sent as text, so every model can use them. The file itself never leaves the phone.
+  - One attach button for photos and files. PDFs, spreadsheets (CSV, TSV, Excel, OpenDocument), Word, PowerPoint and text or code files are read on the phone and sent as text, so every model can use them. The file itself never leaves the phone.
   - Copy, Retry, Edit and Stop.
   - Markdown is rendered safely: raw HTML shows as text, links open in your browser, and remote images become links, so they never load by themselves and reveal your IP.
 - **Code Mode.** The assistant can run Python (numpy, pandas, matplotlib) and JavaScript on the phone to calculate, analyze data and draw charts; build pages and small apps that open full screen; search the web; and use paid tools billed to your balance (at most $1 per reply).
@@ -82,6 +84,7 @@ BTC_RPC_PASSWORD=… node app.mjs   # sign-up, BTC voucher top-up, chat, web sea
 node card.mjs                     # image picker and a vision model; Stripe test-card top-up
 ACCOUNT=… PLAN=casual node plans.mjs  # models the plan can use first, the rest under "Upgrade to use"
 ACCOUNT=… node code.mjs              # Code Mode: Python, a chart, a paid tool, a page full screen, the sandbox sealed off
+ACCOUNT=… node parity.mjs            # guest chat and tools, Tools switch, provider filter, raw, edit, plan confirmation, delete account
 ACCOUNT=… node files.mjs             # files: PDF, CSV, Excel, Word, PowerPoint, OpenDocument, text; refusals; a long file cut
 ```
 

@@ -44,6 +44,9 @@ fn set_session(token: Option<String>) {
     *CSRF.lock().unwrap() = None;
 }
 
+/// Signed in? Without a session the app chats as a guest, like the website.
+pub fn has_session() -> bool { SESSION.lock().unwrap().is_some() }
+
 /// Ends the session on this phone.
 pub fn forget() { set_session(None) }
 
@@ -116,13 +119,19 @@ pub async fn login(number: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Makes a new account (the caller has had the Terms accepted) and returns its number, signed in.
-pub async fn create_account() -> Result<String, String> {
-    let (_, v, session) = send(false, "POST", "/create_account", Some(&json!({"accept_tos": true})), 20).await.map_err(msg)?;
+/// Makes a new account (the caller has had the Terms accepted), signed in. Returns its number and
+/// any starter credit it got.
+pub async fn create_account(referral: &str) -> Result<(String, Option<f64>), String> {
+    let mut body = json!({"accept_tos": true});
+    if !referral.trim().is_empty() {
+        body["referral_code"] = json!(referral.trim());
+    }
+    let (_, v, session) = send(false, "POST", "/create_account", Some(&body), 20).await.map_err(msg)?;
     let n = v["account_number"].as_str().ok_or("Could not create an account. Try again.")?.to_string();
     set_session(Some(session.ok_or("Sign-up didn't start a session")?));
     EXPIRED.store(false, Ordering::SeqCst);
-    Ok(n)
+    let credit = v["starter_credit"].as_f64().or_else(|| v["starter_credit"].as_str().and_then(|s| s.parse().ok()));
+    Ok((n, credit))
 }
 
 /// A signed-in call. A 401 means the session is over: the app goes back to sign-in.
@@ -130,7 +139,7 @@ pub async fn call(method: &str, path: &str, body: Option<Value>) -> Result<Value
     match send(true, method, path, body.as_ref(), 30).await {
         Ok((_, v, _)) => Ok(v),
         Err(e) => {
-            if status_of(&e).0 == 401 {
+            if status_of(&e).0 == 401 && has_session() {
                 expire()
             }
             Err(e)
@@ -158,9 +167,28 @@ async fn csrf() -> Result<String, String> {
     Ok(t)
 }
 
+/// A guest's tool call. Guests have no session to tie a CSRF token to, so the server checks that
+/// the request says it's from Obscurify; its guest limits apply as they do on the website.
+pub async fn guest_post(path: &str, body: &Value, timeout: u64) -> Result<Value, String> {
+    let r = client().post(format!("{BASE}{path}")).timeout(Duration::from_secs(timeout)).header("Origin", BASE).json(body).send().await.map_err(|_| error_text(0, &Value::Null, ""))?;
+    let status = r.status().as_u16();
+    let text = r.text().await.map_err(|e| e.to_string())?;
+    let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    if (200..300).contains(&status) { Ok(v) } else { Err(error_text(status, &v, &text)) }
+}
+
 /// Starts a streamed chat completion (`/web/chat/completions`, every plan). Returns the open
 /// response; the caller reads its SSE body.
 pub async fn chat(body: &Value) -> Result<reqwest::Response, String> {
+    if !has_session() {
+        let r = client().post(format!("{BASE}/anon/chat/completions")).json(body).send().await.map_err(|_| error_text(0, &Value::Null, ""))?;
+        let status = r.status().as_u16();
+        if (200..300).contains(&status) {
+            return Ok(r);
+        }
+        let text = r.text().await.unwrap_or_default();
+        return Err(error_text(status, &serde_json::from_str(&text).unwrap_or(Value::Null), &text));
+    }
     let mut tries = 0;
     loop {
         let token = csrf().await?;
