@@ -3,6 +3,9 @@
 //   GET /__set?after=1&fail=3&kind=error|cut|hang   pass `after` completions, then break `fail` of them
 //   GET /__set?tooldown=20000 | chatdown=20000 | losecall=1   an outage, or a paid call's answer lost
 //   GET /__log, /__tools                             the completion and tool request bodies so far
+//   POST /__script  [{...}, ...]                     canned replies for the next completions, in order:
+//     {code, usage: {prompt_tokens, completion_tokens, cost}} a run_code call; {text, usage} an answer;
+//     {error: "..."} a failure. No model is called, so these cost nothing.
 import http from 'node:http';
 import https from 'node:https';
 
@@ -13,6 +16,24 @@ let log = [];
 let tools = [];
 // `outage` ms of nothing working, starting at the next tool call (tooldown) or completion (chatdown).
 let down = { tool: 0, chat: 0, until: 0 };
+let script = [];
+let scriptedCalls = 0;
+function scripted(res, r) {
+  res.writeHead(200, { 'content-type': 'text/event-stream' });
+  const send = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
+  if (r.error) { send({ error: { message: r.error } }); return res.end(); }
+  if (r.code) {
+    const id = `script_${++scriptedCalls}`;
+    send({ choices: [{ delta: { tool_calls: [{ index: 0, id, type: 'function', function: { name: 'run_code', arguments: JSON.stringify({ language: 'python', code: r.code }) } }] } }] });
+    send({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] });
+  } else {
+    send({ choices: [{ delta: { content: r.text } }] });
+    send({ choices: [{ delta: {}, finish_reason: 'stop' }] });
+  }
+  send({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0, ...r.usage } });
+  res.write('data: [DONE]\n\n');
+  res.end();
+}
 // The next paid call really runs, but its answer never reaches the app.
 let losecall = 0;
 
@@ -41,6 +62,12 @@ http.createServer((req, res) => {
     tools = [];
     return res.end('ok');
   }
+  if (url.pathname === '/__script') {
+    const c = [];
+    req.on('data', (d) => c.push(d));
+    req.on('end', () => { script = JSON.parse(Buffer.concat(c).toString()); res.end('ok'); });
+    return;
+  }
   if (url.pathname === '/__log') return res.end(JSON.stringify(log));
   if (url.pathname === '/__tools') return res.end(JSON.stringify(tools));
   if (down.tool && /\/tools\//.test(url.pathname)) { down.until = Date.now() + down.tool; down.tool = 0; }
@@ -59,6 +86,7 @@ http.createServer((req, res) => {
     }
     if (!/chat\/completions$/.test(url.pathname)) return forward(req, res, body);
     log.push(JSON.parse(body.toString()));
+    if (script.length) return scripted(res, script.shift());
     if (rule.after > 0) { rule.after--; return forward(req, res, body); }
     if (rule.fail <= 0) return forward(req, res, body);
     rule.fail--;

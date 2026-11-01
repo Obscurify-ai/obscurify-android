@@ -84,7 +84,8 @@ await new Promise(() => {});
 fn js(code: &str) { document::eval(code); }
 /// Work that must finish even if the screen that started it goes away (Dioxus' `spawn` would cancel it).
 fn bg(f: impl std::future::Future<Output = ()> + 'static) { dioxus::core::spawn_forever(f); }
-async fn sleep(ms: u32) { let _ = document::eval(&format!("await new Promise(r => setTimeout(r, {ms})); return 0")).join::<u8>().await; }
+// Native, not a WebView timer: those stall when the app is in the background.
+async fn sleep(ms: u32) { tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await }
 fn open_url(url: &str) { js(&format!("window.android ? android.open({url:?}) : window.open({url:?})")) }
 fn usd(d: f64) -> String { if d.abs() < 0.01 && d != 0.0 { format!("${d:.4}") } else { format!("${d:.2}") } }
 fn cents(c: i64) -> String { format!("${}.{:02}", c / 100, c % 100) }
@@ -105,12 +106,15 @@ struct Settings {
     /// Code Mode's tools, on unless switched off (settings saved before this have no such field).
     #[serde(default = "yes")]
     tools: bool,
+    /// What one reply may spend; the server's default until it's changed.
+    #[serde(default)]
+    spend_limit: Option<f64>,
 }
 
 fn yes() -> bool { true }
 
 impl Default for Settings {
-    fn default() -> Self { Settings { model: FREE_MODEL.into(), web_search: true, favorites: vec![], tools: true } }
+    fn default() -> Self { Settings { model: FREE_MODEL.into(), web_search: true, favorites: vec![], tools: true, spend_limit: None } }
 }
 
 #[derive(Clone, PartialEq)]

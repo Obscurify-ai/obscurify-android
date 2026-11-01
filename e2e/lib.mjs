@@ -14,6 +14,8 @@ export const device = (await _android.devices()).find(d => !process.env.ANDROID_
 export async function launch(clear) {
   adb('shell', 'am', 'force-stop', PKG);
   if (clear) adb('shell', 'pm', 'clear', PKG);
+  // The app asks on its first long answer, and that dialog would sit in front of the test.
+  if (clear) { adb('shell', 'input', 'keyevent', 'KEYCODE_HOME'); try { adb('shell', 'pm', 'grant', PKG, 'android.permission.POST_NOTIFICATIONS'); } catch {} }
   adb('shell', 'am', 'start', '-n', `${PKG}/dev.dioxus.main.MainActivity`);
   let pid = 0, webview;
   for (let i = 0; i < 60 && !webview; i++) {

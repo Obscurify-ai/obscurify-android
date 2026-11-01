@@ -3400,7 +3400,7 @@ dependencies = [
 
 [[package]]
 name = "obscurify"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "base64 0.22.1",
  "blind-rsa-signatures",
@@ -3416,6 +3416,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tokio",
  "zip",
 ]
 

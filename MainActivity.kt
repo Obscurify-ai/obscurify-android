@@ -9,15 +9,26 @@
 // builds open full screen in a WebView made the same way.
 package dev.dioxus.main
 
+import android.Manifest
 import android.app.Dialog
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
+import android.os.PowerManager
 import android.view.Gravity
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -38,10 +49,62 @@ import java.io.ByteArrayInputStream
 
 typealias BuildConfig = ai.obscurify.android.BuildConfig
 
+private const val CHANNEL_WORK = "work"
+private const val CHANNEL_DONE = "done"
+private const val ACTION_STOP = "stop"
+
+private fun channels(c: Context) {
+    if (Build.VERSION.SDK_INT < 26) return
+    val nm = c.getSystemService(NotificationManager::class.java)
+    nm.createNotificationChannel(NotificationChannel(CHANNEL_WORK, "Working on an answer", NotificationManager.IMPORTANCE_LOW))
+    nm.createNotificationChannel(NotificationChannel(CHANNEL_DONE, "Answer ready", NotificationManager.IMPORTANCE_DEFAULT))
+}
+
+private fun note(c: Context, channel: String, title: String, text: String, ongoing: Boolean): Notification {
+    val open = PendingIntent.getActivity(c, 0, Intent(c, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+    @Suppress("DEPRECATION")
+    val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(c, channel) else Notification.Builder(c)
+    return b.setSmallIcon(ai.obscurify.android.R.drawable.ic_work).setContentTitle(title).setContentText(text)
+        .setContentIntent(open).setOngoing(ongoing).setAutoCancel(!ongoing).build()
+}
+
+/** Keeps the app alive while an answer is being worked on, so it can run for a long time with the phone in a pocket. */
+class WorkService : Service() {
+    private var lock: PowerManager.WakeLock? = null
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        channels(this)
+        val n = note(this, CHANNEL_WORK, "Obscurify is working", "Your answer will be here when it's ready.", true)
+        if (Build.VERSION.SDK_INT >= 29) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC) else startForeground(1, n)
+        // Stopping goes through here too: Android kills an app whose service stops before it has
+        // called startForeground, which a short answer would otherwise do.
+        if (intent?.action == ACTION_STOP) {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        if (lock == null) {
+            lock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "obscurify:work").apply { acquire(2 * 60 * 60 * 1000L) }
+        }
+        return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        lock?.let { if (it.isHeld) it.release() }
+        lock = null
+        super.onDestroy()
+    }
+}
+
 class MainActivity : WryActivity() {
     private var web: WebView? = null
     private var sandbox: WebView? = null
     private var sandboxPort: WebMessagePort? = null
+    private var onScreen = false
+    private var working = false
     // Back is the page's call: it closes the open screen, and only on the chat leaves the app.
     override val handleBackNavigation = false
 
@@ -58,6 +121,28 @@ class MainActivity : WryActivity() {
         })
     }
 
+    override fun onResume() { super.onResume(); onScreen = true }
+    override fun onPause() { super.onPause(); onScreen = false }
+
+    /** On when an answer starts; off when it ends, saying so if the app isn't on screen. */
+    private fun setWorking(on: Boolean) {
+        val service = Intent(this, WorkService::class.java)
+        if (on && !working) {
+            working = true
+            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7)
+            }
+            try { if (Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service) } catch (_: Exception) {}
+        } else if (!on && working) {
+            working = false
+            try { startService(service.setAction(ACTION_STOP)) } catch (_: Exception) { stopService(service) }
+            if (!onScreen) {
+                channels(this)
+                try { getSystemService(NotificationManager::class.java).notify(2, note(this, CHANNEL_DONE, "Your answer is ready", "Tap to read it.", false)) } catch (_: Exception) {}
+            }
+        }
+    }
+
     override fun onWebViewCreate(webView: WebView) {
         web = webView
         webView.addJavascriptInterface(object {
@@ -69,6 +154,8 @@ class MainActivity : WryActivity() {
             @JavascriptInterface fun keepAwake(on: Boolean) {
                 runOnUiThread { if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
             }
+            // A long answer keeps going with the app in the background, and says when it's ready.
+            @JavascriptInterface fun working(on: Boolean) { runOnUiThread { setWorking(on) } }
             @JavascriptInterface fun copy(text: String) {
                 getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Obscurify", text))
             }

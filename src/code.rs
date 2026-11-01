@@ -1,12 +1,17 @@
 //! Code Mode: the model gets one tool, `run_code`, and its Python or JavaScript runs on the phone
 //! in a sandbox WebView of its own (see MainActivity.kt), never in the app's WebView. Code reaches
 //! the outside only through `tools.*`, which comes back here: web search, and paid tools billed to
-//! the balance within the reply's budget. The server says what's on, the budgets and the system
+//! the balance within the reply's spend limit. The server says what's on, the budgets and the system
 //! prompt (`GET /code_mode`), so the app and the web tell the model the same thing.
 //!
 //! A reply is an agent loop: stream a completion; if it asks to run code, run it, send the result
 //! back, and repeat until the model answers in words. The tool turns are kept on the message
 //! (`trace`) so the next request can replay them.
+//!
+//! Requests are append-only so the provider's prompt cache keeps hitting: nothing already sent is
+//! ever changed, and each step's messages are a prefix of the next step's. When a conversation
+//! nears the model's context, it's compacted once: the summary replaces the older messages, which
+//! costs one cache miss, and then it's append-only again. Old tool results are never trimmed.
 
 use crate::chat::{self, Msg};
 use crate::{App, api, bg, js, sleep};
@@ -18,11 +23,19 @@ use serde_json::{Value, json};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-const MAX_STEPS: usize = 10;
+const MAX_STEPS: usize = 100;
 /// Times one failed step is asked again before the answer stops and offers Continue.
 const MAX_RETRIES: u32 = 2;
-const RUN_TIMEOUT_MS: u32 = 180_000;
-const MAX_TOOL_CALLS: usize = 40;
+const RUN_TIMEOUT_MS: u32 = 30 * 60 * 1000;
+const MAX_TOOL_CALLS: usize = 200;
+/// Compact when a step has used this share of the model's context.
+const COMPACT_AT: f64 = 0.70;
+/// The recent tool work kept word for word through a compaction, as a share of the context.
+const TAIL_SHARE: f64 = 0.15;
+const DEFAULT_CONTEXT: u64 = 128_000;
+const MIN_SUMMARY_CHARS: usize = 200;
+const MAX_COMPACT_TRIES: u32 = 3;
+const SUMMARY_PROMPT: &str = "Summarize this conversation so the work can continue from your summary alone: everything above will be replaced by it. Reply with text only and do not call any tools. Keep all of the following: the user's goals, and their latest request quoted verbatim; the decisions made and why; what was tried and the results, including failures; exact values, IDs, URLs and file names; what paid tools returned; what Python state exists (variables, imports, functions); and what is left to do. If there is an earlier summary above, carry over everything in it that still matters.";
 
 /// The server's Code Mode settings for this account.
 #[derive(Clone, PartialEq, Default)]
@@ -169,11 +182,23 @@ struct Turn {
     paid: bool,
     catalog: bool,
     web: bool,
-    budget: f64,
+    /// Where the spend limit counts from. The limit itself is read live: raising it during a run counts.
+    base: f64,
     per_call: f64,
     spent: f64,
     result_chars: usize,
     app: App,
+}
+
+impl Turn {
+    fn budget(&self) -> f64 { self.base + limit(&self.app) }
+    fn over(&self) -> bool { self.spent > 0.0 && self.spent >= self.budget() }
+}
+
+/// What one reply may spend: the user's setting, or the server's default.
+pub fn limit(app: &App) -> f64 {
+    let server = app.code.peek().reply_budget;
+    app.settings.peek().spend_limit.unwrap_or(if server > 0.0 { server } else { 5.0 })
 }
 
 /// Some models (Llama 3.3 among them) often write a tool call as text instead of making it:
@@ -246,7 +271,8 @@ async fn tool(name: &str, args: &Value, t: &mut Turn) -> Result<Value, String> {
     match name {
         "budget" => Ok(json!({
             "spent_usd": t.spent,
-            "remaining_usd": if t.paid { (t.budget - t.spent).max(0.0) } else { 0.0 },
+            "limit_usd": t.budget(),
+            "remaining_usd": if t.paid { (t.budget() - t.spent).max(0.0) } else { 0.0 },
             "per_call_max_usd": if t.paid { t.per_call } else { 0.0 },
         })),
         "web_search" if t.web => tool_post(t.app, "/web_search", &json!({"query": s("query")}), 120).await,
@@ -256,9 +282,9 @@ async fn tool(name: &str, args: &Value, t: &mut Turn) -> Result<Value, String> {
         "search" => tool_post(t.app, "/search", &json!({"query": s("query"), "limit": args["limit"].as_u64().unwrap_or(8)}), 60).await.map(|v| v["tools"].clone()),
         "inspect" => tool_post(t.app, "/inspect", &json!({"id": s("id")}), 60).await,
         "call" => {
-            let remaining = t.budget - t.spent;
+            let remaining = t.budget() - t.spent;
             if remaining < 0.000_001 {
-                return Err(format!("The paid-tool budget for this reply (${:.2}) is used up.", t.budget));
+                return Err(format!("The spend limit for this reply (${:.2}) is used up.", t.budget()));
             }
             let asked = args["max_cost_usd"].as_f64().filter(|a| *a > 0.0).unwrap_or(t.per_call);
             let max = t.per_call.min(remaining).min(asked);
@@ -352,6 +378,7 @@ async fn execute(rx: &mut UnboundedReceiver<Value>, msg: &mut Msg, t: &mut Turn,
                     u.cost = reply.as_ref().ok().and_then(|v| v["cost_usd"].as_f64()).unwrap_or(0.0);
                     r.cost += u.cost;
                 }
+                msg.spent = t.spent;
                 post(&match reply {
                     Ok(v) => json!({"type": "tool_result", "callId": call_id, "ok": true, "value": v}),
                     Err(e) => json!({"type": "tool_result", "callId": call_id, "ok": false, "error": e}),
@@ -416,6 +443,10 @@ pub fn resume(mut app: App) {
     prev.reasoning.clear();
     prev.interrupted.clear();
     prev.model = model;
+    // Past the limit, Continue is the go-ahead for another limit's worth.
+    if prev.spent > 0.0 && prev.spent >= prev.spend_base + limit(&app) {
+        prev.spend_base = prev.spent;
+    }
     turn(app, Some(prev));
 }
 
@@ -423,6 +454,113 @@ pub fn resume(mut app: App) {
 fn worth_retrying(e: &str) -> bool {
     let e = e.to_lowercase();
     !["balance", "credit", "insufficient", "rate limit", "not support", "needs", "not available", "too long", "context"].iter().any(|w| e.contains(w))
+}
+
+fn too_long(e: &str) -> bool {
+    let e = e.to_lowercase();
+    ["too long", "too large", "too many tokens", "context length", "context window", "context_length", "maximum context"].iter().any(|w| e.contains(w))
+}
+
+/// Roughly how many tokens these messages are, leaving out images, which aren't counted by size.
+fn estimate(msgs: &[Value]) -> u64 {
+    let chars: usize = msgs.iter().map(|m| match m["content"].as_array() {
+        Some(parts) => parts.iter().map(|p| p["text"].as_str().map_or(0, str::len)).sum(),
+        None => m.to_string().len(),
+    }).sum();
+    chars as u64 / 4
+}
+
+/// The latest complete step groups (a step's assistant message and all its results, never split)
+/// that fit in `budget` tokens. Always at least the latest one.
+fn tail(trace: &[Value], budget: u64) -> Vec<Value> {
+    let starts: Vec<usize> = trace.iter().enumerate().filter(|(_, m)| m["role"] != "tool").map(|(i, _)| i).collect();
+    let mut from = trace.len();
+    for (n, s) in starts.iter().enumerate().rev() {
+        if n + 1 != starts.len() && estimate(&trace[*s..]) > budget {
+            break;
+        }
+        from = *s;
+    }
+    trace[from..].to_vec()
+}
+
+/// A shorter copy of a request, only for summarizing one that's already too long for the model.
+/// The cache is lost by then anyway. It's never stored.
+fn reduced(msgs: &[Value]) -> Vec<Value> {
+    msgs.iter().map(|m| {
+        let mut m = m.clone();
+        if let Some(o) = m.as_object_mut() { o.remove("reasoning_details"); }
+        if m["role"] == "tool" {
+            m["content"] = json!(clip_middle(m["content"].as_str().unwrap_or(""), 1500));
+        } else if m["role"] == "user" {
+            let text = match m["content"].as_array() {
+                Some(parts) => parts.iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join("\n"),
+                None => m["content"].as_str().unwrap_or("").to_string(),
+            };
+            m["content"] = json!(clip_middle(&text, 8000));
+        }
+        m
+    }).collect()
+}
+
+/// Summarizes the conversation and starts the request history over from the summary. The request
+/// has the same prefix and tools as the step it follows, so it reads from the cache. False if no
+/// usable summary came back: nothing has changed then, and the run carries on appending.
+#[allow(clippy::too_many_arguments)]
+async fn compact(mut app: App, cfg: &Config, model: &str, context: u64, shrink: bool, history: &mut Vec<Value>, trace: &mut Vec<Value>, msg: &mut Msg, t: &mut Turn, stop: &impl Fn() -> bool) -> bool {
+    let sent: Vec<Value> = history.iter().chain(trace.iter()).cloned().collect();
+    let mut messages = if shrink { reduced(&sent) } else { sent };
+    messages.push(json!({"role": "user", "content": SUMMARY_PROMPT}));
+    let body = json!({"model": model, "messages": messages, "stream": true, "stream_options": {"include_usage": true}, "tools": [cfg.run_code_tool]});
+    let started = crate::store::now();
+    let mut delay = 1000;
+    let mut retries = 0;
+    let summary = loop {
+        let mut out = Msg::default();
+        let r = chat::stream(&body, &mut out, stop, &mut |_: &Msg| {}).await;
+        if let Ok(s) = &r {
+            t.spent += s.cost;
+            msg.spent = t.spent;
+        }
+        match r {
+            Ok(s) if !s.cut => {
+                app.waiting.set(false);
+                break chat::answer_text(&out.content);
+            }
+            other => {
+                let e = other.err().unwrap_or_else(|| "The connection dropped.".into());
+                if stop() { app.waiting.set(false); return false }
+                if (e == api::OFFLINE || e.contains("connection dropped")) && crate::store::now() - started < WAIT_MS {
+                    app.waiting.set(true);
+                    wait_a_bit(app, &mut delay).await;
+                    continue;
+                }
+                app.waiting.set(false);
+                if retries >= MAX_RETRIES || !worth_retrying(&e) { return false }
+                retries += 1;
+                sleep(1500 * retries).await;
+            }
+        }
+    };
+    if summary.chars().count() < MIN_SUMMARY_CHARS {
+        return false;
+    }
+    let keep = (context as f64 * TAIL_SHARE) as u64;
+    *trace = tail(trace, keep);
+    {
+        let mut c = app.conv.write();
+        // The request this answers stays word for word, with its attachments, unless it's huge.
+        let n = c.messages.len();
+        let through = match c.messages.iter().rposition(|m| m.role == "user") {
+            Some(u) if estimate(&chat::wire(&c.messages[u..=u], model, true)) <= keep => u,
+            _ => n,
+        };
+        c.compaction = Some(chat::Compaction { summary, through });
+    }
+    *history = vec![json!({"role": "system", "content": cfg.system_prompt})];
+    history.extend(chat::api_history(&app.conv.peek(), model, true));
+    msg.compacted = true;
+    true
 }
 
 /// On disk after every step: a killed app comes back to this, with Continue.
@@ -445,7 +583,7 @@ pub fn turn(mut app: App, from: Option<Msg>) {
     first.runs.iter_mut().filter(|r| !r.done).for_each(|r| { r.done = true; r.status = "Cut off".into() });
     let mut trace: Vec<Value> = chat::sound_trace(&std::mem::take(&mut first.trace));
     app.live.set(Some(first));
-    js("const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }; window.android && android.keepAwake && android.keepAwake(true)");
+    js("const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }; window.android && android.keepAwake && android.keepAwake(true); window.android && android.working && android.working(true)");
     bg(async move {
         let (tx, mut rx) = unbounded();
         *EVENTS.lock().unwrap() = Some(tx);
@@ -454,14 +592,16 @@ pub fn turn(mut app: App, from: Option<Msg>) {
             paid: cfg.paid_tools,
             catalog: cfg.catalog,
             web: cfg.web_search,
-            budget: cfg.reply_budget,
-            per_call: cfg.per_call.min(cfg.reply_budget),
-            spent: msg.runs.iter().map(|r| r.cost).sum(),
+            base: msg.spend_base,
+            per_call: cfg.per_call,
+            spent: if msg.spent > 0.0 { msg.spent } else { msg.runs.iter().map(|r| r.cost).sum() },
             result_chars: cfg.result_chars,
             app,
         };
         let mut history = vec![json!({"role": "system", "content": cfg.system_prompt})];
-        history.extend(chat::wire(&app.conv.peek().messages, &model, true));
+        history.extend(chat::api_history(&app.conv.peek(), &model, true));
+        msg.spent = t.spent;
+        let context = app.models.peek().iter().find(|m| m.id == model).map(|m| m.context).filter(|c| *c > 0).unwrap_or(DEFAULT_CONTEXT);
         let mut drawn = 0i64;
         let mut show = move |m: &Msg| {
             if crate::store::now() - drawn > 60 {
@@ -474,10 +614,36 @@ pub fn turn(mut app: App, from: Option<Msg>) {
         let mut retries = 0u32;
         let mut wait_since: Option<i64> = None;
         let mut delay = 1000u32;
-        let done_steps = trace.iter().filter(|m| m["tool_calls"].is_array()).count().min(MAX_STEPS - 1);
+        let done_steps = msg.steps.max(trace.iter().filter(|m| m["tool_calls"].is_array()).count()).min(MAX_STEPS - 1);
+        // The tokens the last step used: what the next one starts from.
+        let mut used: Option<u64> = None;
+        let mut compact_tries = 0u32;
+        let mut overflowed = false;
 
         for step in done_steps..MAX_STEPS {
-            let mut body = json!({"model": model, "messages": history.iter().chain(trace.iter()).collect::<Vec<_>>(), "stream": true, "tools": [cfg.run_code_tool]});
+            if stop() {
+                break;
+            }
+            if t.over() {
+                failure = Some(format!("Spend limit of {} reached.", crate::usd(limit(&app))));
+                break;
+            }
+            let all = |h: &[Value], tr: &[Value]| h.iter().chain(tr.iter()).cloned().collect::<Vec<_>>();
+            if compact_tries < MAX_COMPACT_TRIES && used.unwrap_or_else(|| estimate(&all(&history, &trace))) as f64 >= COMPACT_AT * context as f64 && !stop() {
+                if compact(app, &cfg, &model, context, false, &mut history, &mut trace, &mut msg, &mut t, &stop).await {
+                    used = None;
+                    // Still over, with nothing left to summarize: don't do it again for nothing.
+                    compact_tries = if estimate(&all(&history, &trace)) as f64 >= COMPACT_AT * context as f64 { MAX_COMPACT_TRIES } else { 0 };
+                    app.live.set(Some(msg.clone()));
+                    checkpoint(app, &msg, &trace);
+                } else {
+                    compact_tries += 1;
+                }
+                if t.over() || stop() {
+                    continue;
+                }
+            }
+            let mut body = json!({"model": model, "messages": all(&history, &trace), "stream": true, "stream_options": {"include_usage": true}, "tools": [cfg.run_code_tool]});
             if step == MAX_STEPS - 1 {
                 body["tool_choice"] = json!("none");
             }
@@ -496,7 +662,22 @@ pub fn turn(mut app: App, from: Option<Msg>) {
                     Ok(s) if s.cut => Some("The connection dropped.".to_string()),
                     Ok(_) => None,
                 };
+                if let Ok(s) = &out {
+                    t.spent += s.cost;
+                    msg.spent = t.spent;
+                }
                 if let Some(e) = problem {
+                    // Too long for the model: compact, once, and ask again.
+                    if too_long(&e) && !overflowed && !stop() {
+                        overflowed = true;
+                        if compact(app, &cfg, &model, context, true, &mut history, &mut trace, &mut msg, &mut t, &stop).await {
+                            used = None;
+                            body["messages"] = json!(all(&history, &trace));
+                            app.live.set(Some(msg.clone()));
+                            checkpoint(app, &msg, &trace);
+                            continue;
+                        }
+                    }
                     // No connection: wait for it for as long as it takes, up to WAIT_MS.
                     let lost = e == api::OFFLINE || e.contains("connection dropped");
                     let since = *wait_since.get_or_insert_with(crate::store::now);
@@ -519,6 +700,7 @@ pub fn turn(mut app: App, from: Option<Msg>) {
                 wait_since = None;
                 delay = 1000;
                 let s = out.unwrap();
+                used = s.tokens;
                 if s.tool_calls.is_empty() {
                     msg.details = s.details;
                     break vec![];
@@ -528,6 +710,7 @@ pub fn turn(mut app: App, from: Option<Msg>) {
                     turn_msg["reasoning_details"] = json!(s.details);
                 }
                 trace.push(turn_msg);
+                msg.steps = step + 1;
                 break s.tool_calls;
             };
             if calls.is_empty() {
@@ -581,7 +764,7 @@ pub fn turn(mut app: App, from: Option<Msg>) {
             app.conv.write().messages.push(msg);
         }
         app.live.set(None);
-        js("window.android && android.keepAwake && android.keepAwake(false)");
+        js("window.android && android.keepAwake && android.keepAwake(false); window.android && android.working && android.working(false)");
         chat::save_chat(app);
         app.refresh_balance();
     });

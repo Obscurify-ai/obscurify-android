@@ -29,6 +29,11 @@ gen=target/dx/obscurify/release/android/app
 sed -i "s/versionCode = [0-9]*$/versionCode = $code/" $gen/app/build.gradle.kts
 man=$gen/app/src/main/AndroidManifest.xml
 grep -q ACCESS_NETWORK_STATE $man || sed -i 's#<uses-permission android:name="android.permission.INTERNET" />#&\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />#' $man
+# A long answer runs in a foreground service, with a notification.
+if ! grep -q WorkService $man; then
+  sed -i 's#<uses-permission android:name="android.permission.INTERNET" />#&\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.WAKE_LOCK" />#' $man
+  sed -i 's#</application>#    <service android:name="dev.dioxus.main.WorkService" android:exported="false" android:foregroundServiceType="dataSync" />\n    &#' $man
+fi
 cp MainActivity.kt $gen/app/src/main/kotlin/dev/dioxus/main/MainActivity.kt
 [ "${DEVTOOLS:-}" = 1 ] && sed -i 's#web = webView$#web = webView; WebView.setWebContentsDebuggingEnabled(true)#' $gen/app/src/main/kotlin/dev/dioxus/main/MainActivity.kt
 cp -r android-res/. $gen/app/src/main/res/ # icon, black theme

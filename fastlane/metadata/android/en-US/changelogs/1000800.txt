@@ -1,0 +1,5 @@
+Tools are now an agent that can work for a long time.
+- Up to 100 steps per reply and 30 minutes per run
+- Keeps working with the app in the background, with a notification when the answer is ready
+- A spend limit you set per reply, $5 by default, with what's been spent shown as it goes
+- Long conversations are compacted instead of running out of context

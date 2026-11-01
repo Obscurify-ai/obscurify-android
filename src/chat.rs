@@ -44,6 +44,30 @@ pub struct Msg {
     pub runs: Vec<crate::code::Run>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trace: Vec<Value>,
+    /// What this answer has cost so far: the model's steps and the paid tools.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub spent: f64,
+    /// `spent` when the spend limit last started over: Continue past the limit grants another one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub spend_base: f64,
+    /// Model steps taken. Not the trace's length, which compaction shortens.
+    #[serde(default, skip_serializing_if = "is_zero_steps")]
+    pub steps: usize,
+    /// Earlier work was summarized while this answer ran.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compacted: bool,
+}
+
+fn is_zero(v: &f64) -> bool { *v == 0.0 }
+fn is_zero_steps(v: &usize) -> bool { *v == 0 }
+
+/// What's sent in place of the older messages once a conversation has outgrown the context. All of
+/// it stays on screen and on disk: this changes only what the model is sent.
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct Compaction {
+    pub summary: String,
+    /// Messages before this index are covered by the summary.
+    pub through: usize,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
@@ -58,6 +82,8 @@ pub struct Conv {
     pub id: String,
     pub title: String,
     pub messages: Vec<Msg>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<Compaction>,
 }
 
 impl Conv {
@@ -111,6 +137,9 @@ fn split_think(s: &str) -> (&str, &str) {
     }
     ("", s)
 }
+
+/// An answer without any inline reasoning.
+pub(crate) fn answer_text(s: &str) -> String { split_think(s).1.trim().to_string() }
 
 /// Some providers stream whole snapshots instead of deltas, and some repeat a chunk.
 pub(crate) fn merge(cur: &mut String, inc: &str) {
@@ -186,6 +215,25 @@ pub(crate) fn wire(msgs: &[Msg], model: &str, tools: bool) -> Vec<Value> {
     }).collect()
 }
 
+/// A conversation as the model is sent it: the summary, if there is one, then what came after it.
+/// A user message always follows the acknowledgment, since strict providers refuse two assistant
+/// messages in a row.
+pub(crate) fn api_history(c: &Conv, model: &str, tools: bool) -> Vec<Value> {
+    let Some(k) = c.compaction.as_ref().filter(|k| k.through <= c.messages.len()) else {
+        return wire(&c.messages, model, tools);
+    };
+    let rest = wire(&c.messages[k.through..], model, tools);
+    let mut out = vec![
+        json!({"role": "user", "content": format!("Summary of the conversation so far:\n\n{}", k.summary)}),
+        json!({"role": "assistant", "content": "Understood. Continuing."}),
+    ];
+    if rest.first().is_none_or(|m| m["role"] != "user") {
+        out.push(json!({"role": "user", "content": "Continue."}));
+    }
+    out.extend(rest);
+    out
+}
+
 /// Every tool call in a trace with its result: a trace saved in the middle of a run has a call
 /// with none, and the API refuses that.
 pub(crate) fn sound_trace(trace: &[Value]) -> Vec<Value> {
@@ -211,6 +259,9 @@ pub(crate) struct Step {
     pub details: Vec<Value>,
     /// The stream ended without finishing: the text is partial and any tool calls are dropped.
     pub cut: bool,
+    /// Tokens this step used (prompt + completion), if the server said.
+    pub tokens: Option<u64>,
+    pub cost: f64,
 }
 
 /// Streams one completion into `msg` (content and reasoning), calling `show` as it grows. Returns
@@ -223,6 +274,8 @@ pub(crate) async fn stream(body: &Value, msg: &mut Msg, stop: &impl Fn() -> bool
     let mut details: Vec<Value> = vec![];
     let mut got_any = false;
     let mut finished = false;
+    let mut tokens = None;
+    let mut cost = 0.0;
     'read: while let Some(chunk) = stream.next().await {
         if stop() { finished = true; break }
         let Ok(chunk) = chunk else { if !got_any { return Err("The connection dropped.".into()) } break };
@@ -235,6 +288,10 @@ pub(crate) async fn stream(body: &Value, msg: &mut Msg, stop: &impl Fn() -> bool
             if data == "[DONE]" { finished = true; break 'read }
             let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
             if v["choices"][0]["finish_reason"].is_string() { finished = true }
+            if v["usage"].is_object() {
+                tokens = Some(v["usage"]["prompt_tokens"].as_u64().unwrap_or(0) + v["usage"]["completion_tokens"].as_u64().unwrap_or(0));
+                cost = v["usage"]["cost"].as_f64().unwrap_or(0.0);
+            }
             if !v["error"].is_null() {
                 return Err(v["error"]["message"].as_str().or(v["error"].as_str()).unwrap_or("The model returned an error").to_string());
             }
@@ -263,7 +320,7 @@ pub(crate) async fn stream(body: &Value, msg: &mut Msg, stop: &impl Fn() -> bool
     if !finished {
         calls.clear();
     }
-    Ok(Step { tool_calls: calls, details, cut: !finished })
+    Ok(Step { tool_calls: calls, details, cut: !finished, tokens, cost })
 }
 
 /// Asks for the next answer and streams it into `live`, then appends it to the chat.
@@ -285,7 +342,7 @@ fn run(mut app: App) {
     app.live.set(Some(Msg { role: "assistant".into(), model: model.clone(), ..Default::default() }));
     js("const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }");
     bg(async move {
-        let mut body = json!({"model": model, "messages": wire(&app.conv.peek().messages, &model, false), "stream": true});
+        let mut body = json!({"model": model, "messages": api_history(&app.conv.peek(), &model, false), "stream": true});
         if web_search {
             body["web_search"] = json!(true);
         }
@@ -482,6 +539,7 @@ pub fn ChatView() -> Element {
                 if app.code.read().enabled {
                     div { class: "tools-line",
                         if capable {
+                            if tools_on && api::has_session() { LimitControl {} }
                             span { class: if tools_on { "tools-state on" } else { "tools-state" }, if tools_on { "Tools on" } else { "Tools off" } }
                             button { class: if tools_on { "tools-switch on" } else { "tools-switch" }, role: "switch", aria_label: "Tools",
                                 onclick: move |_| { let v = !app.settings.peek().tools; app.settings.write().tools = v; app.save_settings() }, span {} }
@@ -579,6 +637,10 @@ fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Elemen
                     RunView { r: r.clone() }
                 }
             }
+            if m.compacted { p { class: "compacted", "Compacted earlier work to save context" } }
+            if m.spent > 0.0 {
+                p { class: "spend", if live { "Spent {usd(m.spent)} of {usd(m.spend_base + crate::code::limit(&app))}" } else { "Spent {usd(m.spent)}" } }
+            }
             if !m.interrupted.is_empty() {
                 p { class: "interrupted", "Stopped early: {m.interrupted} Everything so far is kept." }
             }
@@ -607,7 +669,7 @@ fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Elemen
                     button { class: "bare", onclick: move |_| {
                         let u = app.conv.peek().messages.iter().take(i).rposition(|m| m.role == "user");
                         let Some(u) = u else { return };
-                        let q = { let mut c = app.conv.write(); let q = c.messages[u].clone(); c.messages.truncate(u); q };
+                        let q = { let mut c = app.conv.write(); let q = c.messages[u].clone(); c.messages.truncate(u); if c.compaction.as_ref().is_some_and(|k| k.through >= u) { c.compaction = None } q };
                         app.attach.set(q.images);
                         app.docs.set(q.files);
                         js(&format!("const c = document.getElementById('composer'); c.value = {:?}; c.dispatchEvent(new Event('input', {{bubbles: true}})); c.focus()", q.content));
@@ -616,6 +678,30 @@ fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Elemen
                     if !m.model.is_empty() { span { " · {app.model_name(&m.model)}" } }
                 }
             }
+        }
+    }
+}
+
+/// What one reply may spend, on the tools line: tap to change it.
+#[component]
+fn LimitControl() -> Element {
+    let mut app = use_context::<App>();
+    let mut editing = use_signal(|| false);
+    let limit = crate::code::limit(&app);
+    rsx! {
+        if *editing.read() {
+            input { class: "limit-input", r#type: "number", inputmode: "decimal", min: "0.01", step: "any", aria_label: "Spend limit per reply in dollars", value: "{limit}", autofocus: true,
+                onchange: move |e| {
+                    if let Ok(v) = e.value().parse::<f64>() && v > 0.0 && v.is_finite() {
+                        app.settings.write().spend_limit = Some(v);
+                        app.save_settings();
+                    }
+                    editing.set(false);
+                },
+                onblur: move |_| editing.set(false),
+            }
+        } else {
+            button { class: "limit", aria_label: "Spend limit per reply", onclick: move |_| editing.set(true), "Limit {usd(limit)}" }
         }
     }
 }
