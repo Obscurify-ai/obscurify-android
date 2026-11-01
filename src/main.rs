@@ -106,15 +106,12 @@ struct Settings {
     /// Code Mode's tools, on unless switched off (settings saved before this have no such field).
     #[serde(default = "yes")]
     tools: bool,
-    /// What one reply may spend; the server's default until it's changed.
-    #[serde(default)]
-    spend_limit: Option<f64>,
 }
 
 fn yes() -> bool { true }
 
 impl Default for Settings {
-    fn default() -> Self { Settings { model: FREE_MODEL.into(), web_search: true, favorites: vec![], tools: true, spend_limit: None } }
+    fn default() -> Self { Settings { model: FREE_MODEL.into(), web_search: true, favorites: vec![], tools: true } }
 }
 
 #[derive(Clone, PartialEq)]

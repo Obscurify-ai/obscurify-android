@@ -12,7 +12,7 @@ are stored only on the phone.
 - **Tools.** The assistant runs code on the phone, makes charts and pages, searches the web and uses paid tools billed to the balance. A switch above the message box shows whether they're on. Guests get them too, except paid tools.
 - **Chat as a guest**, with no account.
 - **A lost connection doesn't fail anything.** Tool calls and answers wait for up to 15 minutes and deliver when it's back. Paid calls carry a request id, so the server runs them once.
-- **Long-running agent.** A reply can take 100 steps and a run 30 minutes, and keeps going in the background with a notification. You set what one reply may spend ($5 by default); it stops there with Continue. Requests only ever append, which keeps the provider's prompt cache working, and a conversation near the model's context is compacted into a summary instead of having old results trimmed.
+- **Long-running agent.** A reply can take 100 steps and a run 30 minutes, and keeps going in the background with a notification. What it has spent shows as it goes. A lost connection is waited out for as long as it takes. A request that keeps failing goes back to the model. Requests only ever append, which keeps the provider's prompt cache working, and a conversation near the model's context is compacted into a summary instead of having old results trimmed.
 - **Nothing paid is thrown away.** A failed step retries by itself, then the answer stops, keeps its runs and tool results, and offers Continue; a new message carries them too, and they survive the app closing.
 - **Account number sign-in.**
   - Sign-up shows the number once.
@@ -86,7 +86,7 @@ cd e2e && npm i playwright
 BTC_RPC_PASSWORD=… node app.mjs   # sign-up, BTC voucher top-up, chat, web search, models, restart, new number, sign in
 node card.mjs                     # image picker and a vision model; Stripe test-card top-up
 ACCOUNT=… PLAN=casual node plans.mjs  # models the plan can use first, the rest under "Upgrade to use"
-ACCOUNT=… node agent.mjs             # Long runs, compaction, the spend limit, background work (scripted replies, through flaky-proxy.mjs)
+ACCOUNT=… node agent.mjs             # Long runs, compaction, errors back to the model, background work (scripted replies, through flaky-proxy.mjs)
 ACCOUNT=… node code.mjs              # Code Mode: Python, a chart, a paid tool, a page full screen, the sandbox sealed off
 ACCOUNT=… node parity.mjs            # guest chat and tools, Tools switch, provider filter, raw, edit, plan confirmation, delete account
 node flaky-proxy.mjs & ACCOUNT=… node outage.mjs  # lost connections wait and deliver; PAID=1 also loses a paid answer and checks it's charged once

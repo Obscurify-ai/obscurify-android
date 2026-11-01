@@ -136,8 +136,6 @@ h2.group { font-size: 13px; font-weight: 500; text-transform: uppercase; letter-
 .toggles.providers { flex-wrap: nowrap; overflow-x: auto; }
 .tools-line { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 0 6px 8px; font-size: 13px; }
 .tools-state { color: var(--m); }
-.limit { background: none; border: 1px solid var(--l); border-radius: 12px; color: var(--m); font-size: 13px; padding: 4px 10px; margin-right: auto; }
-.limit-input { width: 84px; background: none; border: 1px solid var(--l); border-radius: 12px; color: inherit; font-size: 13px; padding: 4px 10px; margin-right: auto; }
 .spend, .compacted { color: var(--m); font-size: 13px; margin: 4px 0; }
 .tools-state.on { color: var(--g); font-weight: 600; }
 .tools-switch { flex: none; width: 40px; height: 22px; padding: 2px; border: 1px solid var(--l); border-radius: 99px; background: #000; display: flex; justify-content: flex-start; }

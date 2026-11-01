@@ -33,13 +33,14 @@ const say = async (text) => {
 };
 const fresh = async () => { await page.locator('.bar .icon').last().click(); await sleep(300); };
 
-// 1. Your error, over and over: retries, then stops with everything kept.
+// 1. Your error, over and over: retries, goes back to the model, then stops with everything kept.
 await set(1, 99);
 await say(PROMPT);
 await idle();
 let reqs = await log();
-ok(reqs.length === 4, `a failed step retries twice by itself (${reqs.length} requests)`);
-ok(hasTool(reqs[3], '7006652'), 'the retries carry the tool result: nothing runs again');
+ok(reqs.length === 10, `a failed step retries, tells the model twice, then stops (${reqs.length} requests)`);
+ok(hasTool(reqs[9], '7006652'), 'the retries carry the tool result: nothing runs again');
+ok(reqs[4].messages.at(-1).content.includes('partial tool call received'), 'the model is told the error');
 const note = await page.locator('.interrupted').textContent();
 ok(note.includes('partial tool call received') && note.includes('kept'), 'it says what happened: ' + note);
 ok(await page.locator('.run').count() === 1, 'the run is still on screen');

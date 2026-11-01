@@ -1,0 +1,4 @@
+- A lost connection never ends an answer: it waits for as long as it takes and carries on
+- No spend limit: a reply runs on your balance, and what it has spent shows as it goes
+- Errors go back to the model to fix instead of ending the answer
+- Tool calls some models write out as text now run properly

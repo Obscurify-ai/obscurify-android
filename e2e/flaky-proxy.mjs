@@ -5,7 +5,7 @@
 //   GET /__log, /__tools                             the completion and tool request bodies so far
 //   POST /__script  [{...}, ...]                     canned replies for the next completions, in order:
 //     {code, usage: {prompt_tokens, completion_tokens, cost}} a run_code call; {text, usage} an answer;
-//     {error: "..."} a failure. No model is called, so these cost nothing.
+//     {error: "..."} a failure; {status: 502} a proxy's error page. No model is called, so these cost nothing.
 import http from 'node:http';
 import https from 'node:https';
 
@@ -19,6 +19,7 @@ let down = { tool: 0, chat: 0, until: 0 };
 let script = [];
 let scriptedCalls = 0;
 function scripted(res, r) {
+  if (r.status) { res.writeHead(r.status, { 'content-type': 'text/html' }); return res.end('<html>Bad Gateway</html>'); }
   res.writeHead(200, { 'content-type': 'text/event-stream' });
   const send = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
   if (r.error) { send({ error: { message: r.error } }); return res.end(); }

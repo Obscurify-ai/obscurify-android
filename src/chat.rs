@@ -47,9 +47,6 @@ pub struct Msg {
     /// What this answer has cost so far: the model's steps and the paid tools.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub spent: f64,
-    /// `spent` when the spend limit last started over: Continue past the limit grants another one.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub spend_base: f64,
     /// Model steps taken. Not the trace's length, which compaction shortens.
     #[serde(default, skip_serializing_if = "is_zero_steps")]
     pub steps: usize,
@@ -340,7 +337,7 @@ fn run(mut app: App) {
     let web_search = api::has_session() && app.settings.peek().web_search && !crate::code::capable(&app, &model);
     app.stop.set(false);
     app.live.set(Some(Msg { role: "assistant".into(), model: model.clone(), ..Default::default() }));
-    js("const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }");
+    js("const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }; window.android && android.working && android.working(true)");
     bg(async move {
         let mut body = json!({"model": model, "messages": api_history(&app.conv.peek(), &model, false), "stream": true});
         if web_search {
@@ -348,11 +345,10 @@ fn run(mut app: App) {
         }
         let mut msg = app.live.peek().clone().unwrap();
         // No connection: wait for it.
-        let started = store::now();
         let mut delay = 1000;
         let first = loop {
             match api::chat(&body).await {
-                Err(e) if e == api::OFFLINE && !*app.stop.peek() && store::now() - started < crate::code::WAIT_MS => {
+                Err(e) if e == api::OFFLINE && !*app.stop.peek() => {
                     app.waiting.set(true);
                     crate::code::wait_a_bit(app, &mut delay).await;
                 }
@@ -407,6 +403,7 @@ fn run(mut app: App) {
             app.conv.write().messages.push(msg);
         }
         app.live.set(None);
+        js("window.android && android.working && android.working(false)");
         save(app);
         app.refresh_balance();
     });
@@ -539,7 +536,6 @@ pub fn ChatView() -> Element {
                 if app.code.read().enabled {
                     div { class: "tools-line",
                         if capable {
-                            if tools_on && api::has_session() { LimitControl {} }
                             span { class: if tools_on { "tools-state on" } else { "tools-state" }, if tools_on { "Tools on" } else { "Tools off" } }
                             button { class: if tools_on { "tools-switch on" } else { "tools-switch" }, role: "switch", aria_label: "Tools",
                                 onclick: move |_| { let v = !app.settings.peek().tools; app.settings.write().tools = v; app.save_settings() }, span {} }
@@ -639,7 +635,7 @@ fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Elemen
             }
             if m.compacted { p { class: "compacted", "Compacted earlier work to save context" } }
             if m.spent > 0.0 {
-                p { class: "spend", if live { "Spent {usd(m.spent)} of {usd(m.spend_base + crate::code::limit(&app))}" } else { "Spent {usd(m.spent)}" } }
+                p { class: "spend", "Spent {usd(m.spent)}" }
             }
             if !m.interrupted.is_empty() {
                 p { class: "interrupted", "Stopped early: {m.interrupted} Everything so far is kept." }
@@ -678,30 +674,6 @@ fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Elemen
                     if !m.model.is_empty() { span { " · {app.model_name(&m.model)}" } }
                 }
             }
-        }
-    }
-}
-
-/// What one reply may spend, on the tools line: tap to change it.
-#[component]
-fn LimitControl() -> Element {
-    let mut app = use_context::<App>();
-    let mut editing = use_signal(|| false);
-    let limit = crate::code::limit(&app);
-    rsx! {
-        if *editing.read() {
-            input { class: "limit-input", r#type: "number", inputmode: "decimal", min: "0.01", step: "any", aria_label: "Spend limit per reply in dollars", value: "{limit}", autofocus: true,
-                onchange: move |e| {
-                    if let Ok(v) = e.value().parse::<f64>() && v > 0.0 && v.is_finite() {
-                        app.settings.write().spend_limit = Some(v);
-                        app.save_settings();
-                    }
-                    editing.set(false);
-                },
-                onblur: move |_| editing.set(false),
-            }
-        } else {
-            button { class: "limit", aria_label: "Spend limit per reply", onclick: move |_| editing.set(true), "Limit {usd(limit)}" }
         }
     }
 }

@@ -1,7 +1,7 @@
 //! Code Mode: the model gets one tool, `run_code`, and its Python or JavaScript runs on the phone
 //! in a sandbox WebView of its own (see MainActivity.kt), never in the app's WebView. Code reaches
 //! the outside only through `tools.*`, which comes back here: web search, and paid tools billed to
-//! the balance within the reply's spend limit. The server says what's on, the budgets and the system
+//! the balance. The server says what's on, the per-call cap and the system
 //! prompt (`GET /code_mode`), so the app and the web tell the model the same thing.
 //!
 //! A reply is an agent loop: stream a completion; if it asks to run code, run it, send the result
@@ -35,6 +35,10 @@ const TAIL_SHARE: f64 = 0.15;
 const DEFAULT_CONTEXT: u64 = 128_000;
 const MIN_SUMMARY_CHARS: usize = 200;
 const MAX_COMPACT_TRIES: u32 = 3;
+/// Times one reply tells the model its request failed, then stops and offers Continue.
+const MAX_FED_BACK: u32 = 2;
+/// Times one reply asks the model to redo a tool call it wrote out unreadably.
+const MAX_REPAIRS: u32 = 3;
 const SUMMARY_PROMPT: &str = "Summarize this conversation so the work can continue from your summary alone: everything above will be replaced by it. Reply with text only and do not call any tools. Keep all of the following: the user's goals, and their latest request quoted verbatim; the decisions made and why; what was tried and the results, including failures; exact values, IDs, URLs and file names; what paid tools returned; what Python state exists (variables, imports, functions); and what is left to do. If there is an earlier summary above, carry over everything in it that still matters.";
 
 /// The server's Code Mode settings for this account.
@@ -47,7 +51,6 @@ pub struct Config {
     pub web_search: bool,
     /// Tools can be looked up (guests can too; running a paid one takes an account).
     pub catalog: bool,
-    pub reply_budget: f64,
     pub per_call: f64,
     pub result_chars: usize,
     pub system_prompt: String,
@@ -64,7 +67,6 @@ pub async fn load(mut app: App) {
         paid_tools: v["paid_tools"] == true,
         web_search: v["web_search"] == true,
         catalog: v["tool_catalog"] == true,
-        reply_budget: v["reply_budget_usd"].as_f64().unwrap_or(0.0),
         per_call: v["per_call_usd"].as_f64().unwrap_or(0.0),
         result_chars: v["result_chars"].as_u64().unwrap_or(12_000) as usize,
         system_prompt: v["system_prompt"].as_str().unwrap_or("").to_string(),
@@ -154,27 +156,29 @@ async fn next(rx: &mut UnboundedReceiver<Value>, ms: u32) -> Option<Value> {
 }
 
 /// Starts the sandbox if it isn't running and waits for it to be ready.
-async fn ensure(rx: &mut UnboundedReceiver<Value>, base: &str) -> Result<(), String> {
+async fn ensure(rx: &mut UnboundedReceiver<Value>, base: &str, mut app: App, stop: &impl Fn() -> bool) -> Result<(), String> {
     if READY.load(Ordering::SeqCst) {
         return Ok(());
     }
     js(&format!("window.android && android.sandboxStart && android.sandboxStart({})", serde_json::to_string(base).unwrap_or_default()));
     // The sandbox's pages come from the server, so with no connection it keeps trying.
-    let until = crate::store::now() + WAIT_MS;
     let mut asked = crate::store::now();
-    while crate::store::now() < until {
+    while !stop() {
         if let Some(v) = next(rx, 1000).await
             && v["type"] == "ready"
         {
             READY.store(true, Ordering::SeqCst);
+            app.waiting.set(false);
             return Ok(());
         }
         if crate::store::now() - asked > 20_000 {
+            app.waiting.set(true);
             asked = crate::store::now();
             js(&format!("window.android && android.sandboxStart && android.sandboxStart({})", serde_json::to_string(base).unwrap_or_default()));
         }
     }
-    Err("The code sandbox didn't start. Check your connection and try again.".into())
+    app.waiting.set(false);
+    Err("Stopped by the user.".into())
 }
 
 /// The reply's spending and tools.
@@ -182,29 +186,48 @@ struct Turn {
     paid: bool,
     catalog: bool,
     web: bool,
-    /// Where the spend limit counts from. The limit itself is read live: raising it during a run counts.
-    base: f64,
     per_call: f64,
     spent: f64,
     result_chars: usize,
     app: App,
 }
 
-impl Turn {
-    fn budget(&self) -> f64 { self.base + limit(&self.app) }
-    fn over(&self) -> bool { self.spent > 0.0 && self.spent >= self.budget() }
+/// Where a tool call in DeepSeek's own markup starts: `<｜DSML｜invoke name="run_code">`.
+pub(crate) fn dsml_start(t: &str) -> Option<usize> {
+    let at = t.find("DSML")?;
+    t[..at].rfind('<').filter(|open| at - open <= 8)
 }
 
-/// What one reply may spend: the user's setting, or the server's default.
-pub fn limit(app: &App) -> f64 {
-    let server = app.code.peek().reply_budget;
-    app.settings.peek().spend_limit.unwrap_or(if server > 0.0 { server } else { 5.0 })
+/// The arguments of a tool call in that markup. Each parameter runs to its closing tag; code can
+/// have `</` in it, but not this bar.
+fn dsml_call(t: &str) -> Option<Value> {
+    let at = dsml_start(t)?;
+    let t = &t[at..];
+    if !t.contains("invoke name=\"run_code\"") {
+        return None;
+    }
+    let param = |name: &str| {
+        let rest = &t[t.find(&format!("parameter name=\"{name}\""))?..];
+        let body = &rest[rest.find('>')? + 1..];
+        let end = body.find("</\u{ff5c}").or_else(|| body.find("</|")).unwrap_or(body.len());
+        Some(body[..end].trim_matches('\n').to_string())
+    };
+    Some(json!({"language": param("language").unwrap_or_else(|| "python".into()), "code": param("code")?}))
+}
+
+/// Text that is a tool call, or an attempt at one, and not an answer.
+fn written_call(content: &str) -> bool {
+    let t = content.trim_start();
+    dsml_start(content).is_some() || t.starts_with("<function") || t.starts_with("<tool_call") || t.starts_with("<invoke")
 }
 
 /// Some models (Llama 3.3 among them) often write a tool call as text instead of making it:
 /// `<function=run_code>{"code": …}</function>`, `<function-run_code{…}}`, with no braces, or the bare JSON. Read
 /// as an answer it runs nothing and shows gibberish, so it becomes the call it meant to be.
 fn text_tool_call(content: &str, step: usize) -> Option<Value> {
+    if let Some(args) = dsml_call(content) {
+        return Some(json!({"id": format!("text_call_{step}"), "type": "function", "function": {"name": "run_code", "arguments": args.to_string()}}));
+    }
     let t = content.trim();
     if !(t.starts_with("<function") || t.starts_with("<tool_call") || t.starts_with('{')) {
         return None;
@@ -227,8 +250,9 @@ fn text_tool_call(content: &str, step: usize) -> Option<Value> {
     Some(json!({"id": format!("text_call_{step}"), "type": "function", "function": {"name": "run_code", "arguments": args.to_string()}}))
 }
 
-/// How long a request waits for the connection before the answer stops and offers Continue.
-pub const WAIT_MS: i64 = 15 * 60 * 1000;
+/// A lost connection is waited out for as long as it takes, until Stop. A rate limit isn't: it may
+/// be a plan's limit that lasts for hours, so after this long the answer stops and offers Continue.
+const RATE_WAIT_MS: i64 = 15 * 60 * 1000;
 
 /// Waits out a pause before trying again, without holding up Stop. Grows up to 15 seconds.
 pub async fn wait_a_bit(app: App, delay: &mut u32) {
@@ -244,7 +268,6 @@ pub async fn wait_a_bit(app: App, delay: &mut u32) {
 /// it: it waits and asks again until the answer comes. A paid call carries a request id, so the
 /// server runs it once however many times it's asked, and it's safe to ask again.
 async fn tool_post(mut app: App, path: &str, body: &Value, timeout: u64) -> Result<Value, String> {
-    let started = crate::store::now();
     let mut delay = 1000;
     loop {
         let r = if api::has_session() {
@@ -254,7 +277,7 @@ async fn tool_post(mut app: App, path: &str, body: &Value, timeout: u64) -> Resu
         };
         match r {
             // A paid call's 503 means the tool itself timed out and may have charged: not repeated.
-            Err(e) if api::transient(&e) && !(path == "/call" && api::status_of(&e).0 == 503) && !*app.stop.peek() && crate::store::now() - started < WAIT_MS => {
+            Err(e) if api::transient(&e) && !(path == "/call" && api::status_of(&e).0 == 503) && !*app.stop.peek() => {
                 app.waiting.set(true);
                 wait_a_bit(app, &mut delay).await;
             }
@@ -271,8 +294,6 @@ async fn tool(name: &str, args: &Value, t: &mut Turn) -> Result<Value, String> {
     match name {
         "budget" => Ok(json!({
             "spent_usd": t.spent,
-            "limit_usd": t.budget(),
-            "remaining_usd": if t.paid { (t.budget() - t.spent).max(0.0) } else { 0.0 },
             "per_call_max_usd": if t.paid { t.per_call } else { 0.0 },
         })),
         "web_search" if t.web => tool_post(t.app, "/web_search", &json!({"query": s("query")}), 120).await,
@@ -282,12 +303,8 @@ async fn tool(name: &str, args: &Value, t: &mut Turn) -> Result<Value, String> {
         "search" => tool_post(t.app, "/search", &json!({"query": s("query"), "limit": args["limit"].as_u64().unwrap_or(8)}), 60).await.map(|v| v["tools"].clone()),
         "inspect" => tool_post(t.app, "/inspect", &json!({"id": s("id")}), 60).await,
         "call" => {
-            let remaining = t.budget() - t.spent;
-            if remaining < 0.000_001 {
-                return Err(format!("The spend limit for this reply (${:.2}) is used up.", t.budget()));
-            }
             let asked = args["max_cost_usd"].as_f64().filter(|a| *a > 0.0).unwrap_or(t.per_call);
-            let max = t.per_call.min(remaining).min(asked);
+            let max = t.per_call.min(asked);
             let request_id = format!("{:016x}{:016x}", rand::random::<u64>(), rand::random::<u64>());
             let v = tool_post(t.app, "/call", &json!({"id": s("id"), "input": args["input"].clone(), "max_cost_usd": (max * 1e6).round() / 1e6, "request_id": request_id}), 170).await?;
             t.spent += v["cost_usd"].as_f64().unwrap_or(0.0);
@@ -313,7 +330,7 @@ async fn execute(rx: &mut UnboundedReceiver<Value>, msg: &mut Msg, t: &mut Turn,
         let r = msg.runs.last().unwrap();
         (r.language.clone(), r.code.clone())
     };
-    if let Err(e) = ensure(rx, base).await {
+    if let Err(e) = ensure(rx, base, t.app, &stop).await {
         let r = msg.runs.last_mut().unwrap();
         r.done = true;
         r.error = e.clone();
@@ -443,10 +460,6 @@ pub fn resume(mut app: App) {
     prev.reasoning.clear();
     prev.interrupted.clear();
     prev.model = model;
-    // Past the limit, Continue is the go-ahead for another limit's worth.
-    if prev.spent > 0.0 && prev.spent >= prev.spend_base + limit(&app) {
-        prev.spend_base = prev.spent;
-    }
     turn(app, Some(prev));
 }
 
@@ -512,7 +525,6 @@ async fn compact(mut app: App, cfg: &Config, model: &str, context: u64, shrink: 
     let mut messages = if shrink { reduced(&sent) } else { sent };
     messages.push(json!({"role": "user", "content": SUMMARY_PROMPT}));
     let body = json!({"model": model, "messages": messages, "stream": true, "stream_options": {"include_usage": true}, "tools": [cfg.run_code_tool]});
-    let started = crate::store::now();
     let mut delay = 1000;
     let mut retries = 0;
     let summary = loop {
@@ -530,7 +542,7 @@ async fn compact(mut app: App, cfg: &Config, model: &str, context: u64, shrink: 
             other => {
                 let e = other.err().unwrap_or_else(|| "The connection dropped.".into());
                 if stop() { app.waiting.set(false); return false }
-                if (e == api::OFFLINE || e.contains("connection dropped")) && crate::store::now() - started < WAIT_MS {
+                if e == api::OFFLINE || e.contains("connection dropped") {
                     app.waiting.set(true);
                     wait_a_bit(app, &mut delay).await;
                     continue;
@@ -592,7 +604,6 @@ pub fn turn(mut app: App, from: Option<Msg>) {
             paid: cfg.paid_tools,
             catalog: cfg.catalog,
             web: cfg.web_search,
-            base: msg.spend_base,
             per_call: cfg.per_call,
             spent: if msg.spent > 0.0 { msg.spent } else { msg.runs.iter().map(|r| r.cost).sum() },
             result_chars: cfg.result_chars,
@@ -606,7 +617,10 @@ pub fn turn(mut app: App, from: Option<Msg>) {
         let mut show = move |m: &Msg| {
             if crate::store::now() - drawn > 60 {
                 drawn = crate::store::now();
-                app.live.set(Some(m.clone()));
+                let mut m = m.clone();
+                // A tool call in the making isn't for reading.
+                if let Some(at) = dsml_start(&m.content) { m.content.truncate(at) }
+                app.live.set(Some(m));
             }
         };
         let stop = move || *app.stop.peek();
@@ -620,12 +634,11 @@ pub fn turn(mut app: App, from: Option<Msg>) {
         let mut compact_tries = 0u32;
         let mut overflowed = false;
 
-        for step in done_steps..MAX_STEPS {
+        let mut fed_back = 0u32;
+        let mut repairs = 0u32;
+
+        'steps: for step in done_steps..MAX_STEPS {
             if stop() {
-                break;
-            }
-            if t.over() {
-                failure = Some(format!("Spend limit of {} reached.", crate::usd(limit(&app))));
                 break;
             }
             let all = |h: &[Value], tr: &[Value]| h.iter().chain(tr.iter()).cloned().collect::<Vec<_>>();
@@ -639,8 +652,8 @@ pub fn turn(mut app: App, from: Option<Msg>) {
                 } else {
                     compact_tries += 1;
                 }
-                if t.over() || stop() {
-                    continue;
+                if stop() {
+                    break;
                 }
             }
             let mut body = json!({"model": model, "messages": all(&history, &trace), "stream": true, "stream_options": {"include_usage": true}, "tools": [cfg.run_code_tool]});
@@ -652,7 +665,8 @@ pub fn turn(mut app: App, from: Option<Msg>) {
                 msg.content.clear();
                 let out = chat::stream(&body, &mut msg, &stop, &mut show).await.map(|mut s| {
                     if s.tool_calls.is_empty() && let Some(c) = text_tool_call(&msg.content, step) {
-                        msg.content.clear();
+                        let words = dsml_start(&msg.content).unwrap_or(0);
+                        msg.content.truncate(words);
                         s.tool_calls.push(c);
                     }
                     s
@@ -678,10 +692,12 @@ pub fn turn(mut app: App, from: Option<Msg>) {
                             continue;
                         }
                     }
-                    // No connection: wait for it for as long as it takes, up to WAIT_MS.
+                    // No connection: wait for it for as long as it takes. Nothing here gives up on its own.
                     let lost = e == api::OFFLINE || e.contains("connection dropped");
+                    let lower = e.to_lowercase();
+                    let limited = lower.contains("rate limit") || lower.contains("too many requests");
                     let since = *wait_since.get_or_insert_with(crate::store::now);
-                    if lost && !stop() && crate::store::now() - since < WAIT_MS {
+                    if (lost || limited && crate::store::now() - since < RATE_WAIT_MS) && !stop() {
                         app.waiting.set(true);
                         wait_a_bit(app, &mut delay).await;
                         continue;
@@ -693,6 +709,15 @@ pub fn turn(mut app: App, from: Option<Msg>) {
                         crate::sleep(1500 * retries).await;
                         continue;
                     }
+                    // Still failing: the model hears about it and can do something different.
+                    if !lost && !limited && !trace.is_empty() && fed_back < MAX_FED_BACK && worth_retrying(&e) && !stop() {
+                        fed_back += 1;
+                        retries = 0;
+                        trace.push(json!({"role": "user", "content": format!("The last request to the model failed with this error:\n\n{e}\n\nIf something you sent caused it, change that, and carry on.")}));
+                        body["messages"] = json!(all(&history, &trace));
+                        checkpoint(app, &msg, &trace);
+                        continue;
+                    }
                     failure = Some(e);
                     break vec![];
                 }
@@ -701,6 +726,16 @@ pub fn turn(mut app: App, from: Option<Msg>) {
                 delay = 1000;
                 let s = out.unwrap();
                 used = s.tokens;
+                // A tool call it wrote out but nobody can read: back to the model to make it properly.
+                if s.tool_calls.is_empty() && written_call(&msg.content) && repairs < MAX_REPAIRS && step + 1 < MAX_STEPS && !stop() {
+                    repairs += 1;
+                    trace.push(json!({"role": "assistant", "content": msg.content}));
+                    trace.push(json!({"role": "user", "content": "That tool call was written out as text, so it did not run. Call the run_code tool itself, with JSON arguments {\"language\": \"python\" | \"javascript\", \"code\": \"...\"}."}));
+                    msg.content.clear();
+                    msg.steps = step + 1;
+                    checkpoint(app, &msg, &trace);
+                    continue 'steps;
+                }
                 if s.tool_calls.is_empty() {
                     msg.details = s.details;
                     break vec![];

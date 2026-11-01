@@ -87,7 +87,8 @@ fn error_text(status: u16, v: &Value, body: &str) -> String {
     let msg = v["error"]["message"].as_str().or(v["error"].as_str()).or(v["message"].as_str());
     match msg {
         Some(m) => m.to_string(),
-        None if status == 0 => OFFLINE.into(),
+        // No answer, or a proxy's error page because the server is restarting.
+        None if matches!(status, 0 | 502 | 503 | 504) => OFFLINE.into(),
         None => format!("Error {status}: {}", &body[..body.len().min(160)]),
     }
 }

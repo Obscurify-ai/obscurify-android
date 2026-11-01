@@ -1,7 +1,8 @@
 // The agent runtime. With flaky-proxy.mjs running (see there), model replies scripted so it's free:
 //   ACCOUNT=<funded number> node e2e/agent.mjs
 // Long runs; every request a byte prefix of the next; compaction at the threshold and on overflow,
-// through a kill, Continue and a new message; Edit drops it; the spend limit; a run past the old 180s
+// through a kill, Continue and a new message; Edit drops it; no spend limit; DSML tool calls; errors
+// back to the model; a run past the old 180s
 // with the app in the background, delivering a notification.
 import { launch, ok, sleep, adb, shot, PKG } from './lib.mjs';
 
@@ -149,37 +150,65 @@ ok(Math.max(...toolIn(reqs[1])) > 8000 && Math.max(...toolIn(reqs[2])) <= 1600, 
 ok(summaryOf(reqs[3]).includes('SUMMARY-THREE'), 'and the retry sends the summary');
 ok(await page.locator('.interrupted').count() === 0 && (await page.locator('.msg').last().textContent()).includes('Recovered'), 'and the answer arrives');
 
-// 9. The spend limit: set it, stop at it, Continue grants another.
+// 9. No spend limit: nothing to set, the spend just adds up and never stops a reply.
 await fresh();
-await page.locator('.limit').click();
-await page.locator('.limit-input').fill('0.05');
-await page.locator('.limit-input').blur();
-await sleep(400);
-ok((await page.locator('.limit').textContent()).includes('0.05'), 'the limit can be set');
+ok(await page.locator('.limit').count() === 0, 'there is no limit control');
 await reset();
-await script([run(1, { cost: 0.03 }), run(2, { cost: 0.03 }), run(3, { cost: 0.03 }), { text: 'Under the new limit.', usage: { cost: 0.01 } }]);
+await script([run(1, { cost: 3 }), run(2, { cost: 3 }), run(3, { cost: 3 }), { text: 'Spent freely.', usage: { cost: 1 } }]);
 await say('Spend.');
 await idle();
 reqs = await log();
-ok(reqs.length === 2, `it stops at the limit (${reqs.length} requests)`);
-const stopped = await page.locator('.interrupted').textContent();
-ok(stopped.includes('Spend limit of $0.05 reached'), 'it says why: ' + stopped);
-ok((await page.locator('.spend').last().textContent()).includes('$0.06'), 'it shows the spend');
-shot('agent-limit');
-await page.getByRole('button', { name: 'Continue' }).click();
-await page.waitForSelector('.send.stop', { timeout: 10000 }).catch(() => {});
+ok(reqs.length === 4, `spending past the old $5 doesn't stop it (${reqs.length} requests)`);
+ok(await page.locator('.interrupted').count() === 0 && (await page.locator('.msg').last().textContent()).includes('Spent freely'), 'it finishes');
+ok((await page.locator('.spend').last().textContent()).trim() === 'Spent $10.00', 'it shows what was spent');
+shot('agent-spent');
+
+// 9b. DeepSeek's own markup for a tool call runs as the call it meant, with the words before it kept.
+const dsml = (code) => `Checking.\n<\uff5cDSML\uff5cfunction_calls>\n<\uff5cDSML\uff5cinvoke name="run_code">\n<\uff5cDSML\uff5cparameter name="code" string="true">${code}</\uff5cDSML\uff5cparameter>\n<\uff5cDSML\uff5cparameter name="language" string="true">python</\uff5cDSML\uff5cparameter>\n</\uff5cDSML\uff5cinvoke>\n</\uff5cDSML\uff5cfunction_calls>`;
+await fresh();
+await reset();
+await script([{ text: dsml('print("<b>", 6*7)') }, { text: 'It is 42.' }]);
+await say('Use markup.');
 await idle();
 reqs = await log();
-ok(reqs.length === 4, `Continue grants another limit's worth (${reqs.length})`);
-ok((await page.locator('.msg').last().textContent()).includes('Under the new limit'), 'and it finishes');
-ok((await page.locator('.spend').last().textContent()).includes('$0.10'), 'the spend adds up across it');
-({ page } = await launch(false));
-await page.waitForSelector('.limit', { timeout: 30000 });
-ok((await page.locator('.limit').textContent()).includes('0.05'), 'the limit persists');
-await page.locator('.limit').click();
-await page.locator('.limit-input').fill('5');
-await page.locator('.limit-input').blur();
-await sleep(300);
+const called = reqs[1].messages.at(-2);
+ok(JSON.parse(called.tool_calls[0].function.arguments).code === 'print("<b>", 6*7)', 'a DSML call becomes a real call');
+ok(called.content === 'Checking.\n', 'the words before it stay');
+ok(String(reqs[1].messages.at(-1).content).includes('<b> 42'), 'and it really ran');
+let screen = await page.locator('.msg').last().textContent();
+ok(!screen.includes('DSML') && screen.includes('It is 42'), 'no markup on screen');
+
+// 9c. A tool call nobody can read goes back to the model to redo.
+await fresh();
+await reset();
+await script([{ text: '<\uff5cDSML\uff5cfunction_calls>garbled' }, { text: 'Now properly.' }]);
+await say('Garble it.');
+await idle();
+reqs = await log();
+ok(reqs.length === 2 && String(reqs[1].messages.at(-1).content).includes('written out as text'), 'an unreadable call goes back to the model');
+screen = await page.locator('.msg').last().textContent();
+ok(!screen.includes('DSML') && screen.includes('Now properly'), 'and the screen shows only the answer');
+
+// 9d. A request that keeps failing goes back to the model instead of ending the reply.
+await fresh();
+await reset();
+const bad = { error: 'Invalid tool schema in request' };
+await script([run(1), bad, bad, bad, { text: 'Adjusted and done.' }]);
+await say('Fail then fix.');
+await idle();
+reqs = await log();
+ok(reqs.length === 5, `it retries, then tells the model (${reqs.length} requests)`);
+ok(String(reqs[4].messages.at(-1).content).includes('Invalid tool schema'), 'the model sees the error');
+ok(await page.locator('.interrupted').count() === 0 && (await page.locator('.msg').last().textContent()).includes('Adjusted and done'), 'and the reply goes on');
+
+// 9e. A proxy's error page while the server restarts is a wait, not a failure.
+await fresh();
+await reset();
+await script([run(1), { status: 502 }, { status: 503 }, { status: 502 }, { status: 504 }, { text: 'After the restart.' }]);
+await say('Restart.');
+await idle();
+reqs = await log();
+ok(reqs.length === 6 && await page.locator('.interrupted').count() === 0, `it waits out the restart (${reqs.length} requests)`);
 
 // 10. Killed mid-run after a compaction: comes back, Continue goes on from the summary.
 await fresh();
@@ -213,14 +242,24 @@ await say('Long run.');
 await sleep(4000);
 adb('shell', 'input', 'keyevent', 'KEYCODE_HOME');
 await sleep(3000);
-const during = adb('shell', 'dumpsys', 'notification', '--noredact');
-ok(during.includes('Obscurify is working'), 'a notification says it is working');
+// Screen off and deep Doze: what a phone in a pocket does, and where Android cuts off apps' network.
+adb('shell', 'input', 'keyevent', 'KEYCODE_SLEEP');
+adb('shell', 'dumpsys', 'battery', 'unplug');
+adb('shell', 'dumpsys', 'deviceidle', 'force-idle');
+// Android holds this notification back for about 10 seconds, so a quick reply never shows it.
+let during = false;
+for (let i = 0; i < 15 && !during; i++) { await sleep(1000); during = adb('shell', 'dumpsys', 'notification', '--noredact').includes('Obscurify is working'); }
+ok(during, 'a notification says it is working');
 const until = Date.now() + 270000;
 let finished = false;
 while (Date.now() < until && !finished) {
   await sleep(5000);
   finished = (await log()).length === 3 && adb('shell', 'dumpsys', 'notification', '--noredact').includes('Your answer is ready');
 }
+ok(adb('shell', 'dumpsys', 'deviceidle', 'get', 'deep') === 'IDLE', 'the phone was in deep Doze the whole time');
+adb('shell', 'dumpsys', 'deviceidle', 'unforce');
+adb('shell', 'dumpsys', 'battery', 'reset');
+adb('shell', 'input', 'keyevent', 'KEYCODE_WAKEUP');
 ok(finished, 'the 200 second run finished in the background and the next steps ran');
 reqs = await log();
 ok(JSON.stringify(reqs[1].messages).includes('woke'), 'the run outlived the old limit, with its output');
@@ -229,6 +268,30 @@ ok(!adb('shell', 'dumpsys', 'notification', '--noredact').includes('Obscurify is
 adb('shell', 'am', 'start', '-n', `${PKG}/dev.dioxus.main.MainActivity`);
 await sleep(2000);
 ok((await page.locator('.msg').last().textContent()).includes('Done in the background'), 'the answer is there on return');
+
+// 11b. Plain chat keeps going in the background too. No crash on a reply that ends at once.
+await page.locator('.tools-switch').click();
+await fresh();
+await reset();
+await script([{ text: 'Plain and quick.' }]);
+await say('Plain.');
+await idle();
+ok((await page.locator('.msg').last().textContent()).includes('Plain and quick'), 'a quick plain reply starts and stops the service cleanly');
+await page.locator('.tools-switch').click();
+
+// 12. OUTAGE_MS=960000: longer than the old 15 minute cap, and it still delivers by itself.
+if (process.env.OUTAGE_MS) {
+  await fresh();
+  await reset();
+  await script([run(1), { text: 'Waited it out.' }]);
+  await ctl(`__set?chatdown=${process.env.OUTAGE_MS}`);
+  const t0 = Date.now();
+  await say('Long outage.');
+  await page.waitForSelector('.waiting', { timeout: 60000 });
+  await page.waitForFunction(() => !document.querySelector('.send.stop'), null, { timeout: +process.env.OUTAGE_MS + 120000 });
+  ok(Date.now() - t0 >= +process.env.OUTAGE_MS, 'it was down the whole time');
+  ok(await page.locator('.interrupted').count() === 0 && (await page.locator('.msg').last().textContent()).includes('Waited it out'), 'and it delivered by itself, no Continue');
+}
 
 console.log('agent runtime ok');
 process.exit(0);
