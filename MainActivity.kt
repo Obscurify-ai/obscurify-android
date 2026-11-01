@@ -20,6 +20,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebMessage
 import android.webkit.WebMessagePort
@@ -63,6 +64,10 @@ class MainActivity : WryActivity() {
             // https links, and bitcoin:/lightning:/monero: payment URIs for a wallet app.
             @JavascriptInterface fun open(url: String) {
                 try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } catch (_: Exception) {}
+            }
+            // A long run shouldn't stop because the screen timed out.
+            @JavascriptInterface fun keepAwake(on: Boolean) {
+                runOnUiThread { if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
             }
             @JavascriptInterface fun copy(text: String) {
                 getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Obscurify", text))

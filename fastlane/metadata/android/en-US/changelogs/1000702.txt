@@ -1,0 +1,1 @@
+A failure no longer throws away work. Tool results and paid calls are kept: failed steps retry by themselves, then Continue picks up where it stopped, and a new message keeps it all too. Retry reuses tool results instead of paying again. Answers survive the app closing. Long-press text to copy it again. The screen stays on during a run.

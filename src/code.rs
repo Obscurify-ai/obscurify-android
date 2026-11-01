@@ -19,6 +19,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAX_STEPS: usize = 10;
+/// Times one failed step is asked again before the answer stops and offers Continue.
+const MAX_RETRIES: u32 = 2;
 const RUN_TIMEOUT_MS: u32 = 180_000;
 const MAX_TOOL_CALLS: usize = 40;
 
@@ -357,28 +359,65 @@ fn clip_middle(s: &str, max: usize) -> String {
 }
 
 /// One Code Mode reply, streamed into `live`, then appended to the chat.
-pub fn turn(mut app: App) {
+/// Picks up the last answer from what it got done, instead of asking again from the start.
+pub fn resume(mut app: App) {
+    if app.live.peek().is_some() {
+        return;
+    }
+    let model = app.settings.peek().model.clone();
+    if !active(&app, &model) {
+        return app.say("Turn Tools on and pick a model with tools to continue.");
+    }
+    let Some(mut prev) = app.conv.write().messages.pop() else { return };
+    prev.content.clear();
+    prev.reasoning.clear();
+    prev.interrupted.clear();
+    prev.model = model;
+    turn(app, Some(prev));
+}
+
+/// Retries a step that failed, unless asking again can't help.
+fn worth_retrying(e: &str) -> bool {
+    let e = e.to_lowercase();
+    !["balance", "credit", "insufficient", "rate limit", "not support", "needs", "not available", "too long", "context"].iter().any(|w| e.contains(w))
+}
+
+/// On disk after every step: a killed app comes back to this, with Continue.
+fn checkpoint(app: App, msg: &Msg, trace: &[Value]) {
+    let mut c = app.conv.peek().clone();
+    let mut m = msg.clone();
+    m.trace = trace.to_vec();
+    m.interrupted = "The app closed before this finished.".into();
+    m.runs.iter_mut().filter(|r| !r.done).for_each(|r| { r.done = true; r.status = "Cut off".into() });
+    c.messages.push(m);
+    crate::store::save(&format!("chat-{}.json", c.id), &c);
+}
+
+/// One answer: the model and its runs, step by step. `from` is an earlier attempt to continue.
+pub fn turn(mut app: App, from: Option<Msg>) {
     let model = app.settings.peek().model.clone();
     let cfg = app.code.peek().clone();
     app.stop.set(false);
-    app.live.set(Some(Msg { role: "assistant".into(), model: model.clone(), ..Default::default() }));
-    js("const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }");
+    let mut first = from.unwrap_or_else(|| Msg { role: "assistant".into(), model: model.clone(), ..Default::default() });
+    first.runs.iter_mut().filter(|r| !r.done).for_each(|r| { r.done = true; r.status = "Cut off".into() });
+    let mut trace: Vec<Value> = chat::sound_trace(&std::mem::take(&mut first.trace));
+    app.live.set(Some(first));
+    js("const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }; window.android && android.keepAwake && android.keepAwake(true)");
     bg(async move {
         let (tx, mut rx) = unbounded();
         *EVENTS.lock().unwrap() = Some(tx);
+        let mut msg = app.live.peek().clone().unwrap();
         let mut t = Turn {
             paid: cfg.paid_tools,
             catalog: cfg.catalog,
             web: cfg.web_search,
             budget: cfg.reply_budget,
             per_call: cfg.per_call.min(cfg.reply_budget),
-            spent: 0.0,
+            spent: msg.runs.iter().map(|r| r.cost).sum(),
             result_chars: cfg.result_chars,
         };
         let mut history = vec![json!({"role": "system", "content": cfg.system_prompt})];
         history.extend(chat::wire(&app.conv.peek().messages, &model, true));
-        let mut trace: Vec<Value> = vec![];
-        let mut msg = app.live.peek().clone().unwrap();
         let mut drawn = 0i64;
         let mut show = move |m: &Msg| {
             if crate::store::now() - drawn > 60 {
@@ -387,32 +426,57 @@ pub fn turn(mut app: App) {
             }
         };
         let stop = move || *app.stop.peek();
+        let mut failure: Option<String> = None;
+        let mut retries = 0u32;
+        let done_steps = trace.iter().filter(|m| m["tool_calls"].is_array()).count().min(MAX_STEPS - 1);
 
-        for step in 0..MAX_STEPS {
+        for step in done_steps..MAX_STEPS {
             let mut body = json!({"model": model, "messages": history.iter().chain(trace.iter()).collect::<Vec<_>>(), "stream": true, "tools": [cfg.run_code_tool]});
             if step == MAX_STEPS - 1 {
                 body["tool_choice"] = json!("none");
             }
-            msg.reasoning.clear();
-            let step_out = chat::stream(&body, &mut msg, &stop, &mut show).await.map(|mut s| {
-                if s.tool_calls.is_empty() && let Some(c) = text_tool_call(&msg.content, step) {
-                    msg.content.clear();
-                    s.tool_calls.push(c);
-                }
-                s
-            });
-            let calls = match step_out {
-                Err(e) => { msg.error = true; msg.content = e; break }
-                Ok(s) if s.tool_calls.is_empty() => { msg.details = s.details; break }
-                Ok(s) => {
-                    let mut turn_msg = json!({"role": "assistant", "content": if msg.content.is_empty() { Value::Null } else { json!(msg.content) }, "tool_calls": s.tool_calls});
-                    if !s.details.is_empty() {
-                        turn_msg["reasoning_details"] = json!(s.details);
+            let calls = loop {
+                msg.reasoning.clear();
+                msg.content.clear();
+                let out = chat::stream(&body, &mut msg, &stop, &mut show).await.map(|mut s| {
+                    if s.tool_calls.is_empty() && let Some(c) = text_tool_call(&msg.content, step) {
+                        msg.content.clear();
+                        s.tool_calls.push(c);
                     }
-                    trace.push(turn_msg);
-                    s.tool_calls
+                    s
+                });
+                let problem = match &out {
+                    Err(e) => Some(e.clone()),
+                    Ok(s) if s.cut => Some("The connection dropped.".to_string()),
+                    Ok(_) => None,
+                };
+                if let Some(e) = problem {
+                    // The tool results are safe in `trace`: only this one step is asked again.
+                    if retries < MAX_RETRIES && worth_retrying(&e) && !stop() {
+                        retries += 1;
+                        crate::sleep(1500 * retries).await;
+                        continue;
+                    }
+                    failure = Some(e);
+                    break vec![];
                 }
+                let s = out.unwrap();
+                if s.tool_calls.is_empty() {
+                    msg.details = s.details;
+                    break vec![];
+                }
+                let mut turn_msg = json!({"role": "assistant", "content": if msg.content.is_empty() { Value::Null } else { json!(msg.content) }, "tool_calls": s.tool_calls});
+                if !s.details.is_empty() {
+                    turn_msg["reasoning_details"] = json!(s.details);
+                }
+                trace.push(turn_msg);
+                break s.tool_calls;
             };
+            if calls.is_empty() {
+                break;
+            }
+            retries = 0;
+            checkpoint(app, &msg, &trace);
             let mut intro = std::mem::take(&mut msg.content);
             for call in calls {
                 let id = call["id"].clone();
@@ -435,21 +499,30 @@ pub fn turn(mut app: App) {
                 };
                 trace.push(json!({"role": "tool", "tool_call_id": id, "content": result}));
                 app.live.set(Some(msg.clone()));
+                checkpoint(app, &msg, &trace);
             }
             if stop() {
                 break;
             }
         }
         *EVENTS.lock().unwrap() = None;
-        if msg.content.is_empty() && msg.runs.is_empty() && !msg.error && !stop() {
+        if let Some(e) = failure {
+            if msg.content.is_empty() && msg.runs.is_empty() && trace.is_empty() {
+                msg.error = true;
+                msg.content = e;
+            } else {
+                msg.interrupted = e;
+            }
+        } else if msg.content.is_empty() && msg.runs.is_empty() && !stop() {
             msg.error = true;
             msg.content = "No answer came back. Try again or pick another model.".into();
         }
         msg.trace = trace;
-        if !msg.content.is_empty() || !msg.runs.is_empty() {
+        if !msg.content.is_empty() || !msg.runs.is_empty() || !msg.interrupted.is_empty() {
             app.conv.write().messages.push(msg);
         }
         app.live.set(None);
+        js("window.android && android.keepAwake && android.keepAwake(false)");
         chat::save_chat(app);
         app.refresh_balance();
     });

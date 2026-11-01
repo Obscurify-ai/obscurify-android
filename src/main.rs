@@ -32,6 +32,9 @@ window.obsBack = () => { const open = !!document.querySelector('[data-back]'); i
 window.obsOnline = () => dioxus.send({online: true});
 // Code Mode: messages from the sandbox WebView, relayed by MainActivity.
 window.obsSandbox = (s) => dioxus.send({sandbox: s});
+// Dioxus cancels this event in release builds, which on Android also takes away the Copy toolbar
+// when text is selected.
+window.addEventListener('contextmenu', e => e.stopImmediatePropagation(), true);
 document.addEventListener('visibilitychange', () => dioxus.send({visible: !document.hidden}));
 // Photos are shrunk to 1600 px JPEGs before they're attached: phone photos are far over the API's limit.
 async function shrink(f) {

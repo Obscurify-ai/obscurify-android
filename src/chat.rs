@@ -35,6 +35,10 @@ pub struct Msg {
     pub model: String,
     #[serde(default)]
     pub error: bool,
+    /// Why this answer stopped short. What it got done (text, runs, tool results) is kept, stays in
+    /// the conversation, and Continue picks up from it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub interrupted: String,
     /// Code Mode: the code the model ran for this answer, and the tool turns to replay.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runs: Vec<crate::code::Run>,
@@ -158,12 +162,13 @@ pub(crate) fn wire(msgs: &[Msg], model: &str, tools: bool) -> Vec<Value> {
         }
         let answer = split_think(&m.content).1.trim().to_string();
         if !m.trace.is_empty() && tools {
-            let mut out: Vec<Value> = m.trace.iter().map(|t| {
-                let mut t = t.clone();
+            let mut out: Vec<Value> = sound_trace(&m.trace).into_iter().map(|mut t| {
                 if m.model != model && let Some(o) = t.as_object_mut() { o.remove("reasoning_details"); }
                 t
             }).collect();
-            out.push(json!({"role": "assistant", "content": answer}));
+            if !answer.is_empty() {
+                out.push(json!({"role": "assistant", "content": answer}));
+            }
             return out;
         }
         let mut text = String::new();
@@ -181,10 +186,31 @@ pub(crate) fn wire(msgs: &[Msg], model: &str, tools: bool) -> Vec<Value> {
     }).collect()
 }
 
+/// Every tool call in a trace with its result: a trace saved in the middle of a run has a call
+/// with none, and the API refuses that.
+pub(crate) fn sound_trace(trace: &[Value]) -> Vec<Value> {
+    let mut out: Vec<Value> = vec![];
+    let mut open: Vec<Value> = vec![];
+    for t in trace {
+        if t["role"] == "tool" {
+            let id = t["tool_call_id"].clone();
+            open.retain(|o| *o != id);
+        } else {
+            out.extend(open.drain(..).map(|id| json!({"role": "tool", "tool_call_id": id, "content": "This run was cut off before it finished. Its result is unknown."})));
+            open = t["tool_calls"].as_array().into_iter().flatten().map(|c| c["id"].clone()).collect();
+        }
+        out.push(t.clone());
+    }
+    out.extend(open.drain(..).map(|id| json!({"role": "tool", "tool_call_id": id, "content": "This run was cut off before it finished. Its result is unknown."})));
+    out
+}
+
 /// What one streamed completion asked for besides its text.
 pub(crate) struct Step {
     pub tool_calls: Vec<Value>,
     pub details: Vec<Value>,
+    /// The stream ended without finishing: the text is partial and any tool calls are dropped.
+    pub cut: bool,
 }
 
 /// Streams one completion into `msg` (content and reasoning), calling `show` as it grows. Returns
@@ -196,8 +222,9 @@ pub(crate) async fn stream(body: &Value, msg: &mut Msg, stop: &impl Fn() -> bool
     let mut calls: Vec<Value> = vec![];
     let mut details: Vec<Value> = vec![];
     let mut got_any = false;
+    let mut finished = false;
     'read: while let Some(chunk) = stream.next().await {
-        if stop() { break }
+        if stop() { finished = true; break }
         let Ok(chunk) = chunk else { if !got_any { return Err("The connection dropped.".into()) } break };
         buf.extend_from_slice(&chunk);
         while let Some(nl) = buf.iter().position(|b| *b == b'\n') {
@@ -205,8 +232,9 @@ pub(crate) async fn stream(body: &Value, msg: &mut Msg, stop: &impl Fn() -> bool
             let line = String::from_utf8_lossy(&line);
             let Some(data) = line.trim().strip_prefix("data:") else { continue };
             let data = data.trim();
-            if data == "[DONE]" { break 'read }
+            if data == "[DONE]" { finished = true; break 'read }
             let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
+            if v["choices"][0]["finish_reason"].is_string() { finished = true }
             if !v["error"].is_null() {
                 return Err(v["error"]["message"].as_str().or(v["error"].as_str()).unwrap_or("The model returned an error").to_string());
             }
@@ -232,7 +260,10 @@ pub(crate) async fn stream(body: &Value, msg: &mut Msg, stop: &impl Fn() -> bool
     for (i, c) in calls.iter_mut().enumerate() {
         if c["id"].as_str().unwrap_or("").is_empty() { c["id"] = json!(format!("call_{}_{i}", store::now())) }
     }
-    Ok(Step { tool_calls: calls, details })
+    if !finished {
+        calls.clear();
+    }
+    Ok(Step { tool_calls: calls, details, cut: !finished })
 }
 
 /// Asks for the next answer and streams it into `live`, then appends it to the chat.
@@ -246,7 +277,7 @@ fn run(mut app: App) {
     }
     let model = app.settings.peek().model.clone();
     if crate::code::active(&app, &model) {
-        return crate::code::turn(app);
+        return crate::code::turn(app, None);
     }
     // With the Tools switch off there's no web search either, as on the web.
     let web_search = api::has_session() && app.settings.peek().web_search && !crate::code::capable(&app, &model);
@@ -533,6 +564,9 @@ fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Elemen
                     RunView { r: r.clone() }
                 }
             }
+            if !m.interrupted.is_empty() {
+                p { class: "interrupted", "Stopped early: {m.interrupted} Everything so far is kept." }
+            }
             if m.error { p { "{m.content}" } }
             else if *raw.read() { pre { class: "raw", "{m.content}" } }
             else { div { class: if live { "cursor" } else { "" }, dangerous_inner_html: "{html}" } }
@@ -547,7 +581,13 @@ fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Elemen
                         button { class: "bare", onclick: { let t = answer.to_string(); move |_| app.copy(&t, "Answer") }, "Copy" }
                         button { class: "bare", onclick: move |_| { let r = !*raw.peek(); raw.set(r) }, if *raw.read() { "Rendered" } else { "Raw" } }
                     }
-                    if last { button { class: "bare", onclick: move |_| { app.conv.write().messages.pop(); run(app) }, "Retry" } }
+                    // An answer with tool work continues from it: paid calls aren't made again.
+                    if last && (!m.trace.is_empty() || !m.interrupted.is_empty()) {
+                        button { class: if m.interrupted.is_empty() { "bare" } else { "go continue" }, onclick: move |_| crate::code::resume(app),
+                            if m.interrupted.is_empty() { "Retry" } else { "Continue" } }
+                    } else if last {
+                        button { class: "bare", onclick: move |_| { app.conv.write().messages.pop(); run(app) }, "Retry" }
+                    }
                     // Back to the question this answered: later messages go, as on the web.
                     button { class: "bare", onclick: move |_| {
                         let u = app.conv.peek().messages.iter().take(i).rposition(|m| m.role == "user");
