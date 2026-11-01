@@ -18,10 +18,23 @@ fn client() -> &'static reqwest::Client {
     static C: OnceLock<reqwest::Client> = OnceLock::new();
     C.get_or_init(|| reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
+        // Phones change networks and VPNs drop: don't reuse a connection that may be dead by now,
+        // and notice a dead one in the middle of a read.
+        .pool_idle_timeout(Duration::from_secs(20))
+        .tcp_keepalive(Duration::from_secs(30))
+        .read_timeout(Duration::from_secs(180))
         .user_agent("Obscurify-Android")
         .build()
         .unwrap())
 }
+
+/// What a request that never got an answer says.
+pub const OFFLINE: &str = "Can't reach Obscurify. Check your connection.";
+
+fn offline() -> String { format!("0\u{1}{OFFLINE}") }
+
+/// The request may work if it's made again: no connection, or the server is briefly unavailable.
+pub fn transient(e: &str) -> bool { e.contains('\u{1}') && matches!(status_of(e).0, 0 | 408 | 429 | 502 | 503 | 504) }
 
 static SESSION: Mutex<Option<String>> = Mutex::new(None);
 static CSRF: Mutex<Option<(String, Instant)>> = Mutex::new(None);
@@ -74,7 +87,7 @@ fn error_text(status: u16, v: &Value, body: &str) -> String {
     let msg = v["error"]["message"].as_str().or(v["error"].as_str()).or(v["message"].as_str());
     match msg {
         Some(m) => m.to_string(),
-        None if status == 0 => "Can't reach Obscurify. Check your connection.".into(),
+        None if status == 0 => OFFLINE.into(),
         None => format!("Error {status}: {}", &body[..body.len().min(160)]),
     }
 }
@@ -170,11 +183,11 @@ async fn csrf() -> Result<String, String> {
 /// A guest's tool call. Guests have no session to tie a CSRF token to, so the server checks that
 /// the request says it's from Obscurify; its guest limits apply as they do on the website.
 pub async fn guest_post(path: &str, body: &Value, timeout: u64) -> Result<Value, String> {
-    let r = client().post(format!("{BASE}{path}")).timeout(Duration::from_secs(timeout)).header("Origin", BASE).json(body).send().await.map_err(|_| error_text(0, &Value::Null, ""))?;
+    let r = client().post(format!("{BASE}{path}")).timeout(Duration::from_secs(timeout)).header("Origin", BASE).json(body).send().await.map_err(|_| offline())?;
     let status = r.status().as_u16();
-    let text = r.text().await.map_err(|e| e.to_string())?;
+    let text = r.text().await.map_err(|_| offline())?;
     let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-    if (200..300).contains(&status) { Ok(v) } else { Err(error_text(status, &v, &text)) }
+    if (200..300).contains(&status) { Ok(v) } else { Err(format!("{status}\u{1}{}", error_text(status, &v, &text))) }
 }
 
 /// Starts a streamed chat completion (`/web/chat/completions`, every plan). Returns the open
@@ -222,16 +235,17 @@ pub async fn chat(body: &Value) -> Result<reqwest::Response, String> {
 /// session (Code Mode's tools).
 pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, String> {
     for attempt in 0..2 {
-        let token = csrf().await?;
+        let token = csrf().await.map_err(|e| if e == OFFLINE { offline() } else { e })?;
         let r = with_session(client().post(format!("{BASE}{path}")))
             .timeout(Duration::from_secs(timeout))
             .header("X-CSRF-Token", token)
             .json(body)
             .send()
             .await
-            .map_err(|_| error_text(0, &Value::Null, ""))?;
+            .map_err(|_| offline())?;
         let status = r.status().as_u16();
-        let text = r.text().await.unwrap_or_default();
+        // A body that doesn't arrive is a lost connection, not an empty answer.
+        let text = r.text().await.map_err(|_| offline())?;
         let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         if (200..300).contains(&status) {
             return Ok(v);
@@ -239,13 +253,13 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
         let m = error_text(status, &v, &text);
         if status == 401 {
             expire();
-            return Err(m);
+            return Err(format!("{status}\u{1}{m}"));
         }
         if status == 403 && m.to_lowercase().contains("csrf") && attempt == 0 {
             *CSRF.lock().unwrap() = None;
             continue;
         }
-        return Err(m);
+        return Err(format!("{status}\u{1}{m}"));
     }
     Err("The request failed".into())
 }

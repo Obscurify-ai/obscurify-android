@@ -133,6 +133,8 @@ struct App {
     conv: Signal<Conv>,
     live: Signal<Option<Msg>>,
     stop: Signal<bool>,
+    /// A request is waiting for the connection to come back.
+    waiting: Signal<bool>,
     attach: Signal<Vec<String>>,
     /// Files read for the next message (see files.rs).
     docs: Signal<Vec<files::Doc>>,
@@ -270,6 +272,7 @@ fn Root() -> Element {
             conv: Signal::new(conv),
             live: Signal::new(None),
             stop: Signal::new(false),
+            waiting: Signal::new(false),
             attach: Signal::new(vec![]),
             docs: Signal::new(vec![]),
             wallet: Signal::new(Wallet::load()),

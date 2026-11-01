@@ -146,13 +146,19 @@ async fn ensure(rx: &mut UnboundedReceiver<Value>, base: &str) -> Result<(), Str
         return Ok(());
     }
     js(&format!("window.android && android.sandboxStart && android.sandboxStart({})", serde_json::to_string(base).unwrap_or_default()));
-    let until = crate::store::now() + 30_000;
+    // The sandbox's pages come from the server, so with no connection it keeps trying.
+    let until = crate::store::now() + WAIT_MS;
+    let mut asked = crate::store::now();
     while crate::store::now() < until {
         if let Some(v) = next(rx, 1000).await
             && v["type"] == "ready"
         {
             READY.store(true, Ordering::SeqCst);
             return Ok(());
+        }
+        if crate::store::now() - asked > 20_000 {
+            asked = crate::store::now();
+            js(&format!("window.android && android.sandboxStart && android.sandboxStart({})", serde_json::to_string(base).unwrap_or_default()));
         }
     }
     Err("The code sandbox didn't start. Check your connection and try again.".into())
@@ -167,6 +173,7 @@ struct Turn {
     per_call: f64,
     spent: f64,
     result_chars: usize,
+    app: App,
 }
 
 /// Some models (Llama 3.3 among them) often write a tool call as text instead of making it:
@@ -195,12 +202,42 @@ fn text_tool_call(content: &str, step: usize) -> Option<Value> {
     Some(json!({"id": format!("text_call_{step}"), "type": "function", "function": {"name": "run_code", "arguments": args.to_string()}}))
 }
 
-/// A tool call to the server: the signed-in route, or the guest one.
-async fn tool_post(path: &str, body: &Value, timeout: u64) -> Result<Value, String> {
-    if api::has_session() {
-        api::web_post(&format!("/web/tools{path}"), body, timeout).await
-    } else {
-        api::guest_post(&format!("/anon/tools{path}"), body, timeout).await
+/// How long a request waits for the connection before the answer stops and offers Continue.
+pub const WAIT_MS: i64 = 15 * 60 * 1000;
+
+/// Waits out a pause before trying again, without holding up Stop. Grows up to 15 seconds.
+pub async fn wait_a_bit(app: App, delay: &mut u32) {
+    let mut left = *delay;
+    while left > 0 && !*app.stop.peek() {
+        crate::sleep(left.min(500)).await;
+        left = left.saturating_sub(500);
+    }
+    *delay = (*delay * 2).min(15_000);
+}
+
+/// A tool call to the server: the signed-in route, or the guest one. A lost connection doesn't fail
+/// it: it waits and asks again until the answer comes. A paid call carries a request id, so the
+/// server runs it once however many times it's asked, and it's safe to ask again.
+async fn tool_post(mut app: App, path: &str, body: &Value, timeout: u64) -> Result<Value, String> {
+    let started = crate::store::now();
+    let mut delay = 1000;
+    loop {
+        let r = if api::has_session() {
+            api::web_post(&format!("/web/tools{path}"), body, timeout).await
+        } else {
+            api::guest_post(&format!("/anon/tools{path}"), body, timeout).await
+        };
+        match r {
+            // A paid call's 503 means the tool itself timed out and may have charged: not repeated.
+            Err(e) if api::transient(&e) && !(path == "/call" && api::status_of(&e).0 == 503) && !*app.stop.peek() && crate::store::now() - started < WAIT_MS => {
+                app.waiting.set(true);
+                wait_a_bit(app, &mut delay).await;
+            }
+            other => {
+                app.waiting.set(false);
+                return other.map_err(api::msg);
+            }
+        }
     }
 }
 
@@ -212,12 +249,12 @@ async fn tool(name: &str, args: &Value, t: &mut Turn) -> Result<Value, String> {
             "remaining_usd": if t.paid { (t.budget - t.spent).max(0.0) } else { 0.0 },
             "per_call_max_usd": if t.paid { t.per_call } else { 0.0 },
         })),
-        "web_search" if t.web => tool_post("/web_search", &json!({"query": s("query")}), 60).await,
+        "web_search" if t.web => tool_post(t.app, "/web_search", &json!({"query": s("query")}), 120).await,
         "web_search" => Err("Web search is not available.".into()),
         "search" | "inspect" if !t.catalog => Err("Tools are not available right now.".into()),
         "call" if !t.paid => Err("Running this tool needs a signed-in Obscurify account.".into()),
-        "search" => tool_post("/search", &json!({"query": s("query"), "limit": args["limit"].as_u64().unwrap_or(8)}), 60).await.map(|v| v["tools"].clone()),
-        "inspect" => tool_post("/inspect", &json!({"id": s("id")}), 60).await,
+        "search" => tool_post(t.app, "/search", &json!({"query": s("query"), "limit": args["limit"].as_u64().unwrap_or(8)}), 60).await.map(|v| v["tools"].clone()),
+        "inspect" => tool_post(t.app, "/inspect", &json!({"id": s("id")}), 60).await,
         "call" => {
             let remaining = t.budget - t.spent;
             if remaining < 0.000_001 {
@@ -225,7 +262,8 @@ async fn tool(name: &str, args: &Value, t: &mut Turn) -> Result<Value, String> {
             }
             let asked = args["max_cost_usd"].as_f64().filter(|a| *a > 0.0).unwrap_or(t.per_call);
             let max = t.per_call.min(remaining).min(asked);
-            let v = tool_post("/call", &json!({"id": s("id"), "input": args["input"].clone(), "max_cost_usd": (max * 1e6).round() / 1e6}), 170).await?;
+            let request_id = format!("{:016x}{:016x}", rand::random::<u64>(), rand::random::<u64>());
+            let v = tool_post(t.app, "/call", &json!({"id": s("id"), "input": args["input"].clone(), "max_cost_usd": (max * 1e6).round() / 1e6, "request_id": request_id}), 170).await?;
             t.spent += v["cost_usd"].as_f64().unwrap_or(0.0);
             Ok(v)
         }
@@ -262,13 +300,15 @@ async fn execute(rx: &mut UnboundedReceiver<Value>, msg: &mut Msg, t: &mut Turn,
     let mut tools = 0usize;
     let mut result: Option<Result<Value, String>> = None;
     let mut timed_out = false;
+    // The limit is for the code itself: a slow tool or a wait for the connection doesn't count.
+    let mut tool_ms = 0i64;
     while result.is_none() {
         if stop() {
             post(&json!({"type": "reset"}));
             result = Some(Err("Stopped by the user.".into()));
             break;
         }
-        if crate::store::now() - started > RUN_TIMEOUT_MS as i64 {
+        if crate::store::now() - started - tool_ms > RUN_TIMEOUT_MS as i64 {
             post(&json!({"type": "reset"}));
             timed_out = true;
             result = Some(Err(format!("Timed out after {} seconds. The sandbox was restarted, so Python state was lost.", RUN_TIMEOUT_MS / 1000)));
@@ -301,7 +341,10 @@ async fn execute(rx: &mut UnboundedReceiver<Value>, msg: &mut Msg, t: &mut Turn,
                         r.tools.push(ToolUse { name: name.clone(), detail: detail(&name, &ev["args"]), ..Default::default() });
                         show(msg);
                     }
-                    tool(&name, &ev["args"], t).await
+                    let t0 = crate::store::now();
+                    let out = tool(&name, &ev["args"], t).await;
+                    tool_ms += crate::store::now() - t0;
+                    out
                 };
                 let r = msg.runs.last_mut().unwrap();
                 if name != "budget" && let Some(u) = r.tools.last_mut() {
@@ -415,6 +458,7 @@ pub fn turn(mut app: App, from: Option<Msg>) {
             per_call: cfg.per_call.min(cfg.reply_budget),
             spent: msg.runs.iter().map(|r| r.cost).sum(),
             result_chars: cfg.result_chars,
+            app,
         };
         let mut history = vec![json!({"role": "system", "content": cfg.system_prompt})];
         history.extend(chat::wire(&app.conv.peek().messages, &model, true));
@@ -428,6 +472,8 @@ pub fn turn(mut app: App, from: Option<Msg>) {
         let stop = move || *app.stop.peek();
         let mut failure: Option<String> = None;
         let mut retries = 0u32;
+        let mut wait_since: Option<i64> = None;
+        let mut delay = 1000u32;
         let done_steps = trace.iter().filter(|m| m["tool_calls"].is_array()).count().min(MAX_STEPS - 1);
 
         for step in done_steps..MAX_STEPS {
@@ -451,8 +497,17 @@ pub fn turn(mut app: App, from: Option<Msg>) {
                     Ok(_) => None,
                 };
                 if let Some(e) = problem {
+                    // No connection: wait for it for as long as it takes, up to WAIT_MS.
+                    let lost = e == api::OFFLINE || e.contains("connection dropped");
+                    let since = *wait_since.get_or_insert_with(crate::store::now);
+                    if lost && !stop() && crate::store::now() - since < WAIT_MS {
+                        app.waiting.set(true);
+                        wait_a_bit(app, &mut delay).await;
+                        continue;
+                    }
+                    app.waiting.set(false);
                     // The tool results are safe in `trace`: only this one step is asked again.
-                    if retries < MAX_RETRIES && worth_retrying(&e) && !stop() {
+                    if !lost && retries < MAX_RETRIES && worth_retrying(&e) && !stop() {
                         retries += 1;
                         crate::sleep(1500 * retries).await;
                         continue;
@@ -460,6 +515,9 @@ pub fn turn(mut app: App, from: Option<Msg>) {
                     failure = Some(e);
                     break vec![];
                 }
+                app.waiting.set(false);
+                wait_since = None;
+                delay = 1000;
                 let s = out.unwrap();
                 if s.tool_calls.is_empty() {
                     msg.details = s.details;
@@ -506,6 +564,7 @@ pub fn turn(mut app: App, from: Option<Msg>) {
             }
         }
         *EVENTS.lock().unwrap() = None;
+        app.waiting.set(false);
         if let Some(e) = failure {
             if msg.content.is_empty() && msg.runs.is_empty() && trace.is_empty() {
                 msg.error = true;

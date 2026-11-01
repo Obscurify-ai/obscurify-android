@@ -23,6 +23,6 @@ export async function launch(clear) {
   }
   if (!webview) throw new Error("the app's WebView never appeared");
   const page = await webview.page();
-  await page.waitForSelector('#main > *', { timeout: 15000 });
+  await page.waitForSelector('#main > *', { timeout: 45000 });
   return { browser: { close: async () => {} }, page };
 }

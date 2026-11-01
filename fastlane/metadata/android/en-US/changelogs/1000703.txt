@@ -1,0 +1,1 @@
+A lost connection no longer fails anything: tool calls and answers wait and deliver when it's back, with a line saying so. Paid tools are never charged twice for a retry. A slow tool no longer times out the code around it.

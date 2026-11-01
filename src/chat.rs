@@ -290,7 +290,19 @@ fn run(mut app: App) {
             body["web_search"] = json!(true);
         }
         let mut msg = app.live.peek().clone().unwrap();
-        match api::chat(&body).await {
+        // No connection: wait for it.
+        let started = store::now();
+        let mut delay = 1000;
+        let first = loop {
+            match api::chat(&body).await {
+                Err(e) if e == api::OFFLINE && !*app.stop.peek() && store::now() - started < crate::code::WAIT_MS => {
+                    app.waiting.set(true);
+                    crate::code::wait_a_bit(app, &mut delay).await;
+                }
+                other => { app.waiting.set(false); break other }
+            }
+        };
+        match first {
             Err(e) => { msg.error = true; msg.content = e; }
             Ok(resp) => {
                 let mut stream = resp.bytes_stream();
@@ -461,6 +473,9 @@ pub fn ChatView() -> Element {
                     MsgView { key: "{c.id}-{i}", i, m: m.clone(), last: i + 1 == n && !streaming }
                 }
                 if let Some(m) = live { MsgView { key: "{c.id}-live", i: n, m, last: false, live: true } }
+            }
+            if *app.waiting.read() {
+                div { class: "waiting", "Waiting for the connection. This picks up by itself." }
             }
             div { class: "composer",
                 // Tools first: whether they work right now, and the switch for them.

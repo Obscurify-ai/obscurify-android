@@ -85,17 +85,14 @@ await say(PROMPT);
 await idle();
 ok(await page.locator('.interrupted').count() === 0 && (await page.locator('.msg.assistant').last().textContent()).replace(/,/g, '').includes('7006652'), 'a single failure heals by itself');
 
-// 6. The connection drops in the middle of an answer: not taken for a finished one.
+// 6. The connection drops in the middle of an answer: not taken for a finished one. It asks again
+// until the answer is whole (outage.mjs has longer outages).
 await fresh();
-await set(0, 99, 'cut');
+await set(0, 4, 'cut');
 await say('Write three long paragraphs about the sea. Do not use any tools.');
 await idle();
-ok((await page.locator('.interrupted').textContent()).includes('connection dropped'), 'a cut-off answer says so');
-await set(0, 0);
-await page.getByRole('button', { name: 'Continue' }).click();
-await page.waitForSelector('.send.stop', { timeout: 10000 }).catch(() => {});
-await idle();
-ok(await page.locator('.interrupted').count() === 0, 'and Continue finishes it');
+reqs = await log();
+ok(reqs.length === 5 && await page.locator('.interrupted').count() === 0 && (await page.locator('.msg.assistant').last().textContent()).length > 200, `a cut-off answer is asked for again until whole (${reqs.length} requests)`);
 
 // 7. The app is killed while the model is working: it comes back with the run.
 await fresh();
