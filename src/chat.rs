@@ -529,7 +529,7 @@ pub fn ChatView() -> Element {
                 if let Some(m) = live { MsgView { key: "{c.id}-live", i: n, m, last: false, live: true } }
             }
             if *app.waiting.read() {
-                div { class: "waiting", "Waiting for the connection. This picks up by itself." }
+                div { class: "waiting", "Waiting for Obscurify. This picks up by itself." }
             }
             div { class: "composer",
                 // Tools first: whether they work right now, and the switch for them.

@@ -201,6 +201,18 @@ ok(reqs.length === 5, `it retries, then tells the model (${reqs.length} requests
 ok(String(reqs[4].messages.at(-1).content).includes('Invalid tool schema'), 'the model sees the error');
 ok(await page.locator('.interrupted').count() === 0 && (await page.locator('.msg').last().textContent()).includes('Adjusted and done'), 'and the reply goes on');
 
+// 9d2. Tools busy (our balance waiting on a top-up): a paid call waits and delivers, charged once.
+await fresh();
+await ctl('__set?toolbusy=3');
+await script([{ code: 'r = await tools.call("m:dataforseo/labs/ranked-keywords", {"target": "x"}, {"max_cost_usd": 0.05})\nprint("paid", r["cost_usd"])' }, { text: 'Delivered.' }]);
+await say('Busy tools.');
+await idle();
+reqs = await log();
+const toolReqs = JSON.parse(await ctl('__tools')).filter((t) => t.path.endsWith('/call'));
+ok(toolReqs.length === 3 && String(reqs[1].messages.at(-1).content).includes('paid 0.02'), `a busy tool waits and delivers (${toolReqs.length} calls)`);
+ok(new Set(toolReqs.map((t) => t.body.request_id)).size === 1, 'with the same request id, so it runs once');
+ok(toolReqs[0].body.max_cost_usd === 0.05, 'and the {max_cost_usd} form sets the cap');
+
 // 9e. A proxy's error page while the server restarts is a wait, not a failure.
 await fresh();
 await reset();

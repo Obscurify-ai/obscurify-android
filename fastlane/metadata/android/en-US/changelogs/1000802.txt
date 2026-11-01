@@ -1,0 +1,2 @@
+- A tool that's temporarily busy waits and delivers instead of failing
+- Clearer status while waiting

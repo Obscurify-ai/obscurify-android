@@ -269,12 +269,21 @@ pub async fn wait_a_bit(app: App, delay: &mut u32) {
 /// server runs it once however many times it's asked, and it's safe to ask again.
 async fn tool_post(mut app: App, path: &str, body: &Value, timeout: u64) -> Result<Value, String> {
     let mut delay = 1000;
+    let mut limited_since = None;
     loop {
         let r = if api::has_session() {
             api::web_post(&format!("/web/tools{path}"), body, timeout).await
         } else {
             api::guest_post(&format!("/anon/tools{path}"), body, timeout).await
         };
+        // Busy: nothing ran. It's waited out for a while, not forever, since it may not pass by itself.
+        if let Err(e) = &r && api::status_of(e).0 == 429 {
+            let since = *limited_since.get_or_insert_with(crate::store::now);
+            if crate::store::now() - since > RATE_WAIT_MS {
+                app.waiting.set(false);
+                return Err("Tools are busy right now. Try again later.".into());
+            }
+        }
         match r {
             // A paid call's 503 means the tool itself timed out and may have charged: not repeated.
             Err(e) if api::transient(&e) && !(path == "/call" && api::status_of(&e).0 == 503) && !*app.stop.peek() => {

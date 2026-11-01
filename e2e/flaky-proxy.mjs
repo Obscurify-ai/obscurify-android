@@ -2,6 +2,7 @@
 // test APK with OBSCURIFY_API=http://127.0.0.1:8093, `adb reverse tcp:8093 tcp:8093`, then run this.
 //   GET /__set?after=1&fail=3&kind=error|cut|hang   pass `after` completions, then break `fail` of them
 //   GET /__set?tooldown=20000 | chatdown=20000 | losecall=1   an outage, or a paid call's answer lost
+//   GET /__set?toolbusy=2                            paid calls answer 429 twice, then succeed without running
 //   GET /__log, /__tools                             the completion and tool request bodies so far
 //   POST /__script  [{...}, ...]                     canned replies for the next completions, in order:
 //     {code, usage: {prompt_tokens, completion_tokens, cost}} a run_code call; {text, usage} an answer;
@@ -37,6 +38,7 @@ function scripted(res, r) {
 }
 // The next paid call really runs, but its answer never reaches the app.
 let losecall = 0;
+let toolbusy = 0;
 
 function forward(req, res, body, onChunk, onEnd) {
   const headers = { ...req.headers, host: TARGET.host, 'accept-encoding': 'identity' };
@@ -59,6 +61,7 @@ http.createServer((req, res) => {
     rule = { after: +url.searchParams.get('after') || 0, fail: +url.searchParams.get('fail') || 0, kind: url.searchParams.get('kind') || 'error' };
     down = { tool: +url.searchParams.get('tooldown') || 0, chat: +url.searchParams.get('chatdown') || 0, until: 0 };
     losecall = +url.searchParams.get('losecall') || 0;
+    toolbusy = +url.searchParams.get('toolbusy') || 0;
     log = [];
     tools = [];
     return res.end('ok');
@@ -80,6 +83,11 @@ http.createServer((req, res) => {
     const body = Buffer.concat(chunks);
     if (/\/tools\//.test(url.pathname)) {
       tools.push({ path: url.pathname, body: JSON.parse(body.toString() || 'null') });
+      if (toolbusy && url.pathname.endsWith('/call')) {
+        const busy = toolbusy-- > 1;
+        res.writeHead(busy ? 429 : 200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify(busy ? { error: 'Rate limit exceeded. Try again in 30 seconds.' } : { ok: true, status: 200, output: {}, cost_usd: 0.02, balance_usd: 3 }));
+      }
       if (losecall > 0 && url.pathname.endsWith('/call')) {
         losecall--;
         return forward(req, res, body, () => false, () => req.socket.destroy());
