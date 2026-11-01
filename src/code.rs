@@ -167,6 +167,32 @@ struct Turn {
     result_chars: usize,
 }
 
+/// Some models (Llama 3.3 among them) often write a tool call as text instead of making it:
+/// `<function=run_code>{"code": …}</function>`, `<function-run_code{…}}`, with no braces, or the bare JSON. Read
+/// as an answer it runs nothing and shows gibberish, so it becomes the call it meant to be.
+fn text_tool_call(content: &str, step: usize) -> Option<Value> {
+    let t = content.trim();
+    if !(t.starts_with("<function") || t.starts_with("<tool_call") || t.starts_with('{')) {
+        return None;
+    }
+    if !t.chars().take(60).collect::<String>().contains("run_code") && !t.starts_with('{') {
+        return None;
+    }
+    let first = t.find('{').and_then(|at| serde_json::Deserializer::from_str(&t[at..]).into_iter::<Value>().next()?.ok());
+    // Or with no braces at all: <function(run_code)>"code": "…", "language": "python"</function>
+    let v = first.or_else(|| {
+        let start = t.find("\"code\"").or_else(|| t.find("\"language\""))?;
+        let end = t.rfind("</").unwrap_or(t.len());
+        serde_json::from_str(&format!("{{{}}}", t.get(start..end)?.trim().trim_end_matches(','))).ok()
+    })?;
+    let args = ["parameters", "arguments"].iter().map(|k| &v[*k]).find(|a| a.is_object()).unwrap_or(&v);
+    args["code"].as_str()?;
+    if t.starts_with('{') && !(v["name"] == "run_code" || v["language"].is_string()) {
+        return None;
+    }
+    Some(json!({"id": format!("text_call_{step}"), "type": "function", "function": {"name": "run_code", "arguments": args.to_string()}}))
+}
+
 /// A tool call to the server: the signed-in route, or the guest one.
 async fn tool_post(path: &str, body: &Value, timeout: u64) -> Result<Value, String> {
     if api::has_session() {
@@ -368,7 +394,13 @@ pub fn turn(mut app: App) {
                 body["tool_choice"] = json!("none");
             }
             msg.reasoning.clear();
-            let step_out = chat::stream(&body, &mut msg, &stop, &mut show).await;
+            let step_out = chat::stream(&body, &mut msg, &stop, &mut show).await.map(|mut s| {
+                if s.tool_calls.is_empty() && let Some(c) = text_tool_call(&msg.content, step) {
+                    msg.content.clear();
+                    s.tool_calls.push(c);
+                }
+                s
+            });
             let calls = match step_out {
                 Err(e) => { msg.error = true; msg.content = e; break }
                 Ok(s) if s.tool_calls.is_empty() => { msg.details = s.details; break }

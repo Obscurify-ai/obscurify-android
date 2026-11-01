@@ -15,7 +15,7 @@ await page.locator('#composer').fill('Use run_code with Python to compute 1234*5
 await page.locator('.send').click();
 await answered(page, 1);
 const firstGuest = await page.locator('.msg').last().textContent();
-ok(await page.locator('.run').count() >= 1, 'a guest runs code: ' + firstGuest.slice(0, 160).replace(/\s+/g, ' '));
+ok(await page.locator('.run').count() >= 1 && !firstGuest.includes('<function'), 'a guest runs code: ' + firstGuest.slice(0, 160).replace(/\s+/g, ' '));
 ok((await page.locator('.msg.assistant').last().textContent()).replace(/,/g, '').includes('7006652'), 'a guest gets the computed answer');
 await page.locator('.bar .icon').last().click();
 await page.locator('#composer').fill('Use run_code with Python: result = await tools.web_search("current year") and print it. Then say DONE.');

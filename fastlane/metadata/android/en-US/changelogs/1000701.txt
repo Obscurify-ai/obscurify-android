@@ -1,0 +1,1 @@
+Fixes tool calls that some models wrote out as text instead of running them, including the default model.
