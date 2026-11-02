@@ -191,9 +191,55 @@ pub async fn guest_post(path: &str, body: &Value, timeout: u64) -> Result<Value,
     if (200..300).contains(&status) { Ok(v) } else { Err(format!("{status}\u{1}{}", error_text(status, &v, &text))) }
 }
 
+/// The conversation the server holds for us (in memory, up to an hour): the rev to continue and
+/// each message as we sent it. A request whose messages start with those sends only the rest.
+static THREAD: Mutex<Option<(String, Vec<String>)>> = Mutex::new(None);
+/// A rev the server no longer holds: send the whole conversation again.
+const THREAD_EXPIRED: &str = "\u{1}thread_expired";
+
+/// `body` as sent on the held thread, and what it stands for once sent.
+fn thread_body(body: &Value) -> (Value, Vec<String>) {
+    let messages = body["messages"].as_array().cloned().unwrap_or_default();
+    let sent: Vec<String> = messages.iter().map(|m| m.to_string()).collect();
+    let mut out = body.clone();
+    out["thread"] = json!({});
+    if let Some((rev, held)) = THREAD.lock().unwrap().as_ref() {
+        if held.len() <= sent.len() && held[..] == sent[..held.len()] {
+            out["messages"] = Value::Array(messages[held.len()..].to_vec());
+            out["thread"] = json!({"rev": rev});
+        }
+    }
+    (out, sent)
+}
+
 /// Starts a streamed chat completion (`/web/chat/completions`, every plan). Returns the open
-/// response; the caller reads its SSE body.
+/// response; the caller reads its SSE body. Sends only what the server doesn't already hold.
 pub async fn chat(body: &Value) -> Result<reqwest::Response, String> {
+    let (threaded, sent) = thread_body(body);
+    let r = match post_chat(&threaded).await {
+        Err(e) if e == THREAD_EXPIRED => {
+            *THREAD.lock().unwrap() = None;
+            let mut whole = body.clone();
+            whole["thread"] = json!({});
+            post_chat(&whole).await
+        }
+        other => other,
+    }
+    .map_err(|e| if e == THREAD_EXPIRED { error_text(409, &Value::Null, "") } else { e })?;
+    let rev = r.headers().get("x-obscurify-thread").and_then(|v| v.to_str().ok()).map(str::to_string);
+    *THREAD.lock().unwrap() = rev.map(|rev| (rev, sent));
+    Ok(r)
+}
+
+fn chat_error(status: u16, text: &str) -> String {
+    let v: Value = serde_json::from_str(text).unwrap_or(Value::Null);
+    if status == 409 && v["code"] == "thread_expired" {
+        return THREAD_EXPIRED.into();
+    }
+    error_text(status, &v, text)
+}
+
+async fn post_chat(body: &Value) -> Result<reqwest::Response, String> {
     if !has_session() {
         let r = client().post(format!("{BASE}/anon/chat/completions")).json(body).send().await.map_err(|_| error_text(0, &Value::Null, ""))?;
         let status = r.status().as_u16();
@@ -201,7 +247,7 @@ pub async fn chat(body: &Value) -> Result<reqwest::Response, String> {
             return Ok(r);
         }
         let text = r.text().await.unwrap_or_default();
-        return Err(error_text(status, &serde_json::from_str(&text).unwrap_or(Value::Null), &text));
+        return Err(chat_error(status, &text));
     }
     let mut tries = 0;
     loop {
@@ -217,8 +263,7 @@ pub async fn chat(body: &Value) -> Result<reqwest::Response, String> {
             return Ok(r);
         }
         let text = r.text().await.unwrap_or_default();
-        let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-        let m = error_text(status, &v, &text);
+        let m = chat_error(status, &text);
         if status == 401 {
             expire();
             return Err(m);

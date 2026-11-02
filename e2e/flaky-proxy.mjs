@@ -43,7 +43,7 @@ let toolbusy = 0;
 function forward(req, res, body, onChunk, onEnd) {
   const headers = { ...req.headers, host: TARGET.host, 'accept-encoding': 'identity' };
   if (headers.origin) headers.origin = TARGET.origin;
-  const up = https.request({ host: TARGET.hostname, path: req.url, method: req.method, headers }, (r) => {
+  const up = (TARGET.protocol === 'http:' ? http : https).request({ host: TARGET.hostname, port: TARGET.port || undefined, path: req.url, method: req.method, headers }, (r) => {
     const h = { ...r.headers };
     // Pages are served from here in the test, so their CSP has to allow here.
     for (const k of Object.keys(h)) if (k.toLowerCase() === 'content-security-policy') h[k] = String(h[k]).replaceAll(TARGET.origin, self);
