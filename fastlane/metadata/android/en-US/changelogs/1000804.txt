@@ -1,0 +1,2 @@
+- Generated video, images and audio show in the chat with a save button
+- Chats send only your new message: the server holds the conversation in memory for up to 1 hour, then deletes it
