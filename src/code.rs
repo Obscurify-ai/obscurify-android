@@ -75,6 +75,24 @@ pub async fn load(mut app: App) {
 }
 
 /// Code can run for this model: Code Mode is on and the model can call tools.
+/// What kind of file a media URL is, from its extension. `save`-able media are only ever shown,
+/// never parsed.
+fn media_ext(url: &str) -> String {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    path.rsplit('.').next().unwrap_or("").to_ascii_lowercase()
+}
+
+pub fn is_video(url: &str) -> bool { matches!(media_ext(url).as_str(), "mp4" | "webm" | "mov" | "m4v") }
+pub fn is_audio(url: &str) -> bool { matches!(media_ext(url).as_str(), "mp3" | "wav" | "m4a" | "ogg") }
+
+/// The file's name as the button shows it, shortened.
+pub fn media_filename(url: &str) -> String {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let name = path.rsplit('/').next().unwrap_or("file");
+    let name = name.replace('%', "");
+    if name.chars().count() > 28 { format!("{}…", name.chars().take(27).collect::<String>()) } else { name }
+}
+
 pub fn capable(app: &App, model: &str) -> bool {
     app.code.peek().enabled && app.models.peek().iter().find(|m| m.id == model).is_none_or(|m| m.tools)
 }
@@ -102,6 +120,35 @@ pub struct ToolUse {
     pub ok: Option<bool>,
 }
 
+/// Media URLs named anywhere in a tool's answer, deduplicated, the first few only. A generated
+/// video or image comes back as a CDN link (MiniMax, Alibaba, Replicate), and it expires.
+fn media_urls(value: &Value) -> Vec<String> {
+    fn ext_ok(url: &str) -> bool {
+        let path = url.split(['?', '#']).next().unwrap_or(url);
+        let marker = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        matches!(marker.as_str(), "mp4" | "webm" | "mov" | "m4v" | "png" | "jpg" | "jpeg" | "webp" | "gif" | "mp3" | "wav" | "m4a" | "ogg")
+    }
+    fn walk(v: &Value, out: &mut Vec<String>, depth: usize) {
+        if depth > 6 || out.len() >= 4 { return }
+        match v {
+            Value::String(s) => {
+                for raw in s.split_whitespace() {
+                    let url: String = raw.trim_matches(|c: char| matches!(c, '"' | ',' | ')' | ']' | ';' | '\'')).to_string();
+                    if url.starts_with("https://") && url.len() < 2048 && ext_ok(&url) && !out.contains(&url) {
+                        out.push(url);
+                    }
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|i| walk(i, out, depth + 1)),
+            Value::Object(map) => map.values().for_each(|i| walk(i, out, depth + 1)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(value, &mut out, 0);
+    out
+}
+
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct Run {
     /// What the model said before asking for this run.
@@ -121,6 +168,10 @@ pub struct Run {
     pub done: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
+    /// Video, audio or a remote image the code or a paid tool produced, as https URLs the
+    /// WebView loads with the user's own connection (the sandbox has no network).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<Page>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -303,6 +354,7 @@ async fn tool(name: &str, args: &Value, t: &mut Turn) -> Result<Value, String> {
     match name {
         "budget" => Ok(json!({
             "spent_usd": t.spent,
+            "suggested_max_usd": if t.paid { t.per_call } else { 0.0 },
             "per_call_max_usd": if t.paid { t.per_call } else { 0.0 },
         })),
         "web_search" if t.web => tool_post(t.app, "/web_search", &json!({"query": s("query")}), 120).await,
@@ -312,10 +364,17 @@ async fn tool(name: &str, args: &Value, t: &mut Turn) -> Result<Value, String> {
         "search" => tool_post(t.app, "/search", &json!({"query": s("query"), "limit": args["limit"].as_u64().unwrap_or(8)}), 60).await.map(|v| v["tools"].clone()),
         "inspect" => tool_post(t.app, "/inspect", &json!({"id": s("id")}), 60).await,
         "call" => {
-            let asked = args["max_cost_usd"].as_f64().filter(|a| *a > 0.0).unwrap_or(t.per_call);
-            let max = t.per_call.min(asked);
+            // The balance is the limit; `per_call` is only what an app of this vintage sends when
+            // the model names no cap, and the server holds calls inside its own ceiling anyway.
+            let asked = args["max_cost_usd"].as_f64().filter(|a| *a > 0.0);
+            let max = match asked {
+                Some(a) => Some(a),
+                None if t.per_call > 0.0 => Some(t.per_call),
+                None => None,
+            };
             let request_id = format!("{:016x}{:016x}", rand::random::<u64>(), rand::random::<u64>());
-            let v = tool_post(t.app, "/call", &json!({"id": s("id"), "input": args["input"].clone(), "max_cost_usd": (max * 1e6).round() / 1e6, "request_id": request_id}), 170).await?;
+            let cap = max.map(|m| json!((m * 1e6).round() / 1e6)).unwrap_or(Value::Null);
+            let v = tool_post(t.app, "/call", &json!({"id": s("id"), "input": args["input"].clone(), "max_cost_usd": cap, "request_id": request_id}), 170).await?;
             t.spent += v["cost_usd"].as_f64().unwrap_or(0.0);
             Ok(v)
         }
@@ -381,6 +440,9 @@ async fn execute(rx: &mut UnboundedReceiver<Value>, msg: &mut Msg, t: &mut Turn,
             "stderr" => { let s = ev["text"].as_str().unwrap_or(""); stderr.push_str(s); r.output.push_str(s) }
             "status" => r.status = ev["text"].as_str().unwrap_or("").into(),
             "image" => if let Some(u) = ev["dataUrl"].as_str().filter(|u| (u.starts_with("data:image/png;base64,") || u.starts_with("data:image/jpeg;base64,")) && u.len() < 8 << 20) { r.images.push(u.into()) },
+            "media" => if let Some(u) = ev["url"].as_str().filter(|u| u.starts_with("https://") && u.len() < 2048 && !r.media.iter().any(|m| m == u)) {
+                r.media.push(u.into())
+            },
             "html" => r.pages.push(Page { title: ev["title"].as_str().unwrap_or("").into(), html: ev["html"].as_str().unwrap_or("").into() }),
             "tool" => {
                 let name = ev["name"].as_str().unwrap_or("").to_string();
@@ -399,6 +461,13 @@ async fn execute(rx: &mut UnboundedReceiver<Value>, msg: &mut Msg, t: &mut Turn,
                     out
                 };
                 let r = msg.runs.last_mut().unwrap();
+                // A generated video or picture comes back as a URL that expires: show it at once,
+                // with a way to open or save it, rather than leaving a link inside JSON.
+                if name == "call" && let Ok(v) = &reply {
+                    for url in media_urls(&v["output"]) {
+                        if !r.media.contains(&url) { r.media.push(url) }
+                    }
+                }
                 if name != "budget" && let Some(u) = r.tools.last_mut() {
                     u.ok = Some(matches!(&reply, Ok(v) if v.get("ok") != Some(&json!(false))));
                     u.cost = reply.as_ref().ok().and_then(|v| v["cost_usd"].as_f64()).unwrap_or(0.0);
@@ -434,6 +503,7 @@ async fn execute(rx: &mut UnboundedReceiver<Value>, msg: &mut Msg, t: &mut Turn,
         _ => {}
     }
     if !r.images.is_empty() { parts.push(format!("{} chart(s) were shown to the user.", r.images.len())) }
+    if !r.media.is_empty() { parts.push(format!("{} image/video/audio file(s) were shown to the user with a save link: {}.", r.media.len(), r.media.join(", "))) }
     if !r.pages.is_empty() { parts.push(format!("{} HTML page(s) were shown to the user.", r.pages.len())) }
     if !r.tools.is_empty() {
         parts.push(format!("tool calls:\n{}", r.tools.iter().map(|u| format!("- {} {} -> {}{}", u.name, u.detail, if u.ok == Some(true) { "ok" } else { "failed" }, if u.cost > 0.0 { format!(", cost ${}", u.cost) } else { String::new() })).collect::<Vec<_>>().join("\n")));

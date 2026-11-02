@@ -148,3 +148,9 @@ h2.group { font-size: 13px; font-weight: 500; text-transform: uppercase; letter-
 .interrupted { color: #fbbf24; font-size: 14px; }
 .meta .continue { padding: 6px 14px; }
 .waiting { padding: 6px 12px; font-size: 13px; text-align: center; color: #fbbf24; border-top: 1px solid var(--l); }
+/* A file the code or a paid tool produced: real player, and a way to keep it before the link expires. */
+.run-media { display: flex; flex-direction: column; gap: 6px; margin: 10px 12px; }
+.run-media .run-img { margin: 0; max-width: 100%; }
+.run-video { width: 100%; max-height: 60vh; border-radius: 6px; background: #000; }
+.run-audio { width: 100%; }
+.media-save { align-self: flex-start; background: #111; color: var(--accent, #9ef); border: 1px solid var(--border, #2a2a2a); border-radius: 6px; padding: 8px 12px; font: inherit; }

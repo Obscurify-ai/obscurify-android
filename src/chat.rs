@@ -2,7 +2,7 @@
 //! picker. Chats live only on the phone (`chats.json` lists them, `chat-<id>.json` holds each), the
 //! same as the web, which keeps them in the browser.
 
-use crate::{Access, App, Model, Overlay, Screen, api, bg, js, store, usd};
+use crate::{Access, App, Model, Overlay, Screen, api, bg, code, js, store, usd};
 use dioxus::prelude::*;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -716,6 +716,22 @@ fn RunView(r: crate::code::Run) -> Element {
                 }
             }
             for (i, img) in r.images.iter().enumerate() { img { key: "{i}", class: "run-img", src: "{img}" } }
+            for (i, url) in r.media.iter().enumerate() {
+                div { key: "media-{i}", class: "run-media",
+                    if code::is_video(url) {
+                        video { class: "run-video", controls: true, playsinline: true, preload: "metadata", src: "{url}" }
+                    } else if code::is_audio(url) {
+                        audio { class: "run-audio", controls: true, preload: "metadata", src: "{url}" }
+                    } else {
+                        img { class: "run-img", src: "{url}", loading: "lazy" }
+                    }
+                    // The links expire (a day at most), and this is the only way to keep the file.
+                    button { class: "media-save",
+                        onclick: { let url = url.clone(); move |_| crate::open_url(&url) },
+                        "⤓ Save " {code::media_filename(url)}
+                    }
+                }
+            }
             for (i, p) in r.pages.iter().enumerate() {
                 button { key: "{i}", class: "page-btn",
                     onclick: { let p = p.clone(); move |_| crate::code::open_page(&app, &p.title, &p.html) },
