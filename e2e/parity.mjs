@@ -9,7 +9,7 @@ const answered = (page, n) => page.waitForFunction((n) => document.querySelector
 let { page } = await launch(true);
 await page.getByRole('button', { name: 'Chat as a guest' }).click();
 await page.waitForSelector('#composer');
-await page.waitForSelector('.tools-state.on', { timeout: 20000 });
+await page.waitForSelector('.tools-switch.on', { timeout: 20000 });
 ok(true, 'a guest has tools, and the app says so');
 await page.locator('#composer').fill('Use run_code with Python to compute 1234*5678 and tell me the result.');
 await page.locator('.send').click();
@@ -60,7 +60,12 @@ await page.locator('.login input').fill(process.env.ACCOUNT);
 await page.getByRole('button', { name: 'Sign In' }).click();
 await page.waitForSelector('#composer', { timeout: 30000 });
 await page.waitForSelector('.tools-switch', { timeout: 20000 });
-ok(await page.locator('.tools-switch.on').count() === 1 && (await page.locator('.tools-state').textContent()) === 'Tools on', 'Tools is on by default, and says so');
+ok(await page.locator('.tools-switch.on').count() === 1 && (await page.locator('.tools-switch').getAttribute('aria-checked')) === 'true', 'Tools is on by default, and says so');
+// It sits in the message line, between Attach and the box, so it costs no row of its own.
+{
+  const [sw, box, attach, send] = await Promise.all(['.tools-switch', '#composer', '.attach', '.send'].map((s) => page.locator(s).boundingBox()));
+  ok(sw.x >= attach.x + attach.width && sw.x + sw.width <= box.x && sw.y >= box.y - 1 && sw.y + sw.height <= send.y + send.height + 1, 'Tools is in the message line: ' + JSON.stringify({ sw, box }));
+}
 ok(await page.locator('.attach').count() === 1 && await page.locator('.chip.file, .chip.doc').count() === 0, 'one attach button, no Image or File');
 await page.locator('.title.model').click();
 await page.waitForSelector('.providers .chip', { timeout: 20000 });
@@ -74,7 +79,7 @@ await page.locator('.providers .chip', { hasText: /^Anthropic$/ }).click();
 await page.locator('input.search').fill('Llama 3.3 70b Instruct');
 await page.locator('.pick', { hasText: 'Meta: Llama 3.3 70b Instruct' }).first().locator('.grow').click();
 await page.locator('.tools-switch').click();
-ok((await page.locator('.tools-state').textContent()) === 'Tools off', 'Tools switches off');
+ok(await page.locator('.tools-switch.on').count() === 0 && (await page.locator('.tools-switch').getAttribute('aria-checked')) === 'false', 'Tools switches off');
 for (const [i, w] of [[1, 'mango'], [2, 'papaya']]) {
   await page.locator('#composer').fill(`Reply with exactly the word: ${w}`);
   await page.locator('.send').click();

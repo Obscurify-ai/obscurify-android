@@ -532,18 +532,6 @@ pub fn ChatView() -> Element {
                 div { class: "waiting", "Waiting for Obscurify. This picks up by itself." }
             }
             div { class: "composer",
-                // Tools first: whether they work right now, and the switch for them.
-                if app.code.read().enabled {
-                    div { class: "tools-line",
-                        if capable {
-                            span { class: if tools_on { "tools-state on" } else { "tools-state" }, if tools_on { "Tools on" } else { "Tools off" } }
-                            button { class: if tools_on { "tools-switch on" } else { "tools-switch" }, role: "switch", aria_label: "Tools",
-                                onclick: move |_| { let v = !app.settings.peek().tools; app.settings.write().tools = v; app.save_settings() }, span {} }
-                        } else {
-                            span { class: "tools-state", "Tools off for this model" }
-                        }
-                    }
-                }
                 if !capable && api::has_session() {
                     div { class: "toggles",
                         button { class: if app.settings.read().web_search { "chip on" } else { "chip" },
@@ -569,6 +557,16 @@ pub fn ChatView() -> Element {
                     span { class: "attach", aria_label: "Attach",
                         svg { view_box: "0 0 24 24", width: "22", height: "22",
                             path { d: "M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round" }
+                        }
+                    }
+                    // Tools on or off, in the message line so it costs no row of its own.
+                    if app.code.read().enabled {
+                        if capable {
+                            button { class: if tools_on { "tools-switch on" } else { "tools-switch" }, role: "switch", aria_checked: "{tools_on}",
+                                onclick: move |_| { let v = !app.settings.peek().tools; app.settings.write().tools = v; app.save_settings() }, "Tools" }
+                        } else {
+                            button { class: "tools-switch na", role: "switch", aria_checked: "false", aria_disabled: "true",
+                                onclick: move |_| app.say("This model can't use tools"), "Tools" }
                         }
                     }
                     textarea { id: "composer", rows: 1, placeholder: "Message", oninput: move |e| text.set(e.value()) }
