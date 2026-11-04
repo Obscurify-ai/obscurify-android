@@ -1,0 +1,1 @@
+- The Tools switch sits in the message line, so the chat gets a row back
