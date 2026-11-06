@@ -65,6 +65,8 @@ a { color: var(--g); text-decoration: none; }
 .composer .line { display: flex; gap: 6px; align-items: flex-end; }
 .composer textarea { flex: 1; resize: none; padding: 10px 16px; max-height: 160px; min-height: 44px; border-radius: 22px; }
 .composer .send { flex: none; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: var(--g); color: #000; display: flex; align-items: center; justify-content: center; }
+/* Attach, Tools and Send centre on the message's last line (1rlh tall, 11px from the box's bottom), at any font size. */
+.composer .line > .attach, .composer .send { margin-bottom: calc(.5rlh - 11px); }
 .composer .send.idle { background: var(--l); color: var(--m); }
 .composer .send.stop { background: #000; border: 2px solid var(--g); color: var(--g); }
 .toggles { display: flex; gap: 6px; padding-bottom: 6px; overflow-x: auto; }
@@ -135,7 +137,7 @@ h2.group { font-size: 13px; font-weight: 500; text-transform: uppercase; letter-
 .foot .links a { color: var(--m); }
 .toggles.providers { flex-wrap: nowrap; overflow-x: auto; }
 .spend, .compacted { color: var(--m); font-size: 13px; margin: 4px 0; }
-.tools-switch { flex: none; height: 30px; margin-bottom: 7px; padding: 0 10px; border-radius: 15px; color: var(--m); font-size: 13px; font-weight: 600; }
+.tools-switch { flex: none; height: calc(1rlh + 6px); margin-bottom: 8px; padding: 0 10px; border-radius: 99px; color: var(--m); font-size: 13px; font-weight: 600; }
 .tools-switch.on { color: var(--g); border-color: var(--g); }
 .tools-switch.na { text-decoration: line-through; opacity: 0.6; }
 .attach { flex: none; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--m); }

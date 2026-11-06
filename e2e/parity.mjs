@@ -65,6 +65,10 @@ ok(await page.locator('.tools-switch.on').count() === 1 && (await page.locator('
 {
   const [sw, box, attach, send] = await Promise.all(['.tools-switch', '#composer', '.attach', '.send'].map((s) => page.locator(s).boundingBox()));
   ok(sw.x >= attach.x + attach.width && sw.x + sw.width <= box.x && sw.y >= box.y - 1 && sw.y + sw.height <= send.y + send.height + 1, 'Tools is in the message line: ' + JSON.stringify({ sw, box }));
+  // Attach, Tools and Send are centred on the text, whatever the phone's font size.
+  const lh = parseFloat(await page.locator('#composer').evaluate((e) => getComputedStyle(e).lineHeight));
+  const text = box.y + box.height - 11 - lh / 2, mids = [attach, sw, send].map((b) => b.y + b.height / 2);
+  ok(mids.every((m) => Math.abs(m - text) < 1.5), 'Attach, Tools and Send line up with the message text: ' + JSON.stringify({ text, mids }));
 }
 ok(await page.locator('.attach').count() === 1 && await page.locator('.chip.file, .chip.doc').count() === 0, 'one attach button, no Image or File');
 await page.locator('.title.model').click();
