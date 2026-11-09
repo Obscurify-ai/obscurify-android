@@ -832,10 +832,6 @@ fn Models() -> Element {
     let access = *app.access.read();
     let mut prov = use_signal(|| None::<String>);
     let models = app.models.read().clone();
-    let mut providers: Vec<String> = models.iter().map(provider).collect();
-    providers.sort_by_key(|p| p.to_lowercase());
-    providers.dedup();
-    let chosen = prov.read().clone();
     let query = q.read().to_lowercase();
     let c = *cat.read();
     let any = |id: &str, pats: &[&str]| pats.iter().any(|p| glob(id, p));
@@ -863,10 +859,18 @@ fn Models() -> Element {
     }).collect();
     chips.sort_by_key(|&(_, locked)| locked);
     // A search looks through every model, whatever category is picked.
-    let (usable, locked): (Vec<Model>, Vec<Model>) = models.iter()
+    let shown: Vec<&Model> = models.iter()
         .filter(|m| !query.is_empty() || in_cat(m, c))
-        .filter(|m| chosen.as_ref().is_none_or(|p| &provider(m) == p))
         .filter(|m| query.is_empty() || m.name.to_lowercase().contains(&query) || m.id.to_lowercase().contains(&query))
+        .collect();
+    // Only providers with models in the category (or the search) are offered; a picked provider
+    // the category doesn't have stops filtering until one that has it is picked again.
+    let mut providers: Vec<String> = shown.iter().map(|m| provider(m)).collect();
+    providers.sort_by_key(|p| p.to_lowercase());
+    providers.dedup();
+    let chosen = prov.read().clone().filter(|p| providers.contains(p));
+    let (usable, locked): (Vec<Model>, Vec<Model>) = shown.into_iter()
+        .filter(|m| chosen.as_ref().is_none_or(|p| &provider(m) == p))
         .cloned()
         .partition(|m| needs(&m.id).is_none());
     let locked: Vec<(Model, &'static str)> = locked.into_iter().map(|m| { let n = needs(&m.id).unwrap_or(""); (m, n) }).collect();

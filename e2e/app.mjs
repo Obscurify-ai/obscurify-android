@@ -71,6 +71,10 @@ await row.locator('.grow').click();
 ok((await page.locator('.title.model').textContent()).includes('Llama 3.3 70b'), 'model chosen');
 await page.locator('.title.model').click();
 ok(await page.locator('.chip.on', { hasText: 'Favorites' }).count() === 1 && await page.locator('.pick').count() === 1, 'favorite kept under Favorites');
+await page.locator('.toggles:not(.providers) .chip', { hasText: /^Free$/ }).click();
+const freeProviders = await page.locator('.toggles.providers .chip').allTextContents();
+const freeRows = await page.locator('.pick .grow > div:first-child').allTextContents();
+ok(freeProviders.length > 0 && freeProviders.every(p => freeRows.some(r => r.startsWith(p + ':'))), 'providers offered are only those with models in the category');
 await page.locator('.drawer .bar .icon').click(); // close the picker
 
 // 5. Chat: a streamed answer, without web search.
