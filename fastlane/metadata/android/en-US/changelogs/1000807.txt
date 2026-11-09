@@ -1,0 +1,2 @@
+The provider row in the model picker lists only providers with models in the picked category or search.
+Security updates for dependencies.
