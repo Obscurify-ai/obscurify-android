@@ -127,7 +127,7 @@ impl Default for Settings {
 }
 
 #[derive(Clone, PartialEq)]
-struct Model { id: String, name: String, prompt: f64, completion: f64, tools: bool, context: u64 }
+struct Model { id: String, name: String, prompt: f64, completion: f64, tools: bool, context: u64, categories: Vec<String> }
 
 /// What the account's plan lets it chat with, from `/account_tier`.
 #[derive(Clone, Copy, PartialEq)]
@@ -311,6 +311,8 @@ fn Root() -> Element {
                 completion: m["pricing"]["completion"].as_f64().unwrap_or(0.0),
                 tools: m["tools"].as_bool().unwrap_or(true),
                 context: m["context_length"].as_u64().unwrap_or(0),
+                // Specialist use cases (Writing, Security, ...) the server tags models with.
+                categories: m["categories"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(String::from)).collect(),
             }).collect();
             models.sort_by_key(|m| m.name.to_lowercase());
             app.models.set(models);

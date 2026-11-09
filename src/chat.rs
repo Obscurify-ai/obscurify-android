@@ -882,9 +882,10 @@ fn Drawer() -> Element {
     }
 }
 
-const ROLEPLAY: [&str; 15] = ["*mythomax*", "*remm-slerp*", "*rocinante*", "*magnum*", "*hanami*", "*euryale*", "*lunaris*", "*weaver*", "*lumimaid*", "*cydonia*", "*magidonia*", "*storybreaker*", "*tenyxchat*", "*aion-rp*", "*airoboros*"];
 const REASONING: [&str; 5] = ["*thinking*", "*reasoning*", "*deepseek-r1*", "*-r1-*", "*magistral*"];
-const CATEGORIES: [&str; 9] = ["Favorites", "All", "Tools", "Free", "Cheap", "Reasoning", "Uncensored", "Roleplay", "Frontier"];
+/// Roleplay and everything after Frontier come from the `categories` the server tags models with.
+const CATEGORIES: [&str; 17] = ["Favorites", "All", "Tools", "Free", "Cheap", "Reasoning", "Uncensored", "Roleplay", "Frontier",
+    "Writing", "Security", "Legal", "Translation", "Languages", "Code tools", "Documents", "Moderation"];
 
 /// The plan a model needs that the account doesn't have (uncensored models need Pro, frontier
 /// models Casual or Pro, as the server enforces). Nothing is locked until the plan is known.
@@ -923,10 +924,10 @@ fn Models() -> Element {
             "Free" => free,
             "Cheap" => free || (m.prompt <= 0.000_000_25 && m.completion <= 0.000_000_5),
             "Reasoning" => any(&m.id, &REASONING),
-            "Roleplay" => any(&m.id, &ROLEPLAY),
             "Uncensored" => uncensored.iter().any(|p| glob(&m.id, p)),
             "Frontier" => frontier.iter().any(|p| glob(&m.id, p)),
-            _ => true,
+            "All" => true,
+            _ => m.categories.iter().any(|c| c == k),
         }
     };
     // Categories with models the plan can use come first and ones it can't use any of last;

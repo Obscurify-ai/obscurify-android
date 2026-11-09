@@ -93,6 +93,7 @@ ACCOUNT=… node parity.mjs            # guest chat and tools, Tools switch, pro
 node flaky-proxy.mjs & ACCOUNT=… node outage.mjs  # lost connections wait and deliver; PAID=1 also loses a paid answer and checks it's charged once
 node flaky-proxy.mjs & ACCOUNT=… node resume.mjs  # failures keep tool work: retries, Continue, new messages, Retry, a killed app; the Copy toolbar (test APK with OBSCURIFY_API=http://127.0.0.1:8093, adb reverse tcp:8093 tcp:8093)
 ACCOUNT=… node files.mjs             # files: PDF, CSV, Excel, Word, PowerPoint, OpenDocument, text; refusals; a long file cut
+node categories.mjs                  # specialist categories (Writing, Security, Translation…) from the server's model tags
 ```
 
 ## License
