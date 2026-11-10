@@ -1,0 +1,4 @@
+Long chats keep going past the model's limit: earlier messages are summarized and your latest message is sent as it is.
+"Waiting for Obscurify" no longer stays up forever when the server answers but keeps failing (a web search, a sandbox that won't start); a lost connection is still waited out.
+"New messages below" jumps back to a streaming answer after you scroll up.
+Opening another chat while an answer streams stops it and keeps it in its own chat.

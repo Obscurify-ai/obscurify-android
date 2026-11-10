@@ -31,6 +31,10 @@ fn client() -> &'static reqwest::Client {
 /// What a request that never got an answer says.
 pub const OFFLINE: &str = "Can't reach Obscurify. Check your connection.";
 
+/// What a request that got a proxy's 502/503/504 page says: the server is reachable but failing,
+/// which is waited on for a while, not for as long as a lost connection (code::wait_again).
+pub const UNAVAILABLE: &str = "Obscurify isn't answering right now. Try again in a minute.";
+
 fn offline() -> String { format!("0\u{1}{OFFLINE}") }
 
 /// The request may work if it's made again: no connection, or the server is briefly unavailable.
@@ -88,7 +92,8 @@ fn error_text(status: u16, v: &Value, body: &str) -> String {
     match msg {
         Some(m) => m.to_string(),
         // No answer, or a proxy's error page because the server is restarting.
-        None if matches!(status, 0 | 502 | 503 | 504) => OFFLINE.into(),
+        None if status == 0 => OFFLINE.into(),
+        None if matches!(status, 502..=504) => UNAVAILABLE.into(),
         None => format!("Error {status}: {}", &body[..body.len().min(160)]),
     }
 }
@@ -163,6 +168,14 @@ pub async fn call(method: &str, path: &str, body: Option<Value>) -> Result<Value
 
 pub async fn get(path: &str) -> Result<Value, String> { call("GET", path, None).await.map_err(msg) }
 pub async fn post(path: &str, body: Value) -> Result<Value, String> { call("POST", path, Some(body)).await.map_err(msg) }
+
+/// Whether the server answers at all (any HTTP status): false means no connection.
+pub async fn reachable() -> bool {
+    match send(false, "GET", "/health", None, 10).await {
+        Ok(_) => true,
+        Err(e) => status_of(&e).0 != 0,
+    }
+}
 
 /// Public calls with no cookie or key: models and everything about buying vouchers.
 pub async fn public(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {

@@ -3,6 +3,9 @@
 //   GET /__set?after=1&fail=3&kind=error|cut|hang   pass `after` completions, then break `fail` of them
 //   GET /__set?tooldown=20000 | chatdown=20000 | losecall=1   an outage, or a paid call's answer lost
 //   GET /__set?toolbusy=2                            paid calls answer 429 twice, then succeed without running
+//   GET /__set?toolfail=N                            tool requests answer 503 with an error N times (-1: always)
+//   GET /__set?sandboxdown=1                         the Code Mode sandbox page answers 500
+//   GET /__set?context=N                             /models lists every model with an N-token context
 //   GET /__log, /__tools                             the completion and tool request bodies so far
 //   POST /__script  [{...}, ...]                     canned replies for the next completions, in order:
 //     {code, usage: {prompt_tokens, completion_tokens, cost}} a run_code call; {text, usage} an answer;
@@ -39,14 +42,30 @@ function scripted(res, r) {
 // The next paid call really runs, but its answer never reaches the app.
 let losecall = 0;
 let toolbusy = 0;
+let toolfail = 0;
+let context = 0;
+let sandboxdown = 0;
 
-function forward(req, res, body, onChunk, onEnd) {
+// `rewrite(json)` changes a JSON answer before it reaches the app.
+function forward(req, res, body, onChunk, onEnd, rewrite) {
   const headers = { ...req.headers, host: TARGET.host, 'accept-encoding': 'identity' };
   if (headers.origin) headers.origin = TARGET.origin;
   const up = (TARGET.protocol === 'http:' ? http : https).request({ host: TARGET.hostname, port: TARGET.port || undefined, path: req.url, method: req.method, headers }, (r) => {
     const h = { ...r.headers };
     // Pages are served from here in the test, so their CSP has to allow here.
     for (const k of Object.keys(h)) if (k.toLowerCase() === 'content-security-policy') h[k] = String(h[k]).replaceAll(TARGET.origin, self);
+    if (rewrite) {
+      const parts = [];
+      r.on('data', (c) => parts.push(c));
+      r.on('end', () => {
+        let out = Buffer.concat(parts);
+        try { out = Buffer.from(JSON.stringify(rewrite(JSON.parse(out.toString())))); } catch (_) { /* not JSON: as it is */ }
+        delete h['content-length'];
+        res.writeHead(r.statusCode, h);
+        res.end(out);
+      });
+      return;
+    }
     if (!onEnd) res.writeHead(r.statusCode, h);
     r.on('data', (c) => { if (!onChunk || onChunk(c)) res.write(c); });
     r.on('end', () => (onEnd ? onEnd() : res.end()));
@@ -62,6 +81,9 @@ http.createServer((req, res) => {
     down = { tool: +url.searchParams.get('tooldown') || 0, chat: +url.searchParams.get('chatdown') || 0, until: 0 };
     losecall = +url.searchParams.get('losecall') || 0;
     toolbusy = +url.searchParams.get('toolbusy') || 0;
+    toolfail = +url.searchParams.get('toolfail') || 0;
+    context = +url.searchParams.get('context') || 0;
+    sandboxdown = +url.searchParams.get('sandboxdown') || 0;
     log = [];
     tools = [];
     return res.end('ok');
@@ -73,6 +95,7 @@ http.createServer((req, res) => {
     return;
   }
   if (url.pathname === '/__log') return res.end(JSON.stringify(log));
+  if (sandboxdown && url.pathname.startsWith('/sandbox/')) { res.writeHead(500, { 'content-type': 'text/html' }); return res.end('down'); }
   if (url.pathname === '/__tools') return res.end(JSON.stringify(tools));
   if (down.tool && /\/tools\//.test(url.pathname)) { down.until = Date.now() + down.tool; down.tool = 0; }
   if (down.chat && /chat\/completions$/.test(url.pathname) && log.length >= 1) { down.until = Date.now() + down.chat; down.chat = 0; }
@@ -88,14 +111,29 @@ http.createServer((req, res) => {
         res.writeHead(busy ? 429 : 200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify(busy ? { error: 'Rate limit exceeded. Try again in 30 seconds.' } : { ok: true, status: 200, output: {}, cost_usd: 0.02, balance_usd: 3 }));
       }
+      // The server is up but the tool keeps failing (a web search's 503).
+      if (toolfail !== 0) {
+        if (toolfail > 0) toolfail--;
+        res.writeHead(503, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'Web search failed. Try again.' }));
+      }
       if (losecall > 0 && url.pathname.endsWith('/call')) {
         losecall--;
         return forward(req, res, body, () => false, () => req.socket.destroy());
       }
     }
+    if (context && url.pathname === '/models') {
+      // A small context everywhere, so a short chat already needs compacting.
+      return forward(req, res, body, null, null, (json) => {
+        for (const m of json.data || []) m.context_length = context;
+        return json;
+      });
+    }
     if (!/chat\/completions$/.test(url.pathname)) return forward(req, res, body);
-    log.push(JSON.parse(body.toString()));
-    if (script.length) return scripted(res, script.shift());
+    const sent = JSON.parse(body.toString());
+    log.push(sent);
+    // Summary requests (not streamed) always go to the server; scripts answer the chat.
+    if (script.length && sent.stream !== false) return scripted(res, script.shift());
     if (rule.after > 0) { rule.after--; return forward(req, res, body); }
     if (rule.fail <= 0) return forward(req, res, body);
     rule.fail--;

@@ -103,8 +103,30 @@ fn save(mut app: App) {
     store::save("chats.json", &*list);
 }
 
+/// Runs `then` once no answer is streaming. One that is gets stopped first and is saved, as far
+/// as it got, to its own chat (as on the web): switching used to do nothing until it finished.
+fn after_answer(mut app: App, then: impl FnOnce(App) + 'static) {
+    if app.live.peek().is_none() {
+        return then(app);
+    }
+    app.stop.set(true);
+    bg(async move {
+        for _ in 0..100 {
+            if app.live.peek().is_none() {
+                break;
+            }
+            crate::sleep(50).await;
+        }
+        then(app);
+    });
+}
+
 /// A fresh chat; it starts on the first favorite model, like the web.
-fn new_chat(mut app: App) {
+fn new_chat(app: App) {
+    after_answer(app, start_new_chat);
+}
+
+fn start_new_chat(mut app: App) {
     if app.live.peek().is_some() {
         return;
     }
@@ -337,73 +359,115 @@ fn run(mut app: App) {
     let web_search = api::has_session() && app.settings.peek().web_search && !crate::code::capable(&app, &model);
     app.stop.set(false);
     app.live.set(Some(Msg { role: "assistant".into(), model: model.clone(), ..Default::default() }));
-    js("const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }; window.android && android.working && android.working(true)");
+    js("document.body.dataset.working = 1; const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }; window.android && android.working && android.working(true)");
     bg(async move {
-        let mut body = json!({"model": model, "messages": api_history(&app.conv.peek(), &model, false), "stream": true});
-        if web_search {
-            body["web_search"] = json!(true);
-        }
-        let mut msg = app.live.peek().clone().unwrap();
-        // No connection: wait for it.
-        let mut delay = 1000;
-        let first = loop {
-            match api::chat(&body).await {
-                Err(e) if e == api::OFFLINE && !*app.stop.peek() => {
-                    app.waiting.set(true);
-                    crate::code::wait_a_bit(app, &mut delay).await;
-                }
-                other => { app.waiting.set(false); break other }
-            }
-        };
-        match first {
-            Err(e) => { msg.error = true; msg.content = e; }
-            Ok(resp) => {
-                let mut stream = resp.bytes_stream();
-                let mut buf: Vec<u8> = vec![];
-                let mut drawn = store::now();
-                'read: while let Some(chunk) = stream.next().await {
-                    if *app.stop.peek() { break }
-                    let Ok(chunk) = chunk else { if msg.content.is_empty() { msg.error = true; msg.content = "The connection dropped.".into() } break };
-                    buf.extend_from_slice(&chunk);
-                    while let Some(nl) = buf.iter().position(|b| *b == b'\n') {
-                        let line: Vec<u8> = buf.drain(..=nl).collect();
-                        let line = String::from_utf8_lossy(&line);
-                        let Some(data) = line.trim().strip_prefix("data:") else { continue };
-                        let data = data.trim();
-                        if data == "[DONE]" { break 'read }
-                        let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
-                        if !v["error"].is_null() {
-                            msg.error = true;
-                            let e = v["error"]["message"].as_str().or(v["error"].as_str()).unwrap_or("The model returned an error");
-                            msg.content = if msg.content.is_empty() { e.to_string() } else { format!("{}\n\n{e}", msg.content) };
-                            continue;
-                        }
-                        let d = &v["choices"][0]["delta"];
-                        if let Some(s) = d["content"].as_str() { merge(&mut msg.content, s) }
-                        if let Some(s) = d["reasoning"].as_str() { merge(&mut msg.reasoning, s) }
-                        if d["reasoning_details"].is_array() { merge_details(&mut msg.details, &d["reasoning_details"]) }
-                        let ws = &d["web_search"];
-                        if let Some(q) = ws["query"].as_str() {
-                            let s = Search { query: q.into(), status: ws["status"].as_str().unwrap_or("").into(), results: ws["results"].as_str().or(ws["error"].as_str()).unwrap_or("").into() };
-                            match msg.searches.iter_mut().find(|x| x.query == q) { Some(x) => *x = s, None => msg.searches.push(s) }
-                        }
-                    }
-                    if store::now() - drawn > 60 {
-                        drawn = store::now();
-                        app.live.set(Some(msg.clone()));
-                    }
-                }
-                if msg.content.is_empty() && msg.reasoning.is_empty() && !*app.stop.peek() {
+        let stop = || *app.stop.peek();
+        let context = app.models.peek().iter().find(|m| m.id == model).map(|m| m.context).filter(|c| *c > 0).unwrap_or(crate::code::DEFAULT_CONTEXT);
+        // A long chat: summarize the earlier messages first so the request fits the model's
+        // context (compact.rs). The latest message always goes as it is. `resent`: once refused
+        // as too long, it compacts (all of it, now) and sends the same message again, once.
+        let mut resent = false;
+        let mut compacted = false;
+        let mut msg;
+        loop {
+            let force = resent;
+            let mut shown = app.live.peek().clone().unwrap_or_default();
+            let summarized = crate::compact::if_needed(app, &model, context, force, &stop, &mut |note: String| {
+                shown.content = note;
+                app.live.set(Some(shown.clone()));
+            }).await;
+            match summarized {
+                Ok(done) => compacted |= done,
+                Err(e) => {
+                    msg = app.live.peek().clone().unwrap_or_default();
                     msg.error = true;
-                    msg.content = "No answer came back. Try again or pick another model.".into();
+                    msg.content = format!("Couldn’t summarize the earlier messages to fit the model’s context: {e}");
+                    break;
                 }
             }
+            if compacted {
+                save(app);
+            }
+            let mut fresh = app.live.peek().clone().unwrap_or_default();
+            fresh.content.clear();
+            fresh.compacted = compacted;
+            app.live.set(Some(fresh));
+            let mut overflow = false;
+            let mut body = json!({"model": model, "messages": api_history(&app.conv.peek(), &model, false), "stream": true});
+            if web_search {
+                body["web_search"] = json!(true);
+            }
+            msg = app.live.peek().clone().unwrap();
+            // No connection: wait for it. A server answering 502/503/504 is waited on for a while.
+            let mut delay = 1000;
+            let mut waits = 0;
+            let first = loop {
+                match api::chat(&body).await {
+                    Err(e) if (e == api::OFFLINE || e == api::UNAVAILABLE) && !*app.stop.peek()
+                        && crate::code::wait_again(app, &mut delay, &mut waits, e == api::OFFLINE).await => {}
+                    other => { app.waiting.set(false); break other }
+                }
+            };
+            match first {
+                Err(e) => { msg.error = true; msg.content = e; }
+                Ok(resp) => {
+                    let mut stream = resp.bytes_stream();
+                    let mut buf: Vec<u8> = vec![];
+                    let mut drawn = store::now();
+                    'read: while let Some(chunk) = stream.next().await {
+                        if *app.stop.peek() { break }
+                        let Ok(chunk) = chunk else { if msg.content.is_empty() { msg.error = true; msg.content = "The connection dropped.".into() } break };
+                        buf.extend_from_slice(&chunk);
+                        while let Some(nl) = buf.iter().position(|b| *b == b'\n') {
+                            let line: Vec<u8> = buf.drain(..=nl).collect();
+                            let line = String::from_utf8_lossy(&line);
+                            let Some(data) = line.trim().strip_prefix("data:") else { continue };
+                            let data = data.trim();
+                            if data == "[DONE]" { break 'read }
+                            let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
+                            if !v["error"].is_null() {
+                                let e = v["error"]["message"].as_str().or(v["error"].as_str()).unwrap_or("The model returned an error");
+                                // Refused as too long: compact and send again, once.
+                                if !resent && msg.content.is_empty() && crate::code::too_long(&e.to_lowercase()) {
+                                    overflow = true;
+                                    break 'read;
+                                }
+                                msg.error = true;
+                                msg.content = if msg.content.is_empty() { e.to_string() } else { format!("{}\n\n{e}", msg.content) };
+                                continue;
+                            }
+                            let d = &v["choices"][0]["delta"];
+                            if let Some(s) = d["content"].as_str() { merge(&mut msg.content, s) }
+                            if let Some(s) = d["reasoning"].as_str() { merge(&mut msg.reasoning, s) }
+                            if d["reasoning_details"].is_array() { merge_details(&mut msg.details, &d["reasoning_details"]) }
+                            let ws = &d["web_search"];
+                            if let Some(q) = ws["query"].as_str() {
+                                let s = Search { query: q.into(), status: ws["status"].as_str().unwrap_or("").into(), results: ws["results"].as_str().or(ws["error"].as_str()).unwrap_or("").into() };
+                                match msg.searches.iter_mut().find(|x| x.query == q) { Some(x) => *x = s, None => msg.searches.push(s) }
+                            }
+                        }
+                        if store::now() - drawn > 60 {
+                            drawn = store::now();
+                            app.live.set(Some(msg.clone()));
+                        }
+                    }
+                    if !overflow && msg.content.is_empty() && msg.reasoning.is_empty() && !*app.stop.peek() {
+                        msg.error = true;
+                        msg.content = "No answer came back. Try again or pick another model.".into();
+                    }
+                }
+            }
+            if overflow {
+                resent = true;
+                continue;
+            }
+            break;
         }
         if !msg.content.is_empty() || !msg.reasoning.is_empty() {
             app.conv.write().messages.push(msg);
         }
         app.live.set(None);
-        js("window.android && android.working && android.working(false)");
+        js("document.body.dataset.working = 0; const f = document.getElementById('follow'); if (f) f.hidden = true; window.android && android.working && android.working(false)");
         save(app);
         app.refresh_balance();
     });
@@ -771,7 +835,8 @@ fn Drawer() -> Element {
                 for m in app.convs.read().clone() {
                     div { key: "{m.id}", class: if m.id == current { "item on" } else { "item" },
                         div { class: "grow", onclick: { let id = m.id.clone(); move |_| {
-                            if app.live.peek().is_none() { app.conv.set(Conv::load(&id)) }
+                            let id = id.clone();
+                            after_answer(app, move |mut app| { if app.live.peek().is_none() { app.conv.set(Conv::load(&id)) } });
                             app.overlay.set(Overlay::None)
                         } }, "{m.title}" span { class: "when", {ago(m.updated)} } }
                         if confirm.read().as_deref() == Some(&m.id) {

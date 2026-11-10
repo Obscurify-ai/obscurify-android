@@ -69,6 +69,7 @@ obscurify.ai/android links through `releases/latest/download/obscurify.apk`. Upl
 | `src/chat.rs` | Chat, streaming, chats on the phone, model picker, safe markdown |
 | `src/files.rs` | Reading attached files into text: PDF, spreadsheets, Word, PowerPoint, OpenDocument, text |
 | `src/code.rs` | Code Mode: the agent loop, the sandbox bridge, tools and budgets, runs on the message |
+| `src/compact.rs` | Compaction: earlier messages summarized in chunks so a chat goes on past the model's context |
 | `src/api.rs` | HTTP. Signed-in calls carry the session; voucher calls carry nothing |
 | `src/wallet.rs` | Voucher orders: blind, sign, unblind, redeem |
 | `src/store.rs` | JSON files in the app's private storage |

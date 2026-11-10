@@ -6,6 +6,7 @@
 mod api;
 mod chat;
 mod code;
+mod compact;
 mod files;
 mod store;
 mod wallet;
@@ -74,8 +75,19 @@ setInterval(() => {
   if (!el || el.dataset.watch) return;
   el.dataset.watch = 1; el.dataset.pin = 1;
   el.addEventListener('scroll', () => { el.dataset.pin = el.scrollHeight - el.scrollTop - el.clientHeight < 80 ? 1 : 0; });
-  new MutationObserver(() => { if (el.dataset.pin == 1) el.scrollTop = el.scrollHeight; })
-    .observe(el, {childList: true, subtree: true, characterData: true});
+  // Follow the answer while it streams; scrolled up, it stays put and "New messages below"
+  // (bottom right, above the composer) jumps back and follows again, as on the web.
+  const jump = document.createElement('button');
+  jump.id = 'follow'; jump.className = 'follow'; jump.hidden = true;
+  jump.textContent = 'New messages below \u2193';
+  jump.addEventListener('click', () => { el.dataset.pin = 1; el.scrollTop = el.scrollHeight; jump.hidden = true; });
+  document.body.appendChild(jump);
+  const place = () => { const c = document.querySelector('.composer'); jump.style.bottom = ((c ? c.offsetHeight : 64) + 12) + 'px'; };
+  el.addEventListener('scroll', () => { if (el.dataset.pin == 1) jump.hidden = true; });
+  new MutationObserver(() => {
+    if (el.dataset.pin == 1) { el.scrollTop = el.scrollHeight; jump.hidden = true; }
+    else if (document.body.dataset.working == 1 && el.scrollHeight - el.scrollTop - el.clientHeight > 80) { place(); jump.hidden = false; }
+  }).observe(el, {childList: true, subtree: true, characterData: true});
   el.scrollTop = el.scrollHeight;
 }, 100);
 await new Promise(() => {});

@@ -63,7 +63,9 @@ await page.locator('.meta button', { hasText: 'Retry' }).click();
 await page.waitForSelector('.send.stop', { timeout: 10000 }).catch(() => {});
 await idle();
 reqs = await log();
-ok(hasTool(reqs[0], '7006652') && await page.locator('.run').count() === 1, 'Retry keeps the tool results and does not pay again');
+// The tool result goes along, or the server already holds it (a held thread sends only new messages).
+const held = reqs[0].thread && reqs[0].thread.rev && reqs[0].messages.length === 0;
+ok((hasTool(reqs[0], '7006652') || held) && await page.locator('.run').count() === 1, 'Retry keeps the tool results and does not pay again');
 
 // 4. Sending another message instead of Continue keeps it all in the conversation.
 await fresh();

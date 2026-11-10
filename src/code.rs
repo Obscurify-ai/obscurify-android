@@ -32,7 +32,7 @@ const MAX_TOOL_CALLS: usize = 200;
 const COMPACT_AT: f64 = 0.70;
 /// The recent tool work kept word for word through a compaction, as a share of the context.
 const TAIL_SHARE: f64 = 0.15;
-const DEFAULT_CONTEXT: u64 = 128_000;
+pub(crate) const DEFAULT_CONTEXT: u64 = 128_000;
 const MIN_SUMMARY_CHARS: usize = 200;
 const MAX_COMPACT_TRIES: u32 = 3;
 /// Times one reply tells the model its request failed, then stops and offers Continue.
@@ -212,8 +212,11 @@ async fn ensure(rx: &mut UnboundedReceiver<Value>, base: &str, mut app: App, sto
         return Ok(());
     }
     js(&format!("window.android && android.sandboxStart && android.sandboxStart({})", serde_json::to_string(base).unwrap_or_default()));
-    // The sandbox's pages come from the server, so with no connection it keeps trying.
+    // The sandbox's pages come from the server, so with no connection it keeps trying. With the
+    // server reachable, MAX_LOST_WAITS restarts (~2 min) and it stops with an error instead: a
+    // sandbox that won't start used to hold the chat on "Waiting for Obscurify" for good.
     let mut asked = crate::store::now();
+    let mut restarts = 0u32;
     while !stop() {
         if let Some(v) = next(rx, 1000).await
             && v["type"] == "ready"
@@ -223,6 +226,13 @@ async fn ensure(rx: &mut UnboundedReceiver<Value>, base: &str, mut app: App, sto
             return Ok(());
         }
         if crate::store::now() - asked > 20_000 {
+            if api::reachable().await {
+                restarts += 1;
+                if restarts > MAX_LOST_WAITS {
+                    app.waiting.set(false);
+                    return Err("The code sandbox would not start. Closing and reopening the app restarts it.".into());
+                }
+            }
             app.waiting.set(true);
             asked = crate::store::now();
             js(&format!("window.android && android.sandboxStart && android.sandboxStart({})", serde_json::to_string(base).unwrap_or_default()));
@@ -305,6 +315,27 @@ fn text_tool_call(content: &str, step: usize) -> Option<Value> {
 /// be a plan's limit that lasts for hours, so after this long the answer stops and offers Continue.
 const RATE_WAIT_MS: i64 = 15 * 60 * 1000;
 
+/// Failures from a reachable server (a 502/503/504, a stream cut short, a tool's 503) waited on
+/// before giving up: ~45 s with wait_a_bit's 1, 2, 4, 8, 15, 15 s. Only a lost connection (no
+/// answer at all) is waited out for as long as it takes. A web search answering 503 used to hold
+/// a run, and the chat, on "Waiting for Obscurify" for good (customer report 2026-11-09).
+pub const MAX_LOST_WAITS: u32 = 6;
+
+/// Whether to wait and try again, and waits if so: always while `offline`, otherwise up to
+/// MAX_LOST_WAITS times (counted in `waits`).
+pub async fn wait_again(mut app: App, delay: &mut u32, waits: &mut u32, offline: bool) -> bool {
+    if !offline {
+        if *waits >= MAX_LOST_WAITS {
+            app.waiting.set(false);
+            return false;
+        }
+        *waits += 1;
+    }
+    app.waiting.set(true);
+    wait_a_bit(app, delay).await;
+    true
+}
+
 /// Waits out a pause before trying again, without holding up Stop. Grows up to 15 seconds.
 pub async fn wait_a_bit(app: App, delay: &mut u32) {
     let mut left = *delay;
@@ -320,6 +351,7 @@ pub async fn wait_a_bit(app: App, delay: &mut u32) {
 /// server runs it once however many times it's asked, and it's safe to ask again.
 async fn tool_post(mut app: App, path: &str, body: &Value, timeout: u64) -> Result<Value, String> {
     let mut delay = 1000;
+    let mut waits = 0;
     let mut limited_since = None;
     loop {
         let r = if api::has_session() {
@@ -338,8 +370,14 @@ async fn tool_post(mut app: App, path: &str, body: &Value, timeout: u64) -> Resu
         match r {
             // A paid call's 503 means the tool itself timed out and may have charged: not repeated.
             Err(e) if api::transient(&e) && !(path == "/call" && api::status_of(&e).0 == 503) && !*app.stop.peek() => {
-                app.waiting.set(true);
-                wait_a_bit(app, &mut delay).await;
+                // A rate limit has its own limit above; no answer at all is a lost connection.
+                let status = api::status_of(&e).0;
+                if status == 429 {
+                    app.waiting.set(true);
+                    wait_a_bit(app, &mut delay).await;
+                } else if !wait_again(app, &mut delay, &mut waits, status == 0).await {
+                    return Err(format!("The tool request kept failing ({}). Try again later, or carry on without it.", api::msg(e)));
+                }
             }
             other => {
                 app.waiting.set(false);
@@ -548,7 +586,7 @@ fn worth_retrying(e: &str) -> bool {
     !["balance", "credit", "insufficient", "rate limit", "not support", "needs", "not available", "too long", "context"].iter().any(|w| e.contains(w))
 }
 
-fn too_long(e: &str) -> bool {
+pub(crate) fn too_long(e: &str) -> bool {
     let e = e.to_lowercase();
     ["too long", "too large", "too many tokens", "context length", "context window", "context_length", "maximum context"].iter().any(|w| e.contains(w))
 }
@@ -576,24 +614,6 @@ fn tail(trace: &[Value], budget: u64) -> Vec<Value> {
     trace[from..].to_vec()
 }
 
-/// A shorter copy of a request, only for summarizing one that's already too long for the model.
-/// The cache is lost by then anyway. It's never stored.
-fn reduced(msgs: &[Value]) -> Vec<Value> {
-    msgs.iter().map(|m| {
-        let mut m = m.clone();
-        if let Some(o) = m.as_object_mut() { o.remove("reasoning_details"); }
-        if m["role"] == "tool" {
-            m["content"] = json!(clip_middle(m["content"].as_str().unwrap_or(""), 1500));
-        } else if m["role"] == "user" {
-            let text = match m["content"].as_array() {
-                Some(parts) => parts.iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join("\n"),
-                None => m["content"].as_str().unwrap_or("").to_string(),
-            };
-            m["content"] = json!(clip_middle(&text, 8000));
-        }
-        m
-    }).collect()
-}
 
 /// Summarizes the conversation and starts the request history over from the summary. The request
 /// has the same prefix and tools as the step it follows, so it reads from the cache. False if no
@@ -601,35 +621,46 @@ fn reduced(msgs: &[Value]) -> Vec<Value> {
 #[allow(clippy::too_many_arguments)]
 async fn compact(mut app: App, cfg: &Config, model: &str, context: u64, shrink: bool, history: &mut Vec<Value>, trace: &mut Vec<Value>, msg: &mut Msg, t: &mut Turn, stop: &impl Fn() -> bool) -> bool {
     let sent: Vec<Value> = history.iter().chain(trace.iter()).cloned().collect();
-    let mut messages = if shrink { reduced(&sent) } else { sent };
-    messages.push(json!({"role": "user", "content": SUMMARY_PROMPT}));
-    let body = json!({"model": model, "messages": messages, "stream": true, "stream_options": {"include_usage": true}, "tools": [cfg.run_code_tool]});
-    let mut delay = 1000;
-    let mut retries = 0;
-    let summary = loop {
-        let mut out = Msg::default();
-        let r = chat::stream(&body, &mut out, stop, &mut |_: &Msg| {}).await;
-        if let Ok(s) = &r {
-            t.spent += s.cost;
-            msg.spent = t.spent;
+    // Too big for one summary request (or already refused as too long): summarize it in chunks
+    // that each fit (compact.rs), so a history of any length compacts.
+    let big = shrink || crate::compact::tokens(&sent) as f64 > 0.5 * context as f64;
+    let summary = if big {
+        match crate::compact::summarize(model, &sent, context, stop, &mut |_, _| {}).await {
+            Ok(s) => s,
+            Err(_) => return false,
         }
-        match r {
-            Ok(s) if !s.cut => {
-                app.waiting.set(false);
-                break chat::answer_text(&out.content);
+    } else {
+        let mut messages = sent;
+        messages.push(json!({"role": "user", "content": SUMMARY_PROMPT}));
+        let body = json!({"model": model, "messages": messages, "stream": true, "stream_options": {"include_usage": true}, "tools": [cfg.run_code_tool]});
+        let mut delay = 1000;
+        let mut waits = 0;
+        let mut retries = 0;
+        loop {
+            let mut out = Msg::default();
+            let r = chat::stream(&body, &mut out, stop, &mut |_: &Msg| {}).await;
+            if let Ok(s) = &r {
+                t.spent += s.cost;
+                msg.spent = t.spent;
             }
-            other => {
-                let e = other.err().unwrap_or_else(|| "The connection dropped.".into());
-                if stop() { app.waiting.set(false); return false }
-                if e == api::OFFLINE || e.contains("connection dropped") {
-                    app.waiting.set(true);
-                    wait_a_bit(app, &mut delay).await;
-                    continue;
+            match r {
+                Ok(s) if !s.cut => {
+                    app.waiting.set(false);
+                    break chat::answer_text(&out.content);
                 }
-                app.waiting.set(false);
-                if retries >= MAX_RETRIES || !worth_retrying(&e) { return false }
-                retries += 1;
-                sleep(1500 * retries).await;
+                other => {
+                    let e = other.err().unwrap_or_else(|| "The connection dropped.".into());
+                    if stop() { app.waiting.set(false); return false }
+                    if (e == api::OFFLINE || e == api::UNAVAILABLE || e.contains("connection dropped"))
+                        && wait_again(app, &mut delay, &mut waits, e == api::OFFLINE).await
+                    {
+                        continue;
+                    }
+                    app.waiting.set(false);
+                    if retries >= MAX_RETRIES || !worth_retrying(&e) { return false }
+                    retries += 1;
+                    sleep(1500 * retries).await;
+                }
             }
         }
     };
@@ -674,7 +705,7 @@ pub fn turn(mut app: App, from: Option<Msg>) {
     first.runs.iter_mut().filter(|r| !r.done).for_each(|r| { r.done = true; r.status = "Cut off".into() });
     let mut trace: Vec<Value> = chat::sound_trace(&std::mem::take(&mut first.trace));
     app.live.set(Some(first));
-    js("const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }; window.android && android.keepAwake && android.keepAwake(true); window.android && android.working && android.working(true)");
+    js("document.body.dataset.working = 1; const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }; window.android && android.keepAwake && android.keepAwake(true); window.android && android.working && android.working(true)");
     bg(async move {
         let (tx, mut rx) = unbounded();
         *EVENTS.lock().unwrap() = Some(tx);
@@ -706,6 +737,7 @@ pub fn turn(mut app: App, from: Option<Msg>) {
         let mut failure: Option<String> = None;
         let mut retries = 0u32;
         let mut wait_since: Option<i64> = None;
+        let mut lost_waits = 0u32;
         let mut delay = 1000u32;
         let done_steps = msg.steps.max(trace.iter().filter(|m| m["tool_calls"].is_array()).count()).min(MAX_STEPS - 1);
         // The tokens the last step used: what the next one starts from.
@@ -771,16 +803,22 @@ pub fn turn(mut app: App, from: Option<Msg>) {
                             continue;
                         }
                     }
-                    // No connection: wait for it for as long as it takes. Nothing here gives up on its own.
-                    let lost = e == api::OFFLINE || e.contains("connection dropped");
+                    // No connection: wait for it for as long as it takes. A server that answers but
+                    // keeps failing is waited on MAX_LOST_WAITS times, then reported with Continue.
+                    let offline = e == api::OFFLINE;
+                    let lost = offline || e == api::UNAVAILABLE || e.contains("connection dropped");
                     let lower = e.to_lowercase();
                     let limited = lower.contains("rate limit") || lower.contains("too many requests");
                     let since = *wait_since.get_or_insert_with(crate::store::now);
-                    if (lost || limited && crate::store::now() - since < RATE_WAIT_MS) && !stop() {
+                    if limited && crate::store::now() - since < RATE_WAIT_MS && !stop() {
                         app.waiting.set(true);
                         wait_a_bit(app, &mut delay).await;
                         continue;
                     }
+                    if lost && !stop() && wait_again(app, &mut delay, &mut lost_waits, offline).await {
+                        continue;
+                    }
+                    let e = if lost && !offline { format!("Obscurify kept failing to answer this chat ({e}). Your chat is kept: press Continue to try again, or switch models.") } else { e };
                     app.waiting.set(false);
                     // The tool results are safe in `trace`: only this one step is asked again.
                     if !lost && retries < MAX_RETRIES && worth_retrying(&e) && !stop() {
@@ -878,7 +916,7 @@ pub fn turn(mut app: App, from: Option<Msg>) {
             app.conv.write().messages.push(msg);
         }
         app.live.set(None);
-        js("window.android && android.keepAwake && android.keepAwake(false); window.android && android.working && android.working(false)");
+        js("document.body.dataset.working = 0; const f = document.getElementById('follow'); if (f) f.hidden = true; window.android && android.keepAwake && android.keepAwake(false); window.android && android.working && android.working(false)");
         chat::save_chat(app);
         app.refresh_balance();
     });
