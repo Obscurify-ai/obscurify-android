@@ -1,0 +1,3 @@
+A paid tool that stays busy is waited on for two minutes, not fifteen; then the model hears it and can try another way.
+An answer that goes silent with the connection still open is asked again after a minute (Code Mode) or ends with an error (chat), instead of waiting until the app is restarted.
+A rate limit on the model is waited out for five minutes at most, then Continue picks it up.

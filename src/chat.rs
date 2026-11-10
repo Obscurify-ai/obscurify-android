@@ -283,6 +283,20 @@ pub(crate) struct Step {
     pub cost: f64,
 }
 
+/// A streamed answer that sends nothing for this long is dead: the server sends a keepalive every
+/// 15 s while the model is quiet. A connection that died without closing (a network change) used
+/// to leave the read waiting for good (customer report 2026-11-10, on the web).
+const STREAM_STALL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The next piece of a streamed answer; an error when it fails or nothing comes for STREAM_STALL.
+pub(crate) async fn next_or_stall<T, E>(s: &mut (impl futures_util::Stream<Item = Result<T, E>> + Unpin)) -> Option<Result<T, ()>> {
+    match tokio::time::timeout(STREAM_STALL, s.next()).await {
+        Ok(Some(Ok(v))) => Some(Ok(v)),
+        Ok(Some(Err(_))) | Err(_) => Some(Err(())),
+        Ok(None) => None,
+    }
+}
+
 /// Streams one completion into `msg` (content and reasoning), calling `show` as it grows. Returns
 /// the tool calls it made (OpenAI shape) and its reasoning_details.
 pub(crate) async fn stream(body: &Value, msg: &mut Msg, stop: &impl Fn() -> bool, show: &mut impl FnMut(&Msg)) -> Result<Step, String> {
@@ -295,7 +309,7 @@ pub(crate) async fn stream(body: &Value, msg: &mut Msg, stop: &impl Fn() -> bool
     let mut finished = false;
     let mut tokens = None;
     let mut cost = 0.0;
-    'read: while let Some(chunk) = stream.next().await {
+    'read: while let Some(chunk) = next_or_stall(&mut stream).await {
         if stop() { finished = true; break }
         let Ok(chunk) = chunk else { if !got_any { return Err("The connection dropped.".into()) } break };
         buf.extend_from_slice(&chunk);
@@ -414,7 +428,7 @@ fn run(mut app: App) {
                     let mut stream = resp.bytes_stream();
                     let mut buf: Vec<u8> = vec![];
                     let mut drawn = store::now();
-                    'read: while let Some(chunk) = stream.next().await {
+                    'read: while let Some(chunk) = next_or_stall(&mut stream).await {
                         if *app.stop.peek() { break }
                         let Ok(chunk) = chunk else { if msg.content.is_empty() { msg.error = true; msg.content = "The connection dropped.".into() } break };
                         buf.extend_from_slice(&chunk);

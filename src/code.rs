@@ -313,7 +313,10 @@ fn text_tool_call(content: &str, step: usize) -> Option<Value> {
 
 /// A lost connection is waited out for as long as it takes, until Stop. A rate limit isn't: it may
 /// be a plan's limit that lasts for hours, so after this long the answer stops and offers Continue.
-const RATE_WAIT_MS: i64 = 15 * 60 * 1000;
+const RATE_WAIT_MS: i64 = 5 * 60 * 1000;
+/// A busy paid tool (a 429) is waited out this long, not longer: the model is better off hearing
+/// it and trying something else than the chat sitting on "Waiting" (customer report 2026-11-10).
+const TOOL_BUSY_MS: i64 = 2 * 60 * 1000;
 
 /// Failures from a reachable server (a 502/503/504, a stream cut short, a tool's 503) waited on
 /// before giving up: ~45 s with wait_a_bit's 1, 2, 4, 8, 15, 15 s. Only a lost connection (no
@@ -359,12 +362,12 @@ async fn tool_post(mut app: App, path: &str, body: &Value, timeout: u64) -> Resu
         } else {
             api::guest_post(&format!("/anon/tools{path}"), body, timeout).await
         };
-        // Busy: nothing ran. It's waited out for a while, not forever, since it may not pass by itself.
+        // Busy: nothing ran. It's waited out for two minutes, since it may not pass by itself.
         if let Err(e) = &r && api::status_of(e).0 == 429 {
             let since = *limited_since.get_or_insert_with(crate::store::now);
-            if crate::store::now() - since > RATE_WAIT_MS {
+            if crate::store::now() - since > TOOL_BUSY_MS {
                 app.waiting.set(false);
-                return Err("Tools are busy right now. Try again later.".into());
+                return Err("Tools are busy right now (asked for 2 minutes). Use another way, or carry on without it.".into());
             }
         }
         match r {

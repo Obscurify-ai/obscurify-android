@@ -2,7 +2,8 @@
 // test APK with OBSCURIFY_API=http://127.0.0.1:8093, `adb reverse tcp:8093 tcp:8093`, then run this.
 //   GET /__set?after=1&fail=3&kind=error|cut|hang   pass `after` completions, then break `fail` of them
 //   GET /__set?tooldown=20000 | chatdown=20000 | losecall=1   an outage, or a paid call's answer lost
-//   GET /__set?toolbusy=2                            paid calls answer 429 twice, then succeed without running
+//   GET /__set?toolbusy=2                            paid calls answer 429 once, then succeed without running (-1: 429 always)
+//   GET /__set?silent=N                              the next N streamed completions send headers, then nothing, open
 //   GET /__set?toolfail=N                            tool requests answer 503 with an error N times (-1: always)
 //   GET /__set?sandboxdown=1                         the Code Mode sandbox page answers 500
 //   GET /__set?context=N                             /models lists every model with an N-token context
@@ -45,6 +46,7 @@ let toolbusy = 0;
 let toolfail = 0;
 let context = 0;
 let sandboxdown = 0;
+let silent = 0;
 
 // `rewrite(json)` changes a JSON answer before it reaches the app.
 function forward(req, res, body, onChunk, onEnd, rewrite) {
@@ -84,6 +86,7 @@ http.createServer((req, res) => {
     toolfail = +url.searchParams.get('toolfail') || 0;
     context = +url.searchParams.get('context') || 0;
     sandboxdown = +url.searchParams.get('sandboxdown') || 0;
+    silent = +url.searchParams.get('silent') || 0;
     log = [];
     tools = [];
     return res.end('ok');
@@ -107,7 +110,7 @@ http.createServer((req, res) => {
     if (/\/tools\//.test(url.pathname)) {
       tools.push({ path: url.pathname, body: JSON.parse(body.toString() || 'null') });
       if (toolbusy && url.pathname.endsWith('/call')) {
-        const busy = toolbusy-- > 1;
+        const busy = toolbusy < 0 || toolbusy-- > 1;
         res.writeHead(busy ? 429 : 200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify(busy ? { error: 'Rate limit exceeded. Try again in 30 seconds.' } : { ok: true, status: 200, output: {}, cost_usd: 0.02, balance_usd: 3 }));
       }
@@ -132,6 +135,8 @@ http.createServer((req, res) => {
     if (!/chat\/completions$/.test(url.pathname)) return forward(req, res, body);
     const sent = JSON.parse(body.toString());
     log.push(sent);
+    // A connection that died without closing: the answer starts, and nothing more ever comes.
+    if (silent > 0 && sent.stream !== false) { silent--; res.writeHead(200, { 'content-type': 'text/event-stream' }); return res.flushHeaders(); }
     // Summary requests (not streamed) always go to the server; scripts answer the chat.
     if (script.length && sent.stream !== false) return scripted(res, script.shift());
     if (rule.after > 0) { rule.after--; return forward(req, res, body); }
