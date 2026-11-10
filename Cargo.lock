@@ -3710,7 +3710,7 @@ dependencies = [
 
 [[package]]
 name = "obscurify"
-version = "0.8.11"
+version = "0.8.12"
 dependencies = [
  "base64 0.22.1",
  "blind-rsa-signatures",
@@ -3735,6 +3735,7 @@ dependencies = [
 [[package]]
 name = "obscurify-tee-verify"
 version = "0.1.0"
+source = "git+https://github.com/Obscurify-ai/tee-verify?rev=b8bf3b3746d4d81a2d4d44f8bad6d50a28014b28#b8bf3b3746d4d81a2d4d44f8bad6d50a28014b28"
 dependencies = [
  "dcap-qvl",
  "ed25519-dalek",

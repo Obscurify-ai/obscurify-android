@@ -1,6 +1,6 @@
 [package]
 name = "obscurify"
-version = "0.8.11"
+version = "0.8.12"
 edition = "2024"
 license = "GPL-3.0-only"
 description = "Obscurify for Android: private AI chat, paid for with unlinkable vouchers"
@@ -8,7 +8,7 @@ repository = "https://github.com/Obscurify-ai/obscurify-android"
 
 # Android versionCode: 1000000 + major*10000 + minor*100 + patch. Bump it with the version.
 [package.metadata.android]
-version-code = 1000811
+version-code = 1000812
 
 [dependencies]
 dioxus = { version = "0.7.10", features = ["mobile"] }
@@ -28,7 +28,7 @@ calamine = "0.38"
 quick-xml = "0.42"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 # Checks TEE replies on the phone (Verify). Path until the repo is published.
-obscurify-tee-verify = { path = "../obscurify-tee-verify" }
+obscurify-tee-verify = { git = "https://github.com/Obscurify-ai/tee-verify", rev = "b8bf3b3746d4d81a2d4d44f8bad6d50a28014b28" }
 bytes = "1"
 
 [profile.release]
