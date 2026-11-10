@@ -691,6 +691,9 @@ async fn compact(mut app: App, cfg: &Config, model: &str, context: u64, shrink: 
 /// On disk after every step: a killed app comes back to this, with Continue.
 fn checkpoint(app: App, msg: &Msg, trace: &[Value]) {
     let mut c = app.conv.peek().clone();
+    if c.temp {
+        return;
+    }
     let mut m = msg.clone();
     m.trace = trace.to_vec();
     m.interrupted = "The app closed before this finished.".into();

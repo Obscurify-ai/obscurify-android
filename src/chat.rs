@@ -76,6 +76,9 @@ pub struct Meta {
 
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct Conv {
+    /// A temporary chat: never written to the phone, gone when the app closes or another chat opens.
+    #[serde(skip)]
+    pub temp: bool,
     pub id: String,
     pub title: String,
     pub messages: Vec<Msg>,
@@ -93,7 +96,7 @@ pub(crate) fn save_chat(app: App) { save(app) }
 
 fn save(mut app: App) {
     let c = app.conv.peek().clone();
-    if c.messages.is_empty() {
+    if c.messages.is_empty() || c.temp {
         return;
     }
     store::save(&format!("chat-{}.json", c.id), &c);
@@ -130,12 +133,45 @@ fn start_new_chat(mut app: App) {
     if app.live.peek().is_some() {
         return;
     }
-    app.conv.set(Conv::new());
+    // A new chat stays temporary while Temp is on, as on the web.
+    let temp = app.conv.peek().temp;
+    app.conv.set(Conv { temp, ..Conv::new() });
     let first = app.settings.peek().favorites.first().cloned();
     if let Some(f) = first {
         app.settings.write().model = f;
         app.save_settings();
     }
+}
+
+/// Temp on: a fresh chat that is never saved. Temp off: a fresh, ordinary chat.
+fn toggle_temp(app: App) {
+    after_answer(app, |mut app| {
+        let temp = !app.conv.peek().temp;
+        start_new_chat(app);
+        app.conv.write().temp = temp;
+    });
+}
+
+/// Deletes every chat and the chat settings from the phone. The session and the wallet
+/// (vouchers not yet added to the balance, which are money) stay.
+fn wipe(app: App) {
+    after_answer(app, |mut app| {
+        if let Ok(dir) = std::fs::read_dir(store::dir()) {
+            for e in dir.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with("chat-") && name.ends_with(".json") {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+        store::remove("chats.json");
+        store::remove("settings.json");
+        app.convs.set(vec![]);
+        app.conv.set(Conv::new());
+        app.settings.set(crate::Settings::default());
+        app.overlay.set(Overlay::None);
+        app.say("Chats and settings deleted from this phone");
+    });
 }
 
 fn delete(mut app: App, id: &str) {
@@ -652,7 +688,7 @@ pub fn ChatView() -> Element {
                                 onclick: move |_| app.say("This model can't use tools"), "Tools" }
                         }
                     }
-                    textarea { id: "composer", rows: 1, placeholder: "Message", oninput: move |e| text.set(e.value()) }
+                    textarea { id: "composer", rows: 1, placeholder: if app.conv.read().temp { "Temporary chat" } else { "Message" }, oninput: move |e| text.set(e.value()) }
                     if streaming {
                         button { class: "send stop", aria_label: "Stop", onclick: move |_| app.stop.set(true),
                             svg { view_box: "0 0 24 24", width: "18", height: "18", rect { x: "5", y: "5", width: "14", height: "14", rx: "2", fill: "currentColor" } }
@@ -841,13 +877,43 @@ fn ago(ms: i64) -> String {
 fn Drawer() -> Element {
     let mut app = use_context::<App>();
     let mut confirm = use_signal(|| None::<String>);
+    let mut wiping = use_signal(|| false);
     let current = app.conv.read().id.clone();
+    let temp = app.conv.read().temp;
     rsx! {
         div { class: "veil", "data-back": "1", onclick: move |_| app.overlay.set(Overlay::None) }
         div { class: "drawer",
             div { class: "bar",
                 div { class: "title", style: "text-align: left; padding-left: 8px", "Chats" }
                 button { class: "bare", onclick: move |_| { new_chat(app); app.overlay.set(Overlay::None) }, "New chat" }
+            }
+            // Quick controls, as on the web (which also has Local; the app has no local models).
+            div { class: "quick",
+                button { class: if temp { "q on" } else { "q" }, id: "temp", aria_pressed: "{temp}",
+                    onclick: move |_| { toggle_temp(app); app.overlay.set(Overlay::None) },
+                    svg { view_box: "0 0 24 24", width: "20", height: "20", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round",
+                        circle { cx: "12", cy: "12", r: "9", stroke_dasharray: "3 3" } path { d: "M12 7v5l3 2" } }
+                    span { "Temp" }
+                }
+                a { class: "q", id: "tor", href: "{ONION}",
+                    svg { view_box: "0 0 24 24", width: "20", height: "20", fill: "none", stroke: "currentColor", stroke_width: "2",
+                        circle { cx: "12", cy: "13", r: "8" } circle { cx: "12", cy: "13", r: "5" } circle { cx: "12", cy: "13", r: "2" } }
+                    span { "Tor" }
+                }
+                button { class: "q danger", id: "wipe", onclick: move |_| wiping.set(true),
+                    svg { view_box: "0 0 24 24", width: "20", height: "20", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round",
+                        path { d: "M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" } }
+                    span { "Wipe" }
+                }
+            }
+            if wiping() {
+                div { class: "wipe-ask",
+                    p { "Delete every chat and setting on this phone? It can't be undone. You stay signed in, and vouchers you haven't added yet are kept." }
+                    div { class: "row",
+                        button { onclick: move |_| wiping.set(false), "Cancel" }
+                        button { class: "danger", id: "wipe-yes", onclick: move |_| { wiping.set(false); wipe(app) }, "Wipe" }
+                    }
+                }
             }
             div { class: "scroll", style: "padding: 0",
                 if app.convs.read().is_empty() { p { class: "muted", style: "padding: 16px", "No chats yet" } }
@@ -870,7 +936,6 @@ fn Drawer() -> Element {
                 div { class: "links",
                     a { href: "{api::BASE}/tools", "All tools" }
                     a { href: "{api::BASE}/model_cards", "Model cards" }
-                    a { href: "{ONION}", "Tor" }
                     a { href: "{api::BASE}/privacy", "Privacy" }
                     a { href: "{api::BASE}/terms", "Terms" }
                     a { href: "{api::BASE}/canary", "Canary" }

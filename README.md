@@ -14,6 +14,7 @@ are stored only on the phone.
 - **A lost connection doesn't fail anything.** Tool calls and answers wait for up to 15 minutes and deliver when it's back. Paid calls carry a request id, so the server runs them once.
 - **Long-running agent.** A reply can take 100 steps and a run 30 minutes, and keeps going in the background with a notification. What it has spent shows as it goes. A lost connection is waited out for as long as it takes. A request that keeps failing goes back to the model. Requests only ever append, which keeps the provider's prompt cache working, and a conversation near the model's context is compacted into a summary instead of having old results trimmed.
 - **Nothing paid is thrown away.** A failed step retries by itself, then the answer stops, keeps its runs and tool results, and offers Continue; a new message carries them too, and they survive the app closing.
+- **Temp, Tor and Wipe** at the top of the chat list. Temp starts a chat that is never written to the phone. Tor opens the onion site. Wipe deletes every chat and setting on the phone but keeps the sign-in and the wallet, since unspent vouchers are money.
 - **Account number sign-in.**
   - Sign-up shows the number once.
   - The app keeps only the session, never the number.

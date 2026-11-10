@@ -1,0 +1,1 @@
+Temp, Tor and Wipe at the top of the chat list. Temp starts a chat that is never saved on the phone. Wipe deletes every chat and setting from the phone and keeps your sign-in and vouchers.

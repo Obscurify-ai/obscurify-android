@@ -28,7 +28,7 @@ ok(await page.locator('#composer').count() === 1, 'a guest stays in the chat (no
 await page.locator('.bar .icon').first().click();
 ok(await page.locator('.foot button', { hasText: 'Sign in' }).count() === 1, 'the drawer offers Sign in');
 const links = await page.locator('.foot .links a').allTextContents();
-ok(['All tools', 'Model cards', 'Tor', 'Privacy', 'Terms', 'Canary', 'Support'].every((l) => links.includes(l)), 'drawer links: ' + links.join(', '));
+ok(['All tools', 'Model cards', 'Privacy', 'Terms', 'Canary', 'Support'].every((l) => links.includes(l)) && (await page.locator('.quick #tor').count()) === 1, 'drawer links: ' + links.join(', ') + ' and Tor in the quick row');
 ok((await page.locator('.item .when').first().textContent()).includes('ago') || (await page.locator('.item .when').first().textContent()).includes('just now'), 'chats show when they were last used');
 await page.locator('.veil').click({ position: { x: 380, y: 400 } });
 await page.locator('.title.model').click();
