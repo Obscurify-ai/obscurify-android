@@ -1,0 +1,2 @@
+The model picker has categories for specialist models: Writing, Roleplay, Security, Legal, Translation, Languages, Code tools and Documents.
+Zero retention and TEE categories, and a ZDR or TEE label on each model that qualifies.
