@@ -47,6 +47,11 @@ let toolfail = 0;
 let context = 0;
 let sandboxdown = 0;
 let silent = 0;
+// The next N answers get one byte changed (a digit of `created`): the JSON still reads, but a TEE
+// receipt no longer matches the bytes.
+let teeflip = 0;
+// Every path asked for, for tests that check a call was made (Stop's cancel).
+let paths = [];
 
 // `rewrite(json)` changes a JSON answer before it reaches the app.
 function forward(req, res, body, onChunk, onEnd, rewrite) {
@@ -87,7 +92,9 @@ http.createServer((req, res) => {
     context = +url.searchParams.get('context') || 0;
     sandboxdown = +url.searchParams.get('sandboxdown') || 0;
     silent = +url.searchParams.get('silent') || 0;
+    teeflip = +url.searchParams.get('teeflip') || 0;
     log = [];
+    paths = [];
     tools = [];
     return res.end('ok');
   }
@@ -98,6 +105,8 @@ http.createServer((req, res) => {
     return;
   }
   if (url.pathname === '/__log') return res.end(JSON.stringify(log));
+  if (url.pathname === '/__paths') return res.end(JSON.stringify(paths));
+  paths.push(req.method + ' ' + url.pathname);
   if (sandboxdown && url.pathname.startsWith('/sandbox/')) { res.writeHead(500, { 'content-type': 'text/html' }); return res.end('down'); }
   if (url.pathname === '/__tools') return res.end(JSON.stringify(tools));
   if (down.tool && /\/tools\//.test(url.pathname)) { down.until = Date.now() + down.tool; down.tool = 0; }
@@ -139,6 +148,15 @@ http.createServer((req, res) => {
     if (silent > 0 && sent.stream !== false) { silent--; res.writeHead(200, { 'content-type': 'text/event-stream' }); return res.flushHeaders(); }
     // Summary requests (not streamed) always go to the server; scripts answer the chat.
     if (script.length && sent.stream !== false) return scripted(res, script.shift());
+    if (teeflip > 0) {
+      teeflip--;
+      let flipped = false;
+      return forward(req, res, body, (c) => {
+        const at = flipped ? -1 : c.indexOf('"created":');
+        if (at >= 0 && c[at + 10] >= 0x30 && c[at + 10] <= 0x39) { c[at + 10] = c[at + 10] === 0x31 ? 0x32 : 0x31; flipped = true; }
+        return true;
+      });
+    }
     if (rule.after > 0) { rule.after--; return forward(req, res, body); }
     if (rule.fail <= 0) return forward(req, res, body);
     rule.fail--;

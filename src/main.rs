@@ -9,6 +9,7 @@ mod code;
 mod compact;
 mod files;
 mod store;
+mod tee;
 mod wallet;
 
 use chat::{Conv, Meta, Msg};
@@ -118,16 +119,19 @@ struct Settings {
     /// Code Mode's tools, on unless switched off (settings saved before this have no such field).
     #[serde(default = "yes")]
     tools: bool,
+    /// Verify mode: answers come from TEE models and the phone checks each one (tee.rs).
+    #[serde(default)]
+    verify: bool,
 }
 
 fn yes() -> bool { true }
 
 impl Default for Settings {
-    fn default() -> Self { Settings { model: FREE_MODEL.into(), web_search: true, favorites: vec![], tools: true } }
+    fn default() -> Self { Settings { model: FREE_MODEL.into(), web_search: true, favorites: vec![], tools: true, verify: false } }
 }
 
 #[derive(Clone, PartialEq)]
-struct Model { id: String, name: String, prompt: f64, completion: f64, tools: bool, context: u64, categories: Vec<String> }
+struct Model { id: String, name: String, prompt: f64, completion: f64, tools: bool, context: u64, categories: Vec<String>, verifiable: bool }
 
 /// What the account's plan lets it chat with, from `/account_tier`.
 #[derive(Clone, Copy, PartialEq)]
@@ -313,9 +317,16 @@ fn Root() -> Element {
                 context: m["context_length"].as_u64().unwrap_or(0),
                 // Specialist use cases (Writing, Security, ...) the server tags models with.
                 categories: m["categories"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(String::from)).collect(),
+                // A TEE model whose replies the phone can check (Verify).
+                verifiable: m["tee_verifiable"] == true,
             }).collect();
             models.sort_by_key(|m| m.name.to_lowercase());
             app.models.set(models);
+        }
+        // An answer the app was writing when it closed: the server finished it; show it.
+        if *app.screen.peek() == Screen::Chat {
+            code::load(app).await;
+            chat::finish_pending(app);
         }
         let list = |v: &Value, k: &str| v[k].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect::<Vec<_>>();
         if let Ok(v) = api::public("GET", "/frontier_models", None).await { app.frontier.set(list(&v, "frontier_models")) }

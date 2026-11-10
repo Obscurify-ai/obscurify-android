@@ -641,7 +641,7 @@ async fn compact(mut app: App, cfg: &Config, model: &str, context: u64, shrink: 
         let mut retries = 0;
         loop {
             let mut out = Msg::default();
-            let r = chat::stream(&body, &mut out, stop, &mut |_: &Msg| {}).await;
+            let r = chat::stream(&body, &mut out, stop, &mut |_: &Msg| {}, None).await;
             if let Ok(s) = &r {
                 t.spent += s.cost;
                 msg.spent = t.spent;
@@ -703,8 +703,14 @@ fn checkpoint(app: App, msg: &Msg, trace: &[Value]) {
 }
 
 /// One answer: the model and its runs, step by step. `from` is an earlier attempt to continue.
-pub fn turn(mut app: App, from: Option<Msg>) {
+pub fn turn(app: App, from: Option<Msg>) { turn_following(app, from, None) }
+
+/// `turn`, whose first step is `follow`: the background reply the server kept writing for it while
+/// the app was closed.
+pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
     let model = app.settings.peek().model.clone();
+    let verify = crate::api::has_session() && app.settings.peek().verify;
+    let chat_id = app.conv.peek().id.clone();
     let cfg = app.code.peek().clone();
     app.stop.set(false);
     let mut first = from.unwrap_or_else(|| Msg { role: "assistant".into(), model: model.clone(), ..Default::default() });
@@ -753,6 +759,7 @@ pub fn turn(mut app: App, from: Option<Msg>) {
 
         let mut fed_back = 0u32;
         let mut repairs = 0u32;
+        let mut follow = follow;
 
         'steps: for step in done_steps..MAX_STEPS {
             if stop() {
@@ -777,10 +784,15 @@ pub fn turn(mut app: App, from: Option<Msg>) {
             if step == MAX_STEPS - 1 {
                 body["tool_choice"] = json!("none");
             }
+            if verify {
+                body["tee_verify"] = json!(true);
+            }
             let calls = loop {
                 msg.reasoning.clear();
                 msg.content.clear();
-                let out = chat::stream(&body, &mut msg, &stop, &mut show).await.map(|mut s| {
+                let following = follow.take();
+                let mut remembered = |id: &Option<String>| chat::remember(app, id, &model, true);
+                let out = chat::stream_noting(&body, &mut msg, &stop, &mut show, following, &mut remembered).await.map(|mut s| {
                     if s.tool_calls.is_empty() && let Some(c) = text_tool_call(&msg.content, step) {
                         let words = dsml_start(&msg.content).unwrap_or(0);
                         msg.content.truncate(words);
@@ -788,6 +800,8 @@ pub fn turn(mut app: App, from: Option<Msg>) {
                     }
                     s
                 });
+                // The step is in: a reopened app goes on from the checkpoint, not from this reply.
+                chat::forget_pending();
                 let problem = match &out {
                     Err(e) => Some(e.clone()),
                     Ok(s) if s.cut => Some("The connection dropped.".to_string()),
@@ -796,6 +810,11 @@ pub fn turn(mut app: App, from: Option<Msg>) {
                 if let Ok(s) = &out {
                     t.spent += s.cost;
                     msg.spent = t.spent;
+                }
+                // Every step that came through whole is checked, as it comes.
+                if let Ok(chat::Step { tee: Some((receipt, route, raw)), .. }) = &out {
+                    msg.tee.push(crate::tee::Step { receipt: receipt.clone(), ..Default::default() });
+                    crate::tee::check(app, chat_id.clone(), model.clone(), receipt.clone(), route.clone(), raw.clone());
                 }
                 if let Some(e) = problem {
                     // Too long for the model: compact, once, and ask again.
@@ -918,9 +937,12 @@ pub fn turn(mut app: App, from: Option<Msg>) {
             msg.content = "No answer came back. Try again or pick another model.".into();
         }
         msg.trace = trace;
+        // Checks that finished while it ran.
+        crate::tee::fill(&mut msg.tee);
         if !msg.content.is_empty() || !msg.runs.is_empty() || !msg.interrupted.is_empty() {
             app.conv.write().messages.push(msg);
         }
+        chat::forget_pending();
         app.live.set(None);
         js("document.body.dataset.working = 0; const f = document.getElementById('follow'); if (f) f.hidden = true; window.android && android.keepAwake && android.keepAwake(false); window.android && android.working && android.working(false)");
         chat::save_chat(app);

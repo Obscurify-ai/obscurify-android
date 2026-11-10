@@ -27,6 +27,9 @@ pdf-extract = "0.12"
 calamine = "0.38"
 quick-xml = "0.42"
 zip = { version = "9", default-features = false, features = ["deflate"] }
+# Checks TEE replies on the phone (Verify). Path until the repo is published.
+obscurify-tee-verify = { path = "../obscurify-tee-verify" }
+bytes = "1"
 
 [profile.release]
 opt-level = "s"

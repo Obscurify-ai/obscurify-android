@@ -4,7 +4,6 @@
 
 use crate::{Access, App, Model, Overlay, Screen, api, bg, code, js, store, usd};
 use dioxus::prelude::*;
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -53,6 +52,69 @@ pub struct Msg {
     /// Earlier work was summarized while this answer ran.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub compacted: bool,
+    /// Verify mode: each model request's receipt and what its check found (tee.rs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tee: Vec<crate::tee::Step>,
+}
+
+/// The answer being written when the app last ran, so a reopened app finishes it: the server
+/// kept writing it (a background reply) and holds it for an hour.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct Pending {
+    pub reply: String,
+    pub chat: String,
+    pub model: String,
+    /// A Code Mode step (the run carries on after it) rather than a plain answer.
+    #[serde(default)]
+    pub code: bool,
+}
+
+const PENDING: &str = "pending.json";
+
+/// Remembers the answer now being written (not for temporary chats, which aren't kept).
+pub(crate) fn remember(app: App, reply: &Option<String>, model: &str, code: bool) {
+    let c = app.conv.peek();
+    match reply {
+        Some(r) if !c.temp => store::save(PENDING, &Pending { reply: r.clone(), chat: c.id.clone(), model: model.into(), code }),
+        _ => store::remove(PENDING),
+    }
+}
+
+pub(crate) fn forget_pending() { store::remove(PENDING) }
+
+/// Stops the answer: here, and on the server, where it would otherwise carry on.
+pub(crate) fn stop_answer(mut app: App) {
+    app.stop.set(true);
+    api::cancel_current();
+    forget_pending();
+}
+
+/// On start: an answer the app was writing when it was closed or killed is picked up where the
+/// server has it (from the start: the phone kept none of it), into its own chat.
+pub fn finish_pending(mut app: App) {
+    let p: Pending = store::load(PENDING);
+    if p.reply.is_empty() || !api::has_session() || app.live.peek().is_some() {
+        return;
+    }
+    if app.conv.peek().id != p.chat {
+        let c = Conv::load(&p.chat);
+        if c.id != p.chat { return forget_pending() }
+        app.conv.set(c);
+    }
+    if !p.model.is_empty() && app.settings.peek().model != p.model {
+        app.settings.write().model = p.model.clone();
+    }
+    if p.code {
+        // The last step saved (a checkpoint) is where the run goes on from, with this reply.
+        let last_is_answer = app.conv.peek().messages.last().is_some_and(|m| m.role == "assistant");
+        let from = if last_is_answer { app.conv.write().messages.pop() } else { None };
+        let from = from.map(|mut m| { m.interrupted.clear(); m.content.clear(); m.reasoning.clear(); m });
+        crate::code::turn_following(app, from, Some(p.reply));
+    } else if app.conv.peek().messages.last().is_some_and(|m| m.role == "user") {
+        run_with(app, Some(p.reply));
+    } else {
+        forget_pending();
+    }
 }
 
 fn is_zero(v: &f64) -> bool { *v == 0.0 }
@@ -108,11 +170,11 @@ fn save(mut app: App) {
 
 /// Runs `then` once no answer is streaming. One that is gets stopped first and is saved, as far
 /// as it got, to its own chat (as on the web): switching used to do nothing until it finished.
-fn after_answer(mut app: App, then: impl FnOnce(App) + 'static) {
+fn after_answer(app: App, then: impl FnOnce(App) + 'static) {
     if app.live.peek().is_none() {
         return then(app);
     }
-    app.stop.set(true);
+    stop_answer(app);
     bg(async move {
         for _ in 0..100 {
             if app.live.peek().is_none() {
@@ -144,6 +206,26 @@ fn start_new_chat(mut app: App) {
 }
 
 /// Temp on: a fresh chat that is never saved. Temp off: a fresh, ordinary chat.
+/// Verify on: answers come from TEE models whose replies the phone checks; the picker lists only
+/// those, and the model switches to one if it has to.
+fn toggle_verify(mut app: App) {
+    if !api::has_session() {
+        return app.say("Sign in to verify answers");
+    }
+    let on = !app.settings.peek().verify;
+    if on {
+        let model = app.settings.peek().model.clone();
+        let ok = app.models.peek().iter().any(|m| m.id == model && m.verifiable);
+        if !ok {
+            let Some(pick) = crate::tee::pick_model(&app) else { return app.say("No verifiable model is available right now") };
+            app.settings.write().model = pick;
+        }
+    }
+    app.settings.write().verify = on;
+    app.save_settings();
+    app.say(if on { "Verify on: each answer is checked on this phone" } else { "Verify off" });
+}
+
 fn toggle_temp(app: App) {
     after_answer(app, |mut app| {
         let temp = !app.conv.peek().temp;
@@ -317,27 +399,24 @@ pub(crate) struct Step {
     /// Tokens this step used (prompt + completion), if the server said.
     pub tokens: Option<u64>,
     pub cost: f64,
-}
-
-/// A streamed answer that sends nothing for this long is dead: the server sends a keepalive every
-/// 15 s while the model is quiet. A connection that died without closing (a network change) used
-/// to leave the read waiting for good (customer report 2026-11-10, on the web).
-const STREAM_STALL: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// The next piece of a streamed answer; an error when it fails or nothing comes for STREAM_STALL.
-pub(crate) async fn next_or_stall<T, E>(s: &mut (impl futures_util::Stream<Item = Result<T, E>> + Unpin)) -> Option<Result<T, ()>> {
-    match tokio::time::timeout(STREAM_STALL, s.next()).await {
-        Ok(Some(Ok(v))) => Some(Ok(v)),
-        Ok(Some(Err(_))) | Err(_) => Some(Err(())),
-        Ok(None) => None,
-    }
+    /// Verify mode: the receipt, the route that answered, and the reply's bytes to check.
+    pub tee: Option<(String, Option<String>, Vec<u8>)>,
 }
 
 /// Streams one completion into `msg` (content and reasoning), calling `show` as it grows. Returns
-/// the tool calls it made (OpenAI shape) and its reasoning_details.
-pub(crate) async fn stream(body: &Value, msg: &mut Msg, stop: &impl Fn() -> bool, show: &mut impl FnMut(&Msg)) -> Result<Step, String> {
-    let resp = api::chat(body).await?;
-    let mut stream = resp.bytes_stream();
+/// the tool calls it made (OpenAI shape) and its reasoning_details. `follow` reads a background
+/// reply the server is holding instead of asking.
+pub(crate) async fn stream(body: &Value, msg: &mut Msg, stop: &impl Fn() -> bool, show: &mut impl FnMut(&Msg), follow: Option<String>) -> Result<Step, String> {
+    stream_noting(body, msg, stop, show, follow, &mut |_: &Option<String>| {}).await
+}
+
+/// `stream`, telling `note` the background reply's id as soon as it's known.
+pub(crate) async fn stream_noting(body: &Value, msg: &mut Msg, stop: &impl Fn() -> bool, show: &mut impl FnMut(&Msg), follow: Option<String>, note: &mut impl FnMut(&Option<String>)) -> Result<Step, String> {
+    let mut resp = match follow {
+        Some(id) => api::follow(&id).await?,
+        None => api::chat(body).await?,
+    };
+    note(&resp.id);
     let mut buf: Vec<u8> = vec![];
     let mut calls: Vec<Value> = vec![];
     let mut details: Vec<Value> = vec![];
@@ -345,9 +424,9 @@ pub(crate) async fn stream(body: &Value, msg: &mut Msg, stop: &impl Fn() -> bool
     let mut finished = false;
     let mut tokens = None;
     let mut cost = 0.0;
-    'read: while let Some(chunk) = next_or_stall(&mut stream).await {
+    'read: while let Some(chunk) = resp.next(stop).await {
         if stop() { finished = true; break }
-        let Ok(chunk) = chunk else { if !got_any { return Err("The connection dropped.".into()) } break };
+        let chunk = match chunk { Ok(c) => c, Err(e) => { if !got_any { return Err(e) } break } };
         buf.extend_from_slice(&chunk);
         while let Some(nl) = buf.iter().position(|b| *b == b'\n') {
             let line: Vec<u8> = buf.drain(..=nl).collect();
@@ -366,7 +445,7 @@ pub(crate) async fn stream(body: &Value, msg: &mut Msg, stop: &impl Fn() -> bool
             }
             let d = &v["choices"][0]["delta"];
             if let Some(s) = d["content"].as_str() { merge(&mut msg.content, s); got_any = true }
-            if let Some(s) = d["reasoning"].as_str() { merge(&mut msg.reasoning, s); got_any = true }
+            if let Some(s) = reasoning(d) { merge(&mut msg.reasoning, s); got_any = true }
             if d["reasoning_details"].is_array() { merge_details(&mut details, &d["reasoning_details"]) }
             for tc in d["tool_calls"].as_array().into_iter().flatten() {
                 got_any = true;
@@ -389,11 +468,18 @@ pub(crate) async fn stream(body: &Value, msg: &mut Msg, stop: &impl Fn() -> bool
     if !finished {
         calls.clear();
     }
-    Ok(Step { tool_calls: calls, details, cut: !finished, tokens, cost })
+    let tee = if finished && !stop() { resp.receipt.take().map(|r| (r, resp.route.take(), std::mem::take(&mut resp.raw))) } else { None };
+    Ok(Step { tool_calls: calls, details, cut: !finished, tokens, cost, tee })
 }
 
+/// Reasoning text in a delta: `reasoning`, or `reasoning_content` as TEE gateways send it.
+pub(crate) fn reasoning(d: &Value) -> Option<&str> { d["reasoning"].as_str().or(d["reasoning_content"].as_str()) }
+
 /// Asks for the next answer and streams it into `live`, then appends it to the chat.
-fn run(mut app: App) {
+fn run(app: App) { run_with(app, None) }
+
+/// `run`, or with `follow`, the background reply the server holds for the last question.
+fn run_with(mut app: App, follow: Option<String>) {
     if app.live.peek().is_some() {
         return;
     }
@@ -406,7 +492,8 @@ fn run(mut app: App) {
         return crate::code::turn(app, None);
     }
     // With the Tools switch off there's no web search either, as on the web.
-    let web_search = api::has_session() && app.settings.peek().web_search && !crate::code::capable(&app, &model);
+    let verify = api::has_session() && app.settings.peek().verify;
+    let web_search = api::has_session() && app.settings.peek().web_search && !crate::code::capable(&app, &model) && !verify;
     app.stop.set(false);
     app.live.set(Some(Msg { role: "assistant".into(), model: model.clone(), ..Default::default() }));
     js("document.body.dataset.working = 1; const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }; window.android && android.working && android.working(true)");
@@ -419,13 +506,16 @@ fn run(mut app: App) {
         let mut resent = false;
         let mut compacted = false;
         let mut msg;
+        let mut follow = follow;
+        let chat_id = app.conv.peek().id.clone();
+        let mut checked: Option<(String, Option<String>, Vec<u8>)> = None;
         loop {
             let force = resent;
             let mut shown = app.live.peek().clone().unwrap_or_default();
-            let summarized = crate::compact::if_needed(app, &model, context, force, &stop, &mut |note: String| {
+            let summarized = if follow.is_some() { Ok(false) } else { crate::compact::if_needed(app, &model, context, force, &stop, &mut |note: String| {
                 shown.content = note;
                 app.live.set(Some(shown.clone()));
-            }).await;
+            }).await };
             match summarized {
                 Ok(done) => compacted |= done,
                 Err(e) => {
@@ -447,12 +537,17 @@ fn run(mut app: App) {
             if web_search {
                 body["web_search"] = json!(true);
             }
+            if verify {
+                body["tee_verify"] = json!(true);
+            }
             msg = app.live.peek().clone().unwrap();
             // No connection: wait for it. A server answering 502/503/504 is waited on for a while.
             let mut delay = 1000;
             let mut waits = 0;
+            let following = follow.take();
             let first = loop {
-                match api::chat(&body).await {
+                let asked = match &following { Some(id) => api::follow(id).await, None => api::chat(&body).await };
+                match asked {
                     Err(e) if (e == api::OFFLINE || e == api::UNAVAILABLE) && !*app.stop.peek()
                         && crate::code::wait_again(app, &mut delay, &mut waits, e == api::OFFLINE).await => {}
                     other => { app.waiting.set(false); break other }
@@ -460,20 +555,21 @@ fn run(mut app: App) {
             };
             match first {
                 Err(e) => { msg.error = true; msg.content = e; }
-                Ok(resp) => {
-                    let mut stream = resp.bytes_stream();
+                Ok(mut resp) => {
+                    remember(app, &resp.id, &model, false);
                     let mut buf: Vec<u8> = vec![];
                     let mut drawn = store::now();
-                    'read: while let Some(chunk) = next_or_stall(&mut stream).await {
+                    let mut ended = false;
+                    'read: while let Some(chunk) = resp.next(&stop).await {
                         if *app.stop.peek() { break }
-                        let Ok(chunk) = chunk else { if msg.content.is_empty() { msg.error = true; msg.content = "The connection dropped.".into() } break };
+                        let chunk = match chunk { Ok(c) => c, Err(e) => { if msg.content.is_empty() { msg.error = true; msg.content = e } break } };
                         buf.extend_from_slice(&chunk);
                         while let Some(nl) = buf.iter().position(|b| *b == b'\n') {
                             let line: Vec<u8> = buf.drain(..=nl).collect();
                             let line = String::from_utf8_lossy(&line);
                             let Some(data) = line.trim().strip_prefix("data:") else { continue };
                             let data = data.trim();
-                            if data == "[DONE]" { break 'read }
+                            if data == "[DONE]" { ended = true; break 'read }
                             let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
                             if !v["error"].is_null() {
                                 let e = v["error"]["message"].as_str().or(v["error"].as_str()).unwrap_or("The model returned an error");
@@ -488,7 +584,7 @@ fn run(mut app: App) {
                             }
                             let d = &v["choices"][0]["delta"];
                             if let Some(s) = d["content"].as_str() { merge(&mut msg.content, s) }
-                            if let Some(s) = d["reasoning"].as_str() { merge(&mut msg.reasoning, s) }
+                            if let Some(s) = reasoning(d) { merge(&mut msg.reasoning, s) }
                             if d["reasoning_details"].is_array() { merge_details(&mut msg.details, &d["reasoning_details"]) }
                             let ws = &d["web_search"];
                             if let Some(q) = ws["query"].as_str() {
@@ -505,6 +601,10 @@ fn run(mut app: App) {
                         msg.error = true;
                         msg.content = "No answer came back. Try again or pick another model.".into();
                     }
+                    if ended && !msg.error && !*app.stop.peek() && let Some(r) = resp.receipt.take() {
+                        msg.tee.push(crate::tee::Step { receipt: r.clone(), ..Default::default() });
+                        checked = Some((r, resp.route.take(), std::mem::take(&mut resp.raw)));
+                    }
                 }
             }
             if overflow {
@@ -519,6 +619,10 @@ fn run(mut app: App) {
         app.live.set(None);
         js("document.body.dataset.working = 0; const f = document.getElementById('follow'); if (f) f.hidden = true; window.android && android.working && android.working(false)");
         save(app);
+        forget_pending();
+        if let Some((receipt, route, raw)) = checked {
+            crate::tee::check(app, chat_id, model, receipt, route, raw);
+        }
         app.refresh_balance();
     });
 }
@@ -631,7 +735,12 @@ pub fn ChatView() -> Element {
                 div { class: "title model", onclick: move |_| {
                     if api::has_session() { app.overlay.set(Overlay::Models) }
                     else { app.say("Create an account to choose from every model"); app.screen.set(Screen::Signup) }
-                }, {app.model_name(&model)} " ▾" }
+                },
+                    if app.settings.read().verify && api::has_session() {
+                        svg { class: "verify-mark", view_box: "0 0 24 24", width: "15", height: "15", fill: "none", stroke: "currentColor", stroke_width: "2.2", stroke_linecap: "round", stroke_linejoin: "round",
+                            path { d: "M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z" } path { d: "M8.5 12l2.5 2.5 4.5-5" } }
+                    }
+                    {app.model_name(&model)} " ▾" }
                 button { class: "icon", onclick: move |_| { new_chat(app); }, "＋" }
             }
             div { id: "msgs",
@@ -690,7 +799,7 @@ pub fn ChatView() -> Element {
                     }
                     textarea { id: "composer", rows: 1, placeholder: if app.conv.read().temp { "Temporary chat" } else { "Message" }, oninput: move |e| text.set(e.value()) }
                     if streaming {
-                        button { class: "send stop", aria_label: "Stop", onclick: move |_| app.stop.set(true),
+                        button { class: "send stop", aria_label: "Stop", onclick: move |_| stop_answer(app),
                             svg { view_box: "0 0 24 24", width: "18", height: "18", rect { x: "5", y: "5", width: "14", height: "14", rx: "2", fill: "currentColor" } }
                         }
                     } else {
@@ -754,6 +863,7 @@ fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Elemen
             if m.spent > 0.0 {
                 p { class: "spend", "Spent {usd(m.spent)}" }
             }
+            if !live && !m.tee.is_empty() { crate::tee::Chip { steps: m.tee.clone() } }
             if !m.interrupted.is_empty() {
                 p { class: "interrupted", "Stopped early: {m.interrupted} Everything so far is kept." }
             }
@@ -880,6 +990,7 @@ fn Drawer() -> Element {
     let mut wiping = use_signal(|| false);
     let current = app.conv.read().id.clone();
     let temp = app.conv.read().temp;
+    let verify = app.settings.read().verify && api::has_session();
     rsx! {
         div { class: "veil", "data-back": "1", onclick: move |_| app.overlay.set(Overlay::None) }
         div { class: "drawer",
@@ -894,6 +1005,12 @@ fn Drawer() -> Element {
                     svg { view_box: "0 0 24 24", width: "20", height: "20", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round",
                         circle { cx: "12", cy: "12", r: "9", stroke_dasharray: "3 3" } path { d: "M12 7v5l3 2" } }
                     span { "Temp" }
+                }
+                button { class: if verify { "q on" } else { "q" }, id: "verify", aria_pressed: "{verify}",
+                    onclick: move |_| { toggle_verify(app); app.overlay.set(Overlay::None) },
+                    svg { view_box: "0 0 24 24", width: "20", height: "20", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
+                        path { d: "M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z" } path { d: "M8.5 12l2.5 2.5 4.5-5" } }
+                    span { "Verify" }
                 }
                 a { class: "q", id: "tor", href: "{ONION}",
                     svg { view_box: "0 0 24 24", width: "20", height: "20", fill: "none", stroke: "currentColor", stroke_width: "2",
@@ -975,7 +1092,9 @@ fn needs_plan(id: &str, access: Option<Access>, frontier: &[String], uncensored:
 fn Models() -> Element {
     let mut app = use_context::<App>();
     let favs = app.settings.read().favorites.clone();
-    let mut cat = use_signal(move || if favs.is_empty() { "All" } else { "Favorites" });
+    let verifying = app.settings.read().verify && api::has_session();
+    let fav_ok = { let ms = app.models.read(); favs.iter().any(|f| !verifying || ms.iter().any(|m| &m.id == f && m.verifiable)) };
+    let mut cat = use_signal(move || if fav_ok { "Favorites" } else { "All" });
     let mut q = use_signal(String::new);
     let favs = app.settings.read().favorites.clone();
     let frontier = app.frontier.read().clone();
@@ -985,6 +1104,8 @@ fn Models() -> Element {
     let models = app.models.read().clone();
     let query = q.read().to_lowercase();
     let c = *cat.read();
+    // Verify on: only models whose answers the phone can check.
+    let verify = app.settings.read().verify && api::has_session();
     let any = |id: &str, pats: &[&str]| pats.iter().any(|p| glob(id, p));
     let needs = |id: &str| needs_plan(id, access, &frontier, &uncensored);
     let in_cat = |m: &Model, k: &str| {
@@ -1004,13 +1125,14 @@ fn Models() -> Element {
     // Categories with models the plan can use come first and ones it can't use any of last;
     // empty ones are hidden (Favorites stays, to say how to fill it).
     let mut chips: Vec<(&'static str, bool)> = CATEGORIES.iter().filter_map(|&k| {
-        let mut ms = models.iter().filter(|m| in_cat(m, k)).peekable();
+        let mut ms = models.iter().filter(|m| (!verify || m.verifiable) && in_cat(m, k)).peekable();
         if ms.peek().is_none() { return (k == "Favorites" || k == "All").then_some((k, false)) }
         Some((k, ms.all(|m| needs(&m.id).is_some())))
     }).collect();
     chips.sort_by_key(|&(_, locked)| locked);
     // A search looks through every model, whatever category is picked.
     let shown: Vec<&Model> = models.iter()
+        .filter(|m| !verify || m.verifiable)
         .filter(|m| !query.is_empty() || in_cat(m, c))
         .filter(|m| query.is_empty() || m.name.to_lowercase().contains(&query) || m.id.to_lowercase().contains(&query))
         .collect();

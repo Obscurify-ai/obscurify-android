@@ -227,7 +227,14 @@ fn thread_body(body: &Value) -> (Value, Vec<String>) {
 
 /// Starts a streamed chat completion (`/web/chat/completions`, every plan). Returns the open
 /// response; the caller reads its SSE body. Sends only what the server doesn't already hold.
-pub async fn chat(body: &Value) -> Result<reqwest::Response, String> {
+pub async fn chat(body: &Value) -> Result<ReplyStream, String> {
+    let mut body = body.clone();
+    // Signed in, the server finishes the answer whatever happens to the app (closed, killed, offline)
+    // and holds it for an hour: `follow` picks it up again.
+    if has_session() {
+        body["background"] = json!(true);
+    }
+    let body = &body;
     let (threaded, sent) = thread_body(body);
     let r = match post_chat(&threaded).await {
         Err(e) if e == THREAD_EXPIRED => {
@@ -241,7 +248,181 @@ pub async fn chat(body: &Value) -> Result<reqwest::Response, String> {
     .map_err(|e| if e == THREAD_EXPIRED { error_text(409, &Value::Null, "") } else { e })?;
     let rev = r.headers().get("x-obscurify-thread").and_then(|v| v.to_str().ok()).map(str::to_string);
     *THREAD.lock().unwrap() = rev.map(|rev| (rev, sent));
-    Ok(r)
+    Ok(ReplyStream::new(r))
+}
+
+// ---- background replies ------------------------------------------------------------------------
+
+/// What an answer the server no longer holds says (it keeps them an hour).
+pub const REPLY_EXPIRED: &str = "This answer is no longer held on the server (answers are held for up to an hour). Try again.";
+
+/// The comment the server sends while a stream is quiet. Not one of the reply's events.
+const KEEPALIVE: &[u8] = b": obscurify-keepalive\n\n";
+
+/// The background answer being read now, so Stop can end it on the server too.
+static CURRENT: Mutex<Option<String>> = Mutex::new(None);
+
+/// A streamed answer, read event by event. A signed-in answer runs on the server in the background
+/// (`X-Obscurify-Reply`), so a dropped or stalled connection is picked up again from the last whole
+/// event (`GET /web/replies/{id}?after=N`) instead of failing. `raw` keeps every whole event exactly
+/// as it came, which is what a TEE receipt signs.
+pub struct ReplyStream {
+    inner: std::pin::Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<bytes::Bytes>>>>,
+    pub id: Option<String>,
+    /// TEE verification: the receipt that signs these bytes, and the route that answered.
+    pub receipt: Option<String>,
+    pub route: Option<String>,
+    events: usize,
+    partial: Vec<u8>,
+    pub raw: Vec<u8>,
+    saw_done: bool,
+}
+
+fn header(r: &reqwest::Response, name: &str) -> Option<String> {
+    r.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string)
+}
+
+impl ReplyStream {
+    pub fn new(r: reqwest::Response) -> Self {
+        let id = header(&r, "x-obscurify-reply");
+        if id.is_some() {
+            *CURRENT.lock().unwrap() = id.clone();
+        }
+        ReplyStream {
+            id,
+            receipt: header(&r, "x-obscurify-tee-receipt"),
+            route: header(&r, "x-obscurify-tee-route"),
+            inner: Box::pin(r.bytes_stream()),
+            events: 0,
+            partial: vec![],
+            raw: vec![],
+            saw_done: false,
+        }
+    }
+
+    /// Whole events taken from what has arrived, if any.
+    fn take_events(&mut self) -> Option<Vec<u8>> {
+        let mut out = vec![];
+        while let Some(end) = self.partial.windows(2).position(|w| w == b"\n\n") {
+            let frame: Vec<u8> = self.partial.drain(..end + 2).collect();
+            self.raw.extend_from_slice(&frame);
+            if frame == KEEPALIVE {
+                continue;
+            }
+            self.events += 1;
+            if frame.starts_with(b"data: [DONE]") {
+                self.saw_done = true;
+            }
+            out.extend_from_slice(&frame);
+        }
+        (!out.is_empty()).then_some(out)
+    }
+
+    /// The next whole events, None at the end, or an error once the answer can't be had.
+    /// `stop` ends a wait for the connection.
+    pub async fn next(&mut self, stop: &impl Fn() -> bool) -> Option<Result<Vec<u8>, String>> {
+        let mut delay = 1000u64;
+        let mut lost_since: Option<Instant> = None;
+        loop {
+            if let Some(events) = self.take_events() {
+                return Some(Ok(events));
+            }
+            let got = tokio::time::timeout(STALL, futures_util::StreamExt::next(&mut self.inner)).await;
+            match got {
+                Ok(Some(Ok(b))) => { self.partial.extend_from_slice(&b); lost_since = None; continue }
+                // A clean end: the answer is over, unless a held answer ended before [DONE] (asked
+                // again once: what the server has is the whole of it).
+                Ok(None) if self.saw_done || self.id.is_none() || lost_since.is_some() => { self.finish(); return None }
+                _ => {}
+            }
+            let Some(id) = self.id.clone() else {
+                return Some(Err("The connection dropped.".into()));
+            };
+            // Pick it up from the last whole event; what came after it arrives again.
+            self.partial.clear();
+            let since = *lost_since.get_or_insert_with(Instant::now);
+            loop {
+                if stop() { return None }
+                match follow_from(&id, self.events).await {
+                    Ok(r) => { self.inner = Box::pin(r.bytes_stream()); break }
+                    Err(e) if e == REPLY_EXPIRED => { self.finish(); return Some(Err(e)) }
+                    Err(e) if since.elapsed() > LOST_FOR || !transient(&e) && status_of(&e).0 != 0 => { self.finish(); return Some(Err(msg(e))) }
+                    Err(_) => {
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                        delay = (delay * 2).min(15_000);
+                    }
+                }
+            }
+        }
+    }
+
+    fn finish(&self) {
+        let mut c = CURRENT.lock().unwrap();
+        if c.is_some() && *c == self.id {
+            *c = None;
+        }
+    }
+}
+
+impl Drop for ReplyStream {
+    fn drop(&mut self) { self.finish() }
+}
+
+/// A stream that sends nothing (not even a keepalive, every 15 s) for this long is dead.
+const STALL: Duration = Duration::from_secs(60);
+/// How long a lost connection is waited out before the answer is given up.
+const LOST_FOR: Duration = Duration::from_secs(15 * 60);
+
+async fn follow_from(id: &str, after: usize) -> Result<reqwest::Response, String> {
+    let r = with_session(client().get(format!("{BASE}/web/replies/{id}?after={after}")))
+        .send()
+        .await
+        .map_err(|_| offline())?;
+    let status = r.status().as_u16();
+    if (200..300).contains(&status) {
+        return Ok(r);
+    }
+    let text = r.text().await.unwrap_or_default();
+    let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    if status == 404 && (v["code"] == "reply_expired" || v["error"]["code"] == "reply_expired") {
+        return Err(REPLY_EXPIRED.into());
+    }
+    if status == 401 {
+        expire();
+    }
+    Err(format!("{status}\u{1}{}", error_text(status, &v, &text)))
+}
+
+/// An answer the server is holding, from its start: after the app was killed or closed.
+pub async fn follow(id: &str) -> Result<ReplyStream, String> {
+    loop {
+        match follow_from(id, 0).await {
+            Ok(r) => return Ok(ReplyStream::new(r)),
+            Err(e) if e == REPLY_EXPIRED => return Err(e),
+            Err(e) if status_of(&e).0 == 0 => tokio::time::sleep(Duration::from_secs(2)).await,
+            Err(e) => return Err(msg(e)),
+        }
+    }
+}
+
+/// Stops the answer being read now on the server: closing the connection no longer does.
+pub fn cancel_current() {
+    let Some(id) = CURRENT.lock().unwrap().take() else { return };
+    dioxus::core::spawn_forever(async move {
+        let _ = web_post(&format!("/web/replies/{id}/cancel"), &json!({}), 20).await;
+    });
+}
+
+/// A signed-in GET to a web endpoint that answers JSON, with its status: TEE receipts and reports.
+pub async fn web_get(path: &str, headers: &[(&str, String)], timeout: u64) -> Result<(u16, String), String> {
+    let mut req = with_session(client().get(format!("{BASE}{path}"))).timeout(Duration::from_secs(timeout));
+    for (k, v) in headers {
+        req = req.header(*k, v);
+    }
+    let r = req.send().await.map_err(|_| offline())?;
+    let status = r.status().as_u16();
+    let text = r.text().await.map_err(|_| offline())?;
+    Ok((status, text))
 }
 
 fn chat_error(status: u16, text: &str) -> String {
