@@ -554,7 +554,12 @@ fn glob(id: &str, pat: &str) -> bool {
 fn per_million(m: &Model) -> String {
     let price = if m.prompt == 0.0 && m.completion == 0.0 { "Free".into() } else { format!("{} / {} per 1M tokens", usd(m.prompt * 1e6), usd(m.completion * 1e6)) };
     let price = if m.context >= 1000 { format!("{price} · {}k context", m.context / 1000) } else { price };
-    if m.tools { price } else { format!("{price} · no tools") }
+    let mut line = if m.tools { price } else { format!("{price} · no tools") };
+    // How privately it runs, as the server tags it.
+    for (tag, label) in [("Zero retention", "ZDR"), ("TEE", "TEE")] {
+        if m.categories.iter().any(|c| c == tag) { line = format!("{line} · {label}") }
+    }
+    line
 }
 
 /// Who makes a model: "Anthropic" from "Anthropic: Claude Opus 5".
@@ -883,9 +888,10 @@ fn Drawer() -> Element {
 }
 
 const REASONING: [&str; 5] = ["*thinking*", "*reasoning*", "*deepseek-r1*", "*-r1-*", "*magistral*"];
-/// Roleplay and everything after Frontier come from the `categories` the server tags models with.
-const CATEGORIES: [&str; 17] = ["Favorites", "All", "Tools", "Free", "Cheap", "Reasoning", "Uncensored", "Roleplay", "Frontier",
-    "Writing", "Security", "Legal", "Translation", "Languages", "Code tools", "Documents", "Moderation"];
+/// Roleplay and everything after Frontier (privacy, then use cases) come from the `categories` the
+/// server tags models with.
+const CATEGORIES: [&str; 18] = ["Favorites", "All", "Tools", "Free", "Cheap", "Reasoning", "Uncensored", "Roleplay", "Frontier",
+    "Zero retention", "TEE", "Writing", "Security", "Legal", "Translation", "Languages", "Code tools", "Documents"];
 
 /// The plan a model needs that the account doesn't have (uncensored models need Pro, frontier
 /// models Casual or Pro, as the server enforces). Nothing is locked until the plan is known.
