@@ -27,7 +27,7 @@ const drawer = async () => { await page.locator('.icon', { hasText: '☰' }).cli
 
 // The row
 await drawer();
-ok(await page.locator('.drawer .quick .q').count() === 3, 'the drawer has Temp, Tor and Wipe');
+ok(await page.locator('.drawer .quick .q').count() === 4 && await page.locator('#verify').count() === 1, 'the drawer has Temp, Verify, Tor and Wipe');
 ok(/\.onion/.test(await page.locator('#tor').getAttribute('href')), 'Tor links the onion site');
 
 // Temp

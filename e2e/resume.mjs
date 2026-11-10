@@ -88,14 +88,16 @@ await say(PROMPT);
 await idle();
 ok(await page.locator('.interrupted').count() === 0 && (await page.locator('.msg.assistant').last().textContent()).replace(/,/g, '').includes('7006652'), 'a single failure heals by itself');
 
-// 6. The connection drops in the middle of an answer: not taken for a finished one. It asks again
-// until the answer is whole (outage.mjs has longer outages).
+// 6. The connection drops in the middle of an answer: not taken for a finished one. The server kept
+// writing it (a background reply), so it's picked up from where it was, not asked for again
+// (outage.mjs has longer outages).
 await fresh();
 await set(0, 4, 'cut');
 await say('Write three long paragraphs about the sea. Do not use any tools.');
 await idle();
 reqs = await log();
-ok(reqs.length === 5 && await page.locator('.interrupted').count() === 0 && (await page.locator('.msg.assistant').last().textContent()).length > 200, `a cut-off answer is asked for again until whole (${reqs.length} requests)`);
+const picked = JSON.parse(await (await fetch('http://127.0.0.1:8093/__paths')).text()).filter((p) => /GET \/web\/replies\//.test(p));
+ok(reqs.length === 1 && picked.length >= 1 && await page.locator('.interrupted').count() === 0 && (await page.locator('.msg.assistant').last().textContent()).length > 200, `a cut-off answer is picked up from the server, whole (${reqs.length} requests, ${picked.length} pick-ups)`);
 
 // 7. The app is killed while the model is working: it comes back with the run.
 await fresh();
