@@ -1,0 +1,1 @@
+Tools and Code are two switches now, both on. With Tools on the assistant searches the web and uses tools directly, without writing code for every lookup; Code runs code on the phone when the job needs it. Both off is plain chat.
