@@ -11,8 +11,8 @@ export const shot = name => execFileSync('sh', ['-c', `adb exec-out screencap -p
 export const device = (await _android.devices()).find(d => !process.env.ANDROID_SERIAL || d.serial() === process.env.ANDROID_SERIAL);
 
 /** Restarts the app (wiping its data with `clear`) and returns its page. */
-export async function launch(clear) {
-  adb('shell', 'am', 'force-stop', PKG);
+export async function launch(clear, keep) {
+  if (!keep) adb('shell', 'am', 'force-stop', PKG);
   if (clear) adb('shell', 'pm', 'clear', PKG);
   // The app asks on its first long answer, and that dialog would sit in front of the test.
   if (clear) { adb('shell', 'input', 'keyevent', 'KEYCODE_HOME'); try { adb('shell', 'pm', 'grant', PKG, 'android.permission.POST_NOTIFICATIONS'); } catch {} }

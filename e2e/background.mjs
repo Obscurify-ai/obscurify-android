@@ -47,19 +47,19 @@ await ctl('__set');
 
 // 2. The app is killed mid-answer: opening it again finishes the answer into its chat.
 await ctl('__set');
-await ask(COUNT.replace('60', '80'));
+await ask(COUNT.replace('60', '400'));
 await page.waitForFunction(() => /\bone\b/i.test([...document.querySelectorAll('.msg.assistant')].pop()?.textContent || ''), null, { timeout: 60000 });
 adb('shell', 'am', 'force-stop', PKG);
 await sleep(20000);
 ({ page } = await launch(false));
-await page.waitForFunction(() => /eighty/i.test([...document.querySelectorAll('.msg.assistant')].pop()?.textContent || ''), null, { timeout: 120000 });
+await page.waitForFunction(() => /four hundred/i.test([...document.querySelectorAll('.msg.assistant')].pop()?.textContent || ''), null, { timeout: 120000 });
 await idle();
 a = await last();
-ok(/eighty/i.test(a) && /\bone\b/i.test(a), 'a killed app finishes the answer when it opens');
+ok(/four hundred/i.test(a) && /\bone\b/i.test(a), 'a killed app finishes the answer when it opens');
 ok((await paths()).some((p) => /GET \/web\/replies\/rep_/.test(p)), 'from the reply the server held');
 shot('android-background-resumed');
 ({ page } = await launch(false));
-ok(/eighty/i.test(await last()), 'and it was saved to its chat');
+ok(/four hundred/i.test(await last()), 'and it was saved to its chat');
 
 // 3. Stop ends the answer on the server too.
 await ctl('__set');

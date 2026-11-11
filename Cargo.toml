@@ -22,7 +22,7 @@ base64 = "0.22"
 serde = { version = "1.0.229", features = ["derive"] }
 rand = "0.10"
 futures-channel = "0.3"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "sync", "macros"] }
 pdf-extract = "0.12"
 calamine = "0.38"
 quick-xml = "0.42"

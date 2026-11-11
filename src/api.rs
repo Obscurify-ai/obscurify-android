@@ -259,6 +259,16 @@ pub const REPLY_EXPIRED: &str = "This answer is no longer held on the server (an
 /// The comment the server sends while a stream is quiet. Not one of the reply's events.
 const KEEPALIVE: &[u8] = b": obscurify-keepalive\n\n";
 
+/// Rings when the app comes back on screen or the network comes back: a reply whose connection has
+/// been quiet since is asked for again at once, instead of after STALL. A phone that slept (screen
+/// off, a VPN or Wi-Fi that dropped) can leave a connection that's dead but never says so.
+static KICK: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+pub fn kick() { KICK.notify_waiters() }
+
+/// The server sends a keepalive every 15 s: a connection with nothing for this long is dead.
+const FRESH: Duration = Duration::from_secs(20);
+
 /// The background answer being read now, so Stop can end it on the server too.
 static CURRENT: Mutex<Option<String>> = Mutex::new(None);
 
@@ -276,6 +286,8 @@ pub struct ReplyStream {
     partial: Vec<u8>,
     pub raw: Vec<u8>,
     saw_done: bool,
+    /// When anything (a keepalive too) last arrived.
+    heard: Instant,
 }
 
 fn header(r: &reqwest::Response, name: &str) -> Option<String> {
@@ -297,6 +309,7 @@ impl ReplyStream {
             partial: vec![],
             raw: vec![],
             saw_done: false,
+            heard: Instant::now(),
         }
     }
 
@@ -327,12 +340,16 @@ impl ReplyStream {
             if let Some(events) = self.take_events() {
                 return Some(Ok(events));
             }
-            let got = tokio::time::timeout(STALL, futures_util::StreamExt::next(&mut self.inner)).await;
+            let got = tokio::select! {
+                got = tokio::time::timeout(STALL, futures_util::StreamExt::next(&mut self.inner)) => got.ok(),
+                // Back on screen or online: a connection that has gone quiet is given up now.
+                _ = KICK.notified() => { if self.heard.elapsed() < FRESH { continue } None }
+            };
             match got {
-                Ok(Some(Ok(b))) => { self.partial.extend_from_slice(&b); lost_since = None; continue }
+                Some(Some(Ok(b))) => { self.partial.extend_from_slice(&b); self.heard = Instant::now(); lost_since = None; continue }
                 // A clean end: the answer is over, unless a held answer ended before [DONE] (asked
                 // again once: what the server has is the whole of it).
-                Ok(None) if self.saw_done || self.id.is_none() || lost_since.is_some() => { self.finish(); return None }
+                Some(None) if self.saw_done || self.id.is_none() || lost_since.is_some() => { self.finish(); return None }
                 _ => {}
             }
             let Some(id) = self.id.clone() else {
@@ -344,11 +361,11 @@ impl ReplyStream {
             loop {
                 if stop() { return None }
                 match follow_from(&id, self.events).await {
-                    Ok(r) => { self.inner = Box::pin(r.bytes_stream()); break }
+                    Ok(r) => { self.inner = Box::pin(r.bytes_stream()); self.heard = Instant::now(); break }
                     Err(e) if e == REPLY_EXPIRED => { self.finish(); return Some(Err(e)) }
                     Err(e) if since.elapsed() > LOST_FOR || !transient(&e) && status_of(&e).0 != 0 => { self.finish(); return Some(Err(msg(e))) }
                     Err(_) => {
-                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                        tokio::select! { _ = tokio::time::sleep(Duration::from_millis(delay)) => {}, _ = KICK.notified() => {} }
                         delay = (delay * 2).min(15_000);
                     }
                 }
@@ -369,7 +386,7 @@ impl Drop for ReplyStream {
 }
 
 /// A stream that sends nothing (not even a keepalive, every 15 s) for this long is dead.
-const STALL: Duration = Duration::from_secs(60);
+const STALL: Duration = Duration::from_secs(45);
 /// How long a lost connection is waited out before the answer is given up.
 const LOST_FOR: Duration = Duration::from_secs(15 * 60);
 

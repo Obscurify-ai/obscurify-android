@@ -44,6 +44,8 @@ document.addEventListener('input', e => {
   t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px';
 });
 document.addEventListener('visibilitychange', () => dioxus.send({visible: !document.hidden}));
+// MainActivity calls this on resume and pause, since the WebView doesn't fire visibilitychange.
+window.obsVisible = (v) => dioxus.send({visible: v});
 // Photos are shrunk to 1600 px JPEGs before they're attached: phone photos are far over the API's limit.
 async function shrink(f) {
   const url = URL.createObjectURL(f), img = new Image();
@@ -384,10 +386,12 @@ fn Root() -> Element {
                     app.screen.set(match s { Screen::Funds => Screen::Account, Screen::Signup => Screen::Login, _ => Screen::Chat })
                 }
             } else if v["online"] == true {
+                api::kick();
                 app.work_wallet(false)
             } else if let Some(vis) = v["visible"].as_bool() {
                 app.visible.set(vis);
                 if vis {
+                    api::kick();
                     app.work_wallet(false)
                 }
             } else if let Some(e) = v["doc_error"].as_str() {

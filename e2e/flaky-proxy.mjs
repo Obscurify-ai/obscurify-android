@@ -1,6 +1,7 @@
 // Sits between the app and a server and breaks chat completions on demand, for resume.mjs. Build the
 // test APK with OBSCURIFY_API=http://127.0.0.1:8093, `adb reverse tcp:8093 tcp:8093`, then run this.
-//   GET /__set?after=1&fail=3&kind=error|cut|hang   pass `after` completions, then break `fail` of them
+//   GET /__set?after=1&fail=3&kind=error|cut|hang|freeze   pass `after` completions, then break `fail` of them
+//     (freeze: a few lines, then the connection stays open and nothing more comes, as after a phone slept)
 //   GET /__set?tooldown=20000 | chatdown=20000 | losecall=1   an outage, or a paid call's answer lost
 //   GET /__set?toolbusy=2                            paid calls answer 429 once, then succeed without running (-1: 429 always)
 //   GET /__set?silent=N                              the next N streamed completions send headers, then nothing, open
@@ -161,6 +162,18 @@ http.createServer((req, res) => {
     if (rule.fail <= 0) return forward(req, res, body);
     rule.fail--;
     if (rule.kind === 'hang') return;
+    if (rule.kind === 'freeze') {
+      let lines = 0, frozen = false;
+      res.end = () => res;  // the upstream ending doesn't end this one either
+      return forward(req, res, body, (c) => {
+        if (frozen) return false;
+        for (const line of c.toString().split(/(?<=\n)/)) {
+          res.write(line);
+          if (/"content":"[^"]/.test(line) && ++lines >= 3) { frozen = true; return false; }
+        }
+        return false;
+      });
+    }
     if (rule.kind === 'error') {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       return res.end('data: {"error":{"message":"partial tool call received"}}\n\n');

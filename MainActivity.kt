@@ -121,8 +121,10 @@ class MainActivity : WryActivity() {
         })
     }
 
-    override fun onResume() { super.onResume(); onScreen = true }
-    override fun onPause() { super.onPause(); onScreen = false }
+    // The page is told itself: this WebView never fires visibilitychange.
+    override fun onResume() { super.onResume(); onScreen = true; visible(true) }
+    override fun onPause() { super.onPause(); onScreen = false; visible(false) }
+    private fun visible(on: Boolean) { web?.post { web?.evaluateJavascript("window.obsVisible && obsVisible($on)", null) } }
 
     /** On when an answer starts; off when it ends, saying so if the app isn't on screen. */
     private fun setWorking(on: Boolean) {
