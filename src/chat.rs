@@ -734,7 +734,7 @@ pub fn ChatView() -> Element {
 
     let mut do_send = move || {
         let t = text.peek().clone();
-        js("document.getElementById('composer').value = ''");
+        js("const c = document.getElementById('composer'); c.value = ''; c.style.height = ''");
         text.set(String::new());
         send(app, t);
     };

@@ -62,11 +62,12 @@ a { color: var(--g); text-decoration: none; }
 .cursor::after { content: '▍'; color: var(--g); }
 .empty { height: 100%; display: flex; align-items: center; justify-content: center; color: var(--m); text-align: center; padding: 24px; }
 .composer { border-top: 1px solid var(--l); padding: 8px; }
-/* One box like the web's: the message, then + (Attach, Tools, Code) and Send at the right. */
-.composer .line { position: relative; display: flex; gap: 4px; align-items: flex-end; border: 1px solid var(--l); border-radius: 24px; padding: 0 3px 0 4px; }
+/* One box like the web's: the message, then + (Attach, Tools, Code) and Send at the right,
+   centred on the box however tall it grows. */
+.composer .line { position: relative; display: flex; gap: 4px; align-items: center; border: 1px solid var(--l); border-radius: 24px; padding: 0 4px; }
 .composer .line:focus-within { border-color: var(--g); }
-.composer textarea { flex: 1; min-width: 0; resize: none; padding: 11px 10px 11px 12px; max-height: 160px; min-height: 44px; border: 0; border-radius: 0; background: transparent; }
-.composer .send { flex: none; width: 38px; height: 38px; margin-bottom: 3px; padding: 0; border: 0; border-radius: 50%; background: var(--g); color: #000; display: flex; align-items: center; justify-content: center; }
+.composer textarea { flex: 1; min-width: 0; resize: none; padding: 11px 10px 11px 12px; max-height: 50vh; min-height: 44px; border: 0; border-radius: 0; background: transparent; }
+.composer .send { flex: none; width: 38px; height: 38px; padding: 0; border: 0; border-radius: 50%; background: var(--g); color: #000; display: flex; align-items: center; justify-content: center; }
 .plus-wrap { flex: none; margin-bottom: 0; }
 .plus { width: 44px; height: 44px; padding: 0; border: 0; background: transparent; color: var(--m); display: flex; align-items: center; justify-content: center; }
 .plus.open { color: var(--g); }
