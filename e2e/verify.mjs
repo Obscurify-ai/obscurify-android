@@ -8,7 +8,7 @@
 //   adb reverse tcp:8093 tcp:8093)
 //   ACCOUNT=<funded number> node e2e/verify.mjs
 import { execFileSync } from 'node:child_process';
-import { launch, ok, sleep } from './lib.mjs';
+import { launch, ok, sleep, flip } from './lib.mjs';
 
 const ctl = (q) => fetch('http://127.0.0.1:8093/' + q).then((r) => r.text());
 const SHOTS = process.env.SHOTS || `${process.env.HOME}/Work/obscurify/screenshots`;
@@ -19,7 +19,7 @@ let { page } = await launch(true);
 await ctl('__set');
 await page.locator('.login input').fill(process.env.ACCOUNT);
 await page.getByRole('button', { name: 'Sign In' }).click();
-await page.waitForSelector('.tools-switch', { timeout: 30000 });
+await page.waitForSelector('.tools-switch', { state: 'attached', timeout: 30000 });
 const idle = () => page.waitForFunction(() => !document.querySelector('.send.stop'), null, { timeout: 280000 });
 const say = async (text) => {
   await sleep(400);
@@ -48,7 +48,7 @@ ok(names.length > 0 && names.every((n) => n.includes('TEE')), `the picker lists 
 await page.locator('.pick', { hasText: 'GLM 5.3 Flash TEE' }).first().locator('.grow').click();
 
 // 2. A plain answer (Tools off) is checked: all seven checks.
-if ((await page.locator('.tools-switch').getAttribute('aria-checked')) === 'true') await page.locator('.tools-switch').click();
+if ((await page.locator('.tools-switch').getAttribute('aria-checked')) === 'true') await flip(page, '.tools-switch');
 await say('Reply with exactly one word: ok');
 await settled();
 ok(await lastChip().evaluate((e) => e.classList.contains('ok')), 'the answer is Verified: ' + await lastChip().textContent());
@@ -74,7 +74,7 @@ shot('android-verify-failed');
 await ctl('__set');
 
 // 4. Code Mode: every step is checked.
-await page.locator('.tools-switch').click();
+await flip(page, '.tools-switch');
 await say('Use run_code with Python to print 6*7, then reply with the number only.');
 await settled();
 const chip = await lastChip().textContent();

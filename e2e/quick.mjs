@@ -10,7 +10,7 @@ const chatFiles = () => files().filter((f) => /^chat-.*\.json$/.test(f));
 let { page } = await launch(true);
 await page.locator('.login input').fill(process.env.ACCOUNT);
 await page.getByRole('button', { name: 'Sign In' }).click();
-await page.waitForSelector('.tools-switch', { timeout: 30000 });
+await page.waitForSelector('.tools-switch', { state: 'attached', timeout: 30000 });
 await page.locator('.title.model').click();
 await page.locator('input.search').fill('DeepSeek V4 Flash');
 await page.locator('.pick', { hasText: 'DeepSeek: DeepSeek V4 Flash' }).first().locator('.grow').click();

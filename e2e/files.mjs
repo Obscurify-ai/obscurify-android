@@ -16,7 +16,7 @@ await page.locator('input.search').fill('Llama 3.3 70b Instruct');
 await page.locator('.pick', { hasText: 'Meta: Llama 3.3 70b Instruct' }).first().locator('.grow').click();
 
 ok(await page.locator('.attach').count() === 1, 'one attach button');
-await page.waitForSelector('.tools-switch', { timeout: 20000 });
+await page.waitForSelector('.tools-switch', { state: 'attached', timeout: 20000 });
 await agentSwitches(page, false);
 const attach = async (names) => {
   await page.setInputFiles('#pick', names.map(n => fx + n));

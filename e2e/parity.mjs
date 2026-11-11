@@ -1,7 +1,7 @@
 // Features the app shares with the website: guest chat, the Tools switch, the provider filter,
 // raw view and editing any answer, chat times, links, plan confirmation, amount presets, and
 // deleting the account. Test APK against a server, then: ACCOUNT=<funded number> node e2e/parity.mjs
-import { launch, agentSwitches, ok, sleep } from './lib.mjs';
+import { launch, agentSwitches, ok, sleep, flip } from './lib.mjs';
 
 const answered = (page, n) => page.waitForFunction((n) => document.querySelectorAll('.msg.assistant').length >= n && !document.querySelector('.send.stop'), n, { timeout: 150000 });
 
@@ -9,7 +9,7 @@ const answered = (page, n) => page.waitForFunction((n) => document.querySelector
 let { page } = await launch(true);
 await page.getByRole('button', { name: 'Chat as a guest' }).click();
 await page.waitForSelector('#composer');
-await page.waitForSelector('.tools-switch.on', { timeout: 20000 });
+await page.waitForSelector('.tools-switch.on', { state: 'attached', timeout: 20000 });
 ok(true, 'a guest has tools, and the app says so');
 await page.locator('#composer').fill('Use run_code with Python to compute 1234*5678 and tell me the result.');
 await page.locator('.send').click();
@@ -27,8 +27,15 @@ await sleep(1500);
 ok(await page.locator('#composer').count() === 1, 'a guest stays in the chat (no session-ended bounce)');
 await page.locator('.bar .icon').first().click();
 ok(await page.locator('.foot button', { hasText: 'Sign in' }).count() === 1, 'the drawer offers Sign in');
-const links = await page.locator('.foot .links a').allTextContents();
-ok(['All tools', 'Model cards', 'Privacy', 'Terms', 'Canary', 'Support'].every((l) => links.includes(l)) && (await page.locator('.quick #tor').count()) === 1, 'drawer links: ' + links.join(', ') + ' and Tor in the quick row');
+ok(!(await page.locator('.foot .more .links').isVisible()) && await page.locator('.foot .legal a', { hasText: 'Privacy' }).isVisible(), 'More info starts folded; the legal line shows');
+await page.locator('.foot .more summary').click();
+ok(await page.locator('.foot .more .links a', { hasText: 'All tools' }).isVisible(), 'More info opens');
+{
+  const [foot, drawer, acct] = await Promise.all(['.drawer .foot', '.drawer', '.foot .account'].map((s) => page.locator(s).boundingBox()));
+  ok(acct.x >= foot.x + 8 && acct.x + acct.width <= foot.x + foot.width - 8 && acct.width >= foot.width - 40, 'the footer is padded and Sign in spans it: ' + JSON.stringify({ foot, acct }));
+}
+const links = await page.locator('.foot a').allTextContents();
+ok(['All tools', 'Model cards', 'About', 'FAQ', 'Privacy', 'Terms', 'Canary', 'Support'].every((l) => links.includes(l)) && (await page.locator('.quick #tor').count()) === 1, 'drawer links: ' + links.join(', ') + ' and Tor in the quick row');
 ok((await page.locator('.item .when').first().textContent()).includes('ago') || (await page.locator('.item .when').first().textContent()).includes('just now'), 'chats show when they were last used');
 await page.locator('.veil').click({ position: { x: 380, y: 400 } });
 await page.locator('.title.model').click();
@@ -59,16 +66,23 @@ ok(true, 'account deleted from the app; its number no longer signs in');
 await page.locator('.login input').fill(process.env.ACCOUNT);
 await page.getByRole('button', { name: 'Sign In' }).click();
 await page.waitForSelector('#composer', { timeout: 30000 });
-await page.waitForSelector('.tools-switch', { timeout: 20000 });
+await page.waitForSelector('.tools-switch', { state: 'attached', timeout: 20000 });
 ok(await page.locator('.tools-switch.on').count() === 1 && (await page.locator('.tools-switch').getAttribute('aria-checked')) === 'true', 'Tools is on by default, and says so');
-// It sits in the message line, between Attach and the box, so it costs no row of its own.
+// One box like the web's: the message, then + and Send at its right; + opens Attach files, Tools and Code.
 {
-  const [sw, box, attach, send] = await Promise.all(['.tools-switch', '#composer', '.attach', '.send'].map((s) => page.locator(s).boundingBox()));
-  ok(sw.x >= attach.x + attach.width && sw.x + sw.width <= box.x && sw.y >= box.y - 1 && sw.y + sw.height <= send.y + send.height + 1, 'Tools is in the message line: ' + JSON.stringify({ sw, box }));
-  // Attach, Tools and Send are centred on the text, whatever the phone's font size.
-  const lh = parseFloat(await page.locator('#composer').evaluate((e) => getComputedStyle(e).lineHeight));
-  const text = box.y + box.height - 11 - lh / 2, mids = [attach, sw, send].map((b) => b.y + b.height / 2);
-  ok(mids.every((m) => Math.abs(m - text) < 1.5), 'Attach, Tools and Send line up with the message text: ' + JSON.stringify({ text, mids }));
+  const [line, box, plus, send] = await Promise.all(['.composer .line', '#composer', '.plus', '.send'].map((s) => page.locator(s).boundingBox()));
+  const inside = (b) => b.x >= line.x - 1 && b.x + b.width <= line.x + line.width + 1 && b.y >= line.y - 1 && b.y + b.height <= line.y + line.height + 1;
+  ok([box, plus, send].every(inside) && plus.x >= box.x + box.width - 1 && send.x >= plus.x + plus.width - 1 && box.width >= 200,
+    'the message, + and Send share one box, + and Send at the right: ' + JSON.stringify({ line, box, plus, send }));
+  ok(!(await page.locator('.tools-switch').isVisible()), 'the switches are not in the message line');
+  await page.locator('.plus').click();
+  const items = await page.locator('.plus-menu .item .label').allTextContents();
+  const menu = await page.locator('.plus-menu').boundingBox();
+  const vp = page.viewportSize() || { width: await page.evaluate(() => innerWidth), height: await page.evaluate(() => innerHeight) };
+  ok(items[0] === 'Attach files' && items[1] === 'Tools' && menu.x >= 0 && menu.x + menu.width <= vp.width && menu.y >= 0 && menu.y + menu.height <= line.y,
+    '+ opens Attach files, Tools, Code above the box, on screen: ' + items.join(', '));
+  await page.locator('.menu-veil').click({ position: { x: 10, y: 10 } });
+  ok(await page.locator('.plus-menu.open').count() === 0, 'a tap outside closes the menu');
 }
 ok(await page.locator('.attach').count() === 1 && await page.locator('.chip.file, .chip.doc').count() === 0, 'one attach button, no Image or File');
 await page.locator('.title.model').click();
@@ -82,8 +96,8 @@ ok((await page.locator('.pick .price').first().textContent()).includes('context'
 await page.locator('.providers .chip', { hasText: /^Anthropic$/ }).click();
 await page.locator('input.search').fill('Llama 3.3 70b Instruct');
 await page.locator('.pick', { hasText: 'Meta: Llama 3.3 70b Instruct' }).first().locator('.grow').click();
-await page.locator('.tools-switch').click();
-if (await page.locator('.code-switch.on').count()) await page.locator('.code-switch').click();
+await flip(page, '.tools-switch');
+if (await page.locator('.code-switch.on').count()) await flip(page, '.code-switch');
 ok(await page.locator('.tools-switch.on').count() === 0 && (await page.locator('.tools-switch').getAttribute('aria-checked')) === 'false', 'Tools switches off');
 for (const [i, w] of [[1, 'mango'], [2, 'papaya']]) {
   await page.locator('#composer').fill(`Reply with exactly the word: ${w}`);

@@ -29,11 +29,23 @@ export async function launch(clear) {
   return { browser: { close: async () => {} }, page };
 }
 
+/** Opens the + menu in the message box (Attach files, Tools, Code) if it's closed. */
+export async function openMenu(page) {
+  if (!(await page.locator('.plus-menu.open').count())) await page.locator('.plus').click();
+}
+
+/** Flips one switch in the + menu, then closes the menu. */
+export async function flip(page, sel) {
+  await openMenu(page);
+  await page.locator(sel).click();
+  await page.locator('.menu-veil').click({ position: { x: 10, y: 10 } });
+}
+
 /** Tools and Code (Code shows when the server has separate switches) both on, or both off:
  *  off is plain chat. */
 export async function agentSwitches(page, on) {
   for (const sel of ['.tools-switch', '.code-switch']) {
     const sw = page.locator(sel);
-    if (await sw.count() && (await sw.getAttribute('aria-checked') === 'true') !== on) await sw.click();
+    if (await sw.count() && (await sw.getAttribute('aria-checked') === 'true') !== on) await flip(page, sel);
   }
 }

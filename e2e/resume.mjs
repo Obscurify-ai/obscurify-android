@@ -15,7 +15,7 @@ let { page } = await launch(true);
 await set(0, 0);
 await page.locator('.login input').fill(process.env.ACCOUNT);
 await page.getByRole('button', { name: 'Sign In' }).click();
-await page.waitForSelector('.tools-switch', { timeout: 30000 });
+await page.waitForSelector('.tools-switch', { state: 'attached', timeout: 30000 });
 const chooseModel = async () => {
   await page.locator('.title.model').click();
   await page.locator('input.search').fill('DeepSeek V4 Flash');
@@ -110,7 +110,7 @@ await sleep(500);
 await page.waitForSelector('.interrupted', { timeout: 30000 });
 ok((await page.locator('.interrupted').textContent()).includes('closed') && await page.locator('.run').count() === 1, 'a killed app comes back with the run and Continue');
 await set(0, 0);
-await page.waitForSelector('.tools-switch', { timeout: 20000 });
+await page.waitForSelector('.tools-switch', { state: 'attached', timeout: 20000 });
 await page.getByRole('button', { name: 'Continue' }).click();
 await page.waitForSelector('.send.stop', { timeout: 10000 }).catch(() => {});
 await idle();

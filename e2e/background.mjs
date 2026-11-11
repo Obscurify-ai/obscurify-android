@@ -6,7 +6,7 @@
 //   adb reverse tcp:8093 tcp:8093)
 //   ACCOUNT=<funded number> node e2e/background.mjs
 import { execFileSync } from 'node:child_process';
-import { adb, launch, ok, sleep, PKG } from './lib.mjs';
+import { adb, launch, ok, sleep, PKG, flip } from './lib.mjs';
 
 const ctl = (q) => fetch('http://127.0.0.1:8093/' + q).then((r) => r.text());
 const paths = async () => JSON.parse(await ctl('__paths'));
@@ -18,11 +18,11 @@ let { page } = await launch(true);
 await ctl('__set');
 await page.locator('.login input').fill(process.env.ACCOUNT);
 await page.getByRole('button', { name: 'Sign In' }).click();
-await page.waitForSelector('.tools-switch', { timeout: 30000 });
+await page.waitForSelector('.tools-switch', { state: 'attached', timeout: 30000 });
 await page.locator('.title.model').click();
 await page.locator('input.search').fill('DeepSeek V4 Flash');
 await page.locator('.pick', { hasText: 'DeepSeek: DeepSeek V4 Flash' }).first().locator('.grow').click();
-if ((await page.locator('.tools-switch').getAttribute('aria-checked')) === 'true') await page.locator('.tools-switch').click();
+if ((await page.locator('.tools-switch').getAttribute('aria-checked')) === 'true') await flip(page, '.tools-switch');
 
 const idle = (p = page) => p.waitForFunction(() => !document.querySelector('.send.stop'), null, { timeout: 280000 });
 const ask = async (text) => {
@@ -76,7 +76,7 @@ ok((await last()).length <= stopped + 40, 'and a reopened app does not bring it 
 
 // 4. Code Mode killed mid-step: the step is picked up and the run carries on.
 await ctl('__set');
-await page.locator('.tools-switch').click();
+await flip(page, '.tools-switch');
 await ask('First write about 150 words on why multiplication tables matter, as plain text. Only after that, use run_code with Python to print 6*7, then end with the line "Result: " and the number.');
 await page.waitForFunction(() => ([...document.querySelectorAll('.msg.assistant')].pop()?.textContent || '').length > 80, null, { timeout: 90000 });
 adb('shell', 'am', 'force-stop', PKG);

@@ -8,7 +8,7 @@ const MODEL = process.env.MODEL || 'Anthropic: Claude Sonnet 5.5';
 let { page } = await launch(true);
 await page.locator('.login input').fill(process.env.ACCOUNT);
 await page.getByRole('button', { name: 'Sign In' }).click();
-await page.waitForSelector('.tools-switch', { timeout: 30000 });
+await page.waitForSelector('.tools-switch', { state: 'attached', timeout: 30000 });
 await page.locator('.title.model').click();
 await page.locator('input.search').fill(MODEL.split(': ').pop());
 await page.locator('.pick', { hasText: MODEL }).first().locator('.grow').click();

@@ -19,7 +19,7 @@ let { page } = await launch(true);
 await reset();
 await page.locator('.login input').fill(process.env.ACCOUNT);
 await page.getByRole('button', { name: 'Sign In' }).click();
-await page.waitForSelector('.tools-switch', { timeout: 30000 });
+await page.waitForSelector('.tools-switch', { state: 'attached', timeout: 30000 });
 const chooseModel = async () => {
   await page.locator('.title.model').click();
   await page.locator('input.search').fill('DeepSeek V4 Flash');
@@ -102,7 +102,7 @@ await agentSwitches(page, true);
 
 // 5. Reopening keeps it: kill the app, send again.
 ({ page } = await launch(false));
-await page.waitForSelector('.tools-switch', { timeout: 30000 });
+await page.waitForSelector('.tools-switch', { state: 'attached', timeout: 30000 });
 await page.locator('.bar .icon').first().click();
 await sleep(500);
 await page.locator('.drawer .item').filter({ hasText: 'Compact this work' }).first().locator('.grow').click();
@@ -231,7 +231,7 @@ await say('Die after compacting.');
 await page.waitForFunction(() => document.body.textContent.includes('Compacted earlier work'), null, { timeout: 60000 });
 await sleep(1500);
 ({ page } = await launch(false));
-await page.waitForSelector('.tools-switch', { timeout: 30000 });
+await page.waitForSelector('.tools-switch', { state: 'attached', timeout: 30000 });
 await page.locator('.bar .icon').first().click();
 await sleep(500);
 await page.locator('.drawer .item').filter({ hasText: 'Die after compacting' }).first().locator('.grow').click();

@@ -4,7 +4,7 @@
 //   adb reverse tcp:8093 tcp:8093)
 //   ACCOUNT=<funded number> RESTART="<command that restarts the server>" node e2e/threads.mjs
 import { execSync } from 'node:child_process';
-import { launch, ok, sleep } from './lib.mjs';
+import { launch, ok, sleep, flip } from './lib.mjs';
 
 const ctl = (q) => fetch('http://127.0.0.1:8093/' + q).then((r) => r.text());
 const log = async () => JSON.parse(await ctl('__log'));
@@ -18,7 +18,7 @@ let { page } = await launch(true);
 await reset();
 await page.locator('.login input').fill(process.env.ACCOUNT);
 await page.getByRole('button', { name: 'Sign In' }).click();
-await page.waitForSelector('.tools-switch', { timeout: 30000 });
+await page.waitForSelector('.tools-switch', { state: 'attached', timeout: 30000 });
 await page.locator('.title.model').click();
 await page.locator('input.search').fill('DeepSeek V4 Flash');
 await page.locator('.pick', { hasText: 'DeepSeek: DeepSeek V4 Flash' }).first().locator('.grow').click();
@@ -62,13 +62,13 @@ if (process.env.RESTART) {
 // 3. Plain chat (tools off) holds its conversation the same way.
 await page.locator('.bar .icon').last().click();
 await sleep(300);
-await page.locator('.tools-switch').click();
+await flip(page, '.tools-switch');
 await reset();
 await say('Remember the number 9137. Reply OK.');
 await say('Which number? Number only.');
 reqs = await log();
 ok(reqs.length === 2 && reqs[1].thread.rev && !resends(reqs[1], '9137') && !reqs[1].tools, 'plain chat: the second turn sends only what is new');
 ok((await answer()).includes('9137'), 'plain chat: the model has the whole conversation');
-await page.locator('.tools-switch').click();
+await flip(page, '.tools-switch');
 console.log('all ok');
 process.exit(0);

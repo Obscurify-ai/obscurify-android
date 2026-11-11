@@ -717,6 +717,8 @@ fn provider(m: &Model) -> String {
 pub fn ChatView() -> Element {
     let mut app = use_context::<App>();
     let mut text = use_signal(String::new);
+    // The + menu in the message box (Attach files, Tools, Code), as on the web.
+    let mut menu = use_signal(|| false);
     let c = app.conv.read().clone();
     let live = app.live.read().clone();
     let model = app.settings.read().model.clone();
@@ -793,32 +795,57 @@ pub fn ChatView() -> Element {
                         }
                     }
                 }
+                if *menu.read() {
+                    div { class: "menu-veil", onclick: move |_| menu.set(false) }
+                }
                 div { class: "line",
-                    // Any file or photo; the app tells which (see BRIDGE in main.rs).
-                    span { class: "attach", aria_label: "Attach",
-                        svg { view_box: "0 0 24 24", width: "22", height: "22",
-                            path { d: "M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round" }
-                        }
-                    }
-                    // Tools and Code on or off, in the message line so they cost no row of their own.
-                    if app.code.read().enabled {
-                        if capable {
-                            button { class: if tools_on { "tools-switch on" } else { "tools-switch" }, role: "switch", aria_checked: "{tools_on}",
-                                onclick: move |_| { let v = !app.settings.peek().tools; app.settings.write().tools = v; app.save_settings() }, "Tools" }
-                            if separate {
-                                button { class: if code_on { "code-switch on" } else { "code-switch" }, role: "switch", aria_checked: "{code_on}",
-                                    onclick: move |_| { let v = !app.settings.peek().code; app.settings.write().code = v; app.save_settings() }, "Code" }
-                            }
-                        } else {
-                            button { class: "tools-switch na", role: "switch", aria_checked: "false", aria_disabled: "true",
-                                onclick: move |_| app.say("This model can't use tools"), "Tools" }
-                            if separate {
-                                button { class: "code-switch na", role: "switch", aria_checked: "false", aria_disabled: "true",
-                                    onclick: move |_| app.say("This model can't run code"), "Code" }
-                            }
-                        }
-                    }
                     textarea { id: "composer", rows: 1, placeholder: if app.conv.read().temp { "Temporary chat" } else { "Message" }, oninput: move |e| text.set(e.value()) }
+                    div { class: "plus-wrap",
+                        button { class: if *menu.read() { "plus open" } else { "plus" }, aria_label: "Attach, tools and code", aria_expanded: "{menu}",
+                            onclick: move |_| { let v = !*menu.peek(); menu.set(v) },
+                            svg { view_box: "0 0 24 24", width: "22", height: "22",
+                                path { d: "M12 5v14M5 12h14", fill: "none", stroke: "currentColor", stroke_width: "2.2", stroke_linecap: "round" }
+                            }
+                        }
+                        div { class: if *menu.read() { "plus-menu open" } else { "plus-menu" }, role: "menu",
+                            // Any file or photo; the app tells which (see BRIDGE in main.rs).
+                            button { class: "item attach", role: "menuitem", onclick: move |_| menu.set(false),
+                                svg { view_box: "0 0 24 24", width: "20", height: "20",
+                                    path { d: "M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round" }
+                                }
+                                span { class: "label", "Attach files" }
+                            }
+                            // Tools and Code on or off; the menu stays open to show the change.
+                            if app.code.read().enabled {
+                                button { class: if !capable { "item tools-switch na" } else if tools_on { "item tools-switch on" } else { "item tools-switch" },
+                                    role: "switch", aria_checked: "{capable && tools_on}", aria_disabled: "{!capable}",
+                                    onclick: move |_| {
+                                        if !capable { app.say("This model can't use tools"); return }
+                                        let v = !app.settings.peek().tools; app.settings.write().tools = v; app.save_settings()
+                                    },
+                                    svg { view_box: "0 0 24 24", width: "20", height: "20",
+                                        path { d: "M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round" }
+                                    }
+                                    span { class: "label", "Tools" }
+                                    span { class: "switch" }
+                                }
+                                if separate {
+                                    button { class: if !capable { "item code-switch na" } else if code_on { "item code-switch on" } else { "item code-switch" },
+                                        role: "switch", aria_checked: "{capable && code_on}", aria_disabled: "{!capable}",
+                                        onclick: move |_| {
+                                            if !capable { app.say("This model can't run code"); return }
+                                            let v = !app.settings.peek().code; app.settings.write().code = v; app.save_settings()
+                                        },
+                                        svg { view_box: "0 0 24 24", width: "20", height: "20",
+                                            path { d: "m8 7-5 5 5 5M16 7l5 5-5 5", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round" }
+                                        }
+                                        span { class: "label", "Code" }
+                                        span { class: "switch" }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if streaming {
                         button { class: "send stop", aria_label: "Stop", onclick: move |_| stop_answer(app),
                             svg { view_box: "0 0 24 24", width: "18", height: "18", rect { x: "5", y: "5", width: "14", height: "14", rx: "2", fill: "currentColor" } }
@@ -1081,19 +1108,30 @@ fn Drawer() -> Element {
                 }
             }
             div { class: "foot",
-                div { class: "links",
-                    a { href: "{api::BASE}/tools", "All tools" }
-                    a { href: "{api::BASE}/model_cards", "Model cards" }
+                if api::has_session() {
+                    button { class: "account", onclick: move |_| { app.overlay.set(Overlay::None); app.screen.set(Screen::Account) },
+                        span { "Account" }
+                        if let Some(b) = *app.balance.read() { span { class: "bal", {usd(b)} } }
+                    }
+                } else {
+                    button { class: "account", onclick: move |_| { app.overlay.set(Overlay::None); app.screen.set(Screen::Login) }, span { "Sign in" } }
+                }
+                // As on the web: the rest folds under More info, the legal line stays.
+                details { class: "more",
+                    summary { "More info" }
+                    div { class: "links",
+                        a { href: "{api::BASE}/tools", "All tools" }
+                        a { href: "{api::BASE}/model_cards", "Model cards" }
+                        a { href: "{api::BASE}/about", "About" }
+                        a { href: "{api::BASE}/faq", "FAQ" }
+                        a { href: "{api::BASE}/guides", "Guides" }
+                    }
+                }
+                div { class: "legal",
                     a { href: "{api::BASE}/privacy", "Privacy" }
                     a { href: "{api::BASE}/terms", "Terms" }
                     a { href: "{api::BASE}/canary", "Canary" }
                     a { href: "{api::BASE}/contact", "Support" }
-                }
-                if api::has_session() {
-                    button { onclick: move |_| { app.overlay.set(Overlay::None); app.screen.set(Screen::Account) },
-                        "Account" {(*app.balance.read()).map(|b| format!(" · {}", usd(b))).unwrap_or_default()} }
-                } else {
-                    button { onclick: move |_| { app.overlay.set(Overlay::None); app.screen.set(Screen::Login) }, "Sign in" }
                 }
             }
         }

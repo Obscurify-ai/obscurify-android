@@ -62,11 +62,27 @@ a { color: var(--g); text-decoration: none; }
 .cursor::after { content: '▍'; color: var(--g); }
 .empty { height: 100%; display: flex; align-items: center; justify-content: center; color: var(--m); text-align: center; padding: 24px; }
 .composer { border-top: 1px solid var(--l); padding: 8px; }
-.composer .line { display: flex; gap: 6px; align-items: flex-end; }
-.composer textarea { flex: 1; resize: none; padding: 10px 16px; max-height: 160px; min-height: 44px; border-radius: 22px; }
-.composer .send { flex: none; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: var(--g); color: #000; display: flex; align-items: center; justify-content: center; }
-/* Attach, Tools and Send centre on the message's last line (1rlh tall, 11px from the box's bottom), at any font size. */
-.composer .line > .attach, .composer .send { margin-bottom: calc(.5rlh - 11px); }
+/* One box like the web's: the message, then + (Attach, Tools, Code) and Send at the right. */
+.composer .line { position: relative; display: flex; gap: 4px; align-items: flex-end; border: 1px solid var(--l); border-radius: 24px; padding: 0 3px 0 4px; }
+.composer .line:focus-within { border-color: var(--g); }
+.composer textarea { flex: 1; min-width: 0; resize: none; padding: 11px 10px 11px 12px; max-height: 160px; min-height: 44px; border: 0; border-radius: 0; background: transparent; }
+.composer .send { flex: none; width: 38px; height: 38px; margin-bottom: 3px; padding: 0; border: 0; border-radius: 50%; background: var(--g); color: #000; display: flex; align-items: center; justify-content: center; }
+.plus-wrap { flex: none; margin-bottom: 0; }
+.plus { width: 44px; height: 44px; padding: 0; border: 0; background: transparent; color: var(--m); display: flex; align-items: center; justify-content: center; }
+.plus.open { color: var(--g); }
+.menu-veil { position: fixed; inset: 0; z-index: 4; }
+.plus-menu { display: none; position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 5; min-width: 220px; padding: 6px; background: #0a0a0a; border: 1px solid var(--l); border-radius: 12px; }
+.plus-menu.open { display: block; }
+.plus-menu .item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px; border: 0; border-radius: 8px; background: transparent; color: var(--t); font-size: 16px; text-align: left; }
+.plus-menu .item svg { flex: none; color: var(--m); }
+.plus-menu .item .label { flex: 1; }
+.plus-menu .switch { position: relative; flex: none; width: 34px; height: 20px; border-radius: 99px; background: var(--l); }
+.plus-menu .switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--m); transition: transform .15s; }
+.plus-menu .on svg { color: var(--g); }
+.plus-menu .on .switch { background: var(--g); }
+.plus-menu .on .switch::after { transform: translateX(14px); background: #000; }
+.plus-menu .na .label { text-decoration: line-through; opacity: 0.6; }
+.plus-menu .na .switch { opacity: 0.4; }
 .composer .send.idle { background: var(--l); color: var(--m); }
 .composer .send.stop { background: #000; border: 2px solid var(--g); color: var(--g); }
 .toggles { display: flex; gap: 6px; padding-bottom: 6px; overflow-x: auto; }
@@ -81,8 +97,16 @@ a { color: var(--g); text-decoration: none; }
 .drawer .item { padding: 12px 16px; border-bottom: 1px solid var(--l); display: flex; gap: 8px; align-items: center; }
 .drawer .item .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drawer .item.on { color: var(--g); }
-.drawer .foot { border-top: 1px solid var(--l); display: flex; }
-.drawer .foot button { flex: 1; border: 0; border-radius: 0; padding: 14px; }
+.drawer .foot { border-top: 1px solid var(--l); padding: 14px 16px calc(14px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 12px; }
+.drawer .foot .account { display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 12px 14px; border: 1px solid var(--g); border-radius: 8px; color: var(--g); font-size: 16px; }
+.drawer .foot .account .bal { color: var(--t); font-variant-numeric: tabular-nums; }
+.drawer .foot .more summary { list-style: none; text-align: center; color: var(--m); font-size: 14px; padding: 2px 0; }
+.drawer .foot .more summary::-webkit-details-marker { display: none; }
+.drawer .foot .more summary::after { content: ' \25BE'; }
+.drawer .foot .more[open] summary::after { content: ' \25B4'; }
+.drawer .foot .more .links { justify-content: center; margin: 10px 0 0; }
+.drawer .foot .legal { display: flex; justify-content: center; gap: 14px; font-size: 13px; }
+.drawer .foot .legal a { color: var(--m); }
 
 /* model picker */
 .search { margin: 8px 12px; padding: 10px 12px; width: calc(100% - 24px); }
@@ -139,10 +163,6 @@ h2.group { font-size: 13px; font-weight: 500; text-transform: uppercase; letter-
 .foot .links a { color: var(--m); }
 .toggles.providers { flex-wrap: nowrap; overflow-x: auto; }
 .spend, .compacted { color: var(--m); font-size: 13px; margin: 4px 0; }
-.tools-switch, .code-switch { flex: none; height: calc(1rlh + 6px); margin-bottom: 8px; padding: 0 10px; border-radius: 99px; color: var(--m); font-size: 13px; font-weight: 600; }
-.tools-switch.on, .code-switch.on { color: var(--g); border-color: var(--g); }
-.tools-switch.na, .code-switch.na { text-decoration: line-through; opacity: 0.6; }
-.attach { flex: none; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--m); }
 .empty .muted { margin-top: 8px; font-size: 14px; }
 .empty { flex-direction: column; text-align: center; padding: 0 24px; }
 .interrupted { color: #fbbf24; font-size: 14px; }
