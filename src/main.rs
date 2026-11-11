@@ -117,8 +117,12 @@ struct Settings {
     web_search: bool,
     favorites: Vec<String>,
     /// Code Mode's tools, on unless switched off (settings saved before this have no such field).
+    /// With a server that has separate switches, the tools the model calls directly.
     #[serde(default = "yes")]
     tools: bool,
+    /// Code Mode's code: the model can run code. On unless switched off.
+    #[serde(default = "yes")]
+    code: bool,
     /// Verify mode: answers come from TEE models and the phone checks each one (tee.rs).
     #[serde(default)]
     verify: bool,
@@ -127,7 +131,7 @@ struct Settings {
 fn yes() -> bool { true }
 
 impl Default for Settings {
-    fn default() -> Self { Settings { model: FREE_MODEL.into(), web_search: true, favorites: vec![], tools: true, verify: false } }
+    fn default() -> Self { Settings { model: FREE_MODEL.into(), web_search: true, favorites: vec![], tools: true, code: true, verify: false } }
 }
 
 #[derive(Clone, PartialEq)]

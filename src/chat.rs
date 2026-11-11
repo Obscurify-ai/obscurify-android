@@ -339,6 +339,10 @@ pub(crate) fn wire(msgs: &[Msg], model: &str, tools: bool) -> Vec<Value> {
         }
         let mut text = String::new();
         for r in &m.runs {
+            if r.direct {
+                text.push_str(&r.tools.iter().map(|u| format!("- {} {}\n", u.name, u.detail)).collect::<String>());
+                continue;
+            }
             text.push_str(&format!("```{}\n{}\n```\n", r.language, r.code));
             let o = r.output.trim();
             if !o.is_empty() { text.push_str(&format!("Output:\n```\n{}\n```\n", o.chars().take(2000).collect::<String>())) }
@@ -718,7 +722,10 @@ pub fn ChatView() -> Element {
     let model = app.settings.read().model.clone();
     let streaming = live.is_some();
     let capable = app.code.read().enabled && app.models.read().iter().find(|m| m.id == model).is_none_or(|m| m.tools);
-    let tools_on = app.settings.read().tools;
+    // `settings` and `code` are read above and below, so the view follows the switches.
+    let separate = app.code.read().separate;
+    let tools_on = crate::code::tools_on(&app);
+    let code_on = crate::code::code_on(&app);
     let n = c.messages.len();
 
     let mut do_send = move || {
@@ -746,8 +753,14 @@ pub fn ChatView() -> Element {
             div { id: "msgs",
                 if n == 0 && !streaming {
                     div { class: "empty", "Ask anything."
-                        if capable && tools_on {
-                            p { class: "muted", if app.code.read().paid_tools { "It can run code, make charts and pages, search the web and use paid tools billed to your balance." } else { "It can run code, make charts and pages and search the web." } }
+                        if capable && (tools_on || code_on) {
+                            p { class: "muted", {match (code_on, tools_on, app.code.read().paid_tools) {
+                                (true, true, true) => "It can run code, make charts and pages, search the web and use paid tools billed to your balance.",
+                                (true, true, false) => "It can run code, make charts and pages and search the web.",
+                                (true, false, _) => "It can run code and make charts and pages.",
+                                (false, _, true) => "It can search the web and use paid tools billed to your balance.",
+                                (false, _, false) => "It can search the web.",
+                            }} }
                         }
                     }
                 }
@@ -787,14 +800,22 @@ pub fn ChatView() -> Element {
                             path { d: "M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round" }
                         }
                     }
-                    // Tools on or off, in the message line so it costs no row of its own.
+                    // Tools and Code on or off, in the message line so they cost no row of their own.
                     if app.code.read().enabled {
                         if capable {
                             button { class: if tools_on { "tools-switch on" } else { "tools-switch" }, role: "switch", aria_checked: "{tools_on}",
                                 onclick: move |_| { let v = !app.settings.peek().tools; app.settings.write().tools = v; app.save_settings() }, "Tools" }
+                            if separate {
+                                button { class: if code_on { "code-switch on" } else { "code-switch" }, role: "switch", aria_checked: "{code_on}",
+                                    onclick: move |_| { let v = !app.settings.peek().code; app.settings.write().code = v; app.save_settings() }, "Code" }
+                            }
                         } else {
                             button { class: "tools-switch na", role: "switch", aria_checked: "false", aria_disabled: "true",
                                 onclick: move |_| app.say("This model can't use tools"), "Tools" }
+                            if separate {
+                                button { class: "code-switch na", role: "switch", aria_checked: "false", aria_disabled: "true",
+                                    onclick: move |_| app.say("This model can't run code"), "Code" }
+                            }
                         }
                     }
                     textarea { id: "composer", rows: 1, placeholder: if app.conv.read().temp { "Temporary chat" } else { "Message" }, oninput: move |e| text.set(e.value()) }
@@ -913,6 +934,42 @@ fn RunView(r: crate::code::Run) -> Element {
     let lang = if r.language.starts_with('j') { "JavaScript" } else { "Python" };
     let lines = r.code.lines().count();
     let class = if !r.done { "run going" } else if r.ok { "run ok" } else { "run err" };
+    let media = rsx! {
+        for (i, url) in r.media.iter().enumerate() {
+            div { key: "media-{i}", class: "run-media",
+                if code::is_video(url) {
+                    video { class: "run-video", controls: true, playsinline: true, preload: "metadata", src: "{url}" }
+                } else if code::is_audio(url) {
+                    audio { class: "run-audio", controls: true, preload: "metadata", src: "{url}" }
+                } else {
+                    img { class: "run-img", src: "{url}", loading: "lazy" }
+                }
+                // The links expire (a day at most), and this is the only way to keep the file.
+                button { class: "media-save",
+                    onclick: { let url = url.clone(); move |_| crate::open_url(&url) },
+                    "⤓ Save " {code::media_filename(url)}
+                }
+            }
+        }
+    };
+    let tools = rsx! {
+        if !r.tools.is_empty() {
+            div { class: "run-tools",
+                for (i, u) in r.tools.iter().enumerate() {
+                    div { key: "{i}", class: match u.ok { None => "tool going", Some(true) => "tool", Some(false) => "tool failed" },
+                        span { {match u.name.as_str() { "web_search" => "🔍", "search" => "🧰", "inspect" => "📋", "call" => "💳", _ => "•" }} }
+                        span { class: "tool-name", " {u.name} " }
+                        span { class: "tool-detail", "{u.detail}" }
+                        if u.cost > 0.0 { span { class: "run-cost", " {usd(u.cost)}" } }
+                    }
+                }
+            }
+        }
+    };
+    // Tools the model called directly: only their chips and what they made.
+    if r.direct {
+        return rsx! { div { class: "run direct", {tools} {media} } };
+    }
     rsx! {
         div { class,
             div { class: "run-head",
@@ -924,18 +981,7 @@ fn RunView(r: crate::code::Run) -> Element {
                 summary { "Code · {lines} " if lines == 1 { "line" } else { "lines" } }
                 pre { "{r.code}" }
             }
-            if !r.tools.is_empty() {
-                div { class: "run-tools",
-                    for (i, u) in r.tools.iter().enumerate() {
-                        div { key: "{i}", class: match u.ok { None => "tool going", Some(true) => "tool", Some(false) => "tool failed" },
-                            span { {match u.name.as_str() { "web_search" => "🔍", "search" => "🧰", "inspect" => "📋", "call" => "💳", _ => "•" }} }
-                            span { class: "tool-name", " {u.name} " }
-                            span { class: "tool-detail", "{u.detail}" }
-                            if u.cost > 0.0 { span { class: "run-cost", " {usd(u.cost)}" } }
-                        }
-                    }
-                }
-            }
+            {tools}
             if !r.output.is_empty() || !r.error.is_empty() {
                 pre { class: "run-out",
                     "{r.output}"
@@ -943,22 +989,7 @@ fn RunView(r: crate::code::Run) -> Element {
                 }
             }
             for (i, img) in r.images.iter().enumerate() { img { key: "{i}", class: "run-img", src: "{img}" } }
-            for (i, url) in r.media.iter().enumerate() {
-                div { key: "media-{i}", class: "run-media",
-                    if code::is_video(url) {
-                        video { class: "run-video", controls: true, playsinline: true, preload: "metadata", src: "{url}" }
-                    } else if code::is_audio(url) {
-                        audio { class: "run-audio", controls: true, preload: "metadata", src: "{url}" }
-                    } else {
-                        img { class: "run-img", src: "{url}", loading: "lazy" }
-                    }
-                    // The links expire (a day at most), and this is the only way to keep the file.
-                    button { class: "media-save",
-                        onclick: { let url = url.clone(); move |_| crate::open_url(&url) },
-                        "⤓ Save " {code::media_filename(url)}
-                    }
-                }
-            }
+            {media}
             for (i, p) in r.pages.iter().enumerate() {
                 button { key: "{i}", class: "page-btn",
                     onclick: { let p = p.clone(); move |_| crate::code::open_page(&app, &p.title, &p.html) },

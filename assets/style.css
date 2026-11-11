@@ -112,6 +112,8 @@ h2.group { font-size: 13px; font-weight: 500; text-transform: uppercase; letter-
 .run.going { border-left-color: #fbbf24; }
 .run.ok { border-left-color: var(--g); }
 .run.err { border-left-color: #ff5454; }
+.run.direct { border-left-color: #555; }
+.run.direct .run-tools { border-top: 0; }
 .run-head { display: flex; gap: 10px; align-items: center; padding: 6px 12px; font-size: 13px; color: var(--m); background: #15171b; }
 .run-lang { color: var(--t); font-weight: 600; }
 .run-cost { margin-left: auto; color: #fc885a; font-variant-numeric: tabular-nums; }
@@ -137,9 +139,9 @@ h2.group { font-size: 13px; font-weight: 500; text-transform: uppercase; letter-
 .foot .links a { color: var(--m); }
 .toggles.providers { flex-wrap: nowrap; overflow-x: auto; }
 .spend, .compacted { color: var(--m); font-size: 13px; margin: 4px 0; }
-.tools-switch { flex: none; height: calc(1rlh + 6px); margin-bottom: 8px; padding: 0 10px; border-radius: 99px; color: var(--m); font-size: 13px; font-weight: 600; }
-.tools-switch.on { color: var(--g); border-color: var(--g); }
-.tools-switch.na { text-decoration: line-through; opacity: 0.6; }
+.tools-switch, .code-switch { flex: none; height: calc(1rlh + 6px); margin-bottom: 8px; padding: 0 10px; border-radius: 99px; color: var(--m); font-size: 13px; font-weight: 600; }
+.tools-switch.on, .code-switch.on { color: var(--g); border-color: var(--g); }
+.tools-switch.na, .code-switch.na { text-decoration: line-through; opacity: 0.6; }
 .attach { flex: none; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--m); }
 .empty .muted { margin-top: 8px; font-size: 14px; }
 .empty { flex-direction: column; text-align: center; padding: 0 24px; }

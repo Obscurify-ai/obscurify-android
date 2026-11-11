@@ -9,7 +9,7 @@ are stored only on the phone.
 
 ## Features
 
-- **Tools.** The assistant runs code on the phone, makes charts and pages, searches the web and uses paid tools billed to the balance. A switch above the message box shows whether they're on. Guests get them too, except paid tools.
+- **Tools and Code.** Two switches in the message line, both on unless you turn them off. Tools: the assistant searches the web and finds and uses paid tools billed to the balance, calling them directly. Code: it runs code on the phone and makes charts and pages. With both on it calls tools directly and writes code only when the job needs it; with both off it's plain chat. Guests get them too, except paid tools.
 - **Chat as a guest**, with no account.
 - **A lost connection doesn't fail anything.** Tool calls and answers wait for up to 15 minutes and deliver when it's back. Paid calls carry a request id, so the server runs them once.
 - **Long-running agent.** A reply can take 100 steps and a run 30 minutes, and keeps going in the background with a notification. What it has spent shows as it goes. A lost connection is waited out for as long as it takes. A request that keeps failing goes back to the model. Requests only ever append, which keeps the provider's prompt cache working, and a conversation near the model's context is compacted into a summary instead of having old results trimmed.
@@ -71,7 +71,7 @@ obscurify.ai/android links through `releases/latest/download/obscurify.apk`. Upl
 | `src/main.rs` | App state, the JS bridge (links, Back, image picker, pinned scrolling), sign-in, sign-up, Account, Add funds |
 | `src/chat.rs` | Chat, streaming, chats on the phone, model picker, safe markdown |
 | `src/files.rs` | Reading attached files into text: PDF, spreadsheets, Word, PowerPoint, OpenDocument, text |
-| `src/code.rs` | Code Mode: the agent loop, the sandbox bridge, tools and budgets, runs on the message |
+| `src/code.rs` | Code Mode: the agent loop, the sandbox bridge, tools the model calls directly, budgets, runs on the message |
 | `src/tee.rs` | Verify: checking TEE replies against their receipts and attestation, the chip |
 | `src/compact.rs` | Compaction: earlier messages summarized in chunks so a chat goes on past the model's context |
 | `src/api.rs` | HTTP. Signed-in calls carry the session; voucher calls carry nothing |
@@ -93,6 +93,7 @@ node card.mjs                     # image picker and a vision model; Stripe test
 ACCOUNT=… PLAN=casual node plans.mjs  # models the plan can use first, the rest under "Upgrade to use"
 ACCOUNT=… node agent.mjs             # Long runs, compaction, errors back to the model, background work (scripted replies, through flaky-proxy.mjs)
 ACCOUNT=… node code.mjs              # Code Mode: Python, a chart, a paid tool, a page full screen, the sandbox sealed off
+node flaky-proxy.mjs & ACCOUNT=… node switches.mjs  # Tools and Code switches: on by default, a lookup is a direct web_search, code off, tools off (code can't reach them), both off is plain chat
 ACCOUNT=… node parity.mjs            # guest chat and tools, Tools switch, provider filter, raw, edit, plan confirmation, delete account
 node flaky-proxy.mjs & ACCOUNT=… node outage.mjs  # lost connections wait and deliver; PAID=1 also loses a paid answer and checks it's charged once
 node flaky-proxy.mjs & ACCOUNT=… node resume.mjs  # failures keep tool work: retries, Continue, new messages, Retry, a killed app; the Copy toolbar (test APK with OBSCURIFY_API=http://127.0.0.1:8093, adb reverse tcp:8093 tcp:8093)

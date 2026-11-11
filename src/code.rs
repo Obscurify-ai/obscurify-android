@@ -1,8 +1,10 @@
-//! Code Mode: the model gets one tool, `run_code`, and its Python or JavaScript runs on the phone
-//! in a sandbox WebView of its own (see MainActivity.kt), never in the app's WebView. Code reaches
-//! the outside only through `tools.*`, which comes back here: web search, and paid tools billed to
-//! the balance. The server says what's on, the per-call cap and the system
-//! prompt (`GET /code_mode`), so the app and the web tell the model the same thing.
+//! Code Mode: two switches, both on unless switched off. Code gives the model `run_code`, and its
+//! Python or JavaScript runs on the phone in a sandbox WebView of its own (see MainActivity.kt),
+//! never in the app's WebView. Code reaches the outside only through `tools.*`, which comes back
+//! here. Tools gives the model web search and the tool marketplace (paid tools billed to the
+//! balance) as tools it calls directly, run here against the same endpoints. The server says
+//! what's on, the per-call cap, the tools and the system prompts (`GET /code_mode`), so the app
+//! and the web tell the model the same thing.
 //!
 //! A reply is an agent loop: stream a completion; if it asks to run code, run it, send the result
 //! back, and repeat until the model answers in words. The tool turns are kept on the message
@@ -55,6 +57,14 @@ pub struct Config {
     pub result_chars: usize,
     pub system_prompt: String,
     pub run_code_tool: Value,
+    /// The server has separate Code and Tools switches: the tools the model calls directly, and
+    /// a prompt for each setting. A server from before has one prompt for code and tools
+    /// together, and the Tools switch alone decides, as it used to.
+    pub separate: bool,
+    pub direct_tools: Vec<Value>,
+    pub prompt_code_tools: String,
+    pub prompt_code: String,
+    pub prompt_tools: String,
 }
 
 pub async fn load(mut app: App) {
@@ -71,6 +81,11 @@ pub async fn load(mut app: App) {
         result_chars: v["result_chars"].as_u64().unwrap_or(12_000) as usize,
         system_prompt: v["system_prompt"].as_str().unwrap_or("").to_string(),
         run_code_tool: v["run_code_tool"].clone(),
+        separate: v["prompts"].is_object() && v["direct_tools"].is_array(),
+        direct_tools: v["direct_tools"].as_array().cloned().unwrap_or_default(),
+        prompt_code_tools: v["prompts"]["code_tools"].as_str().unwrap_or("").to_string(),
+        prompt_code: v["prompts"]["code"].as_str().unwrap_or("").to_string(),
+        prompt_tools: v["prompts"]["tools"].as_str().unwrap_or("").to_string(),
     });
 }
 
@@ -97,9 +112,20 @@ pub fn capable(app: &App, model: &str) -> bool {
     app.code.peek().enabled && app.models.peek().iter().find(|m| m.id == model).is_none_or(|m| m.tools)
 }
 
-/// Code runs for this model: it can, and the Tools switch is on.
+/// The Tools switch is on: the model calls web search and the marketplace directly.
+pub fn tools_on(app: &App) -> bool {
+    let cfg = app.code.peek();
+    app.settings.peek().tools && (!cfg.separate || !cfg.direct_tools.is_empty())
+}
+
+/// The Code switch is on: the model can run code.
+pub fn code_on(app: &App) -> bool {
+    if app.code.peek().separate { app.settings.peek().code } else { app.settings.peek().tools }
+}
+
+/// The agent loop runs for this model: it can call tools, and Code or Tools is on.
 pub fn active(app: &App, model: &str) -> bool {
-    capable(app, model) && app.settings.peek().tools
+    capable(app, model) && (code_on(app) || tools_on(app))
 }
 
 // ---- what a run looks like, kept on the message ----
@@ -151,6 +177,10 @@ fn media_urls(value: &Value) -> Vec<String> {
 
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct Run {
+    /// Not code: the tools the model called directly in one step (the Tools switch), shown as
+    /// their chips and any media they returned.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub direct: bool,
     /// What the model said before asking for this run.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub intro: String,
@@ -431,6 +461,61 @@ fn detail(name: &str, args: &Value) -> String {
     }
 }
 
+/// One tool call, from code or from the model directly, on the last run: its chip, the call, and
+/// what it cost and any media it made.
+async fn use_tool(name: &str, args: &Value, msg: &mut Msg, t: &mut Turn, show: &mut impl FnMut(&Msg)) -> Result<Value, String> {
+    if name != "budget" {
+        msg.runs.last_mut().unwrap().tools.push(ToolUse { name: name.to_string(), detail: detail(name, args), ..Default::default() });
+        show(msg);
+    }
+    let reply = tool(name, args, t).await;
+    let r = msg.runs.last_mut().unwrap();
+    // A generated video or picture comes back as a URL that expires: show it at once, with a way
+    // to open or save it, rather than leaving a link inside JSON.
+    if name == "call" && let Ok(v) = &reply {
+        for url in media_urls(&v["output"]) {
+            if !r.media.contains(&url) { r.media.push(url) }
+        }
+    }
+    if name != "budget" && let Some(u) = r.tools.last_mut() {
+        u.ok = Some(matches!(&reply, Ok(v) if v.get("ok") != Some(&json!(false))));
+        u.cost = reply.as_ref().ok().and_then(|v| v["cost_usd"].as_f64()).unwrap_or(0.0);
+        r.cost += u.cost;
+    }
+    msg.spent = t.spent;
+    reply
+}
+
+/// The tools the model calls directly (the Tools switch), and their names on the sandbox's
+/// `tools` object, whose requests they make.
+fn direct_name(name: &str) -> Option<&'static str> {
+    match name {
+        "web_search" => Some("web_search"),
+        "find_tools" => Some("search"),
+        "inspect_tool" => Some("inspect"),
+        "call_tool" => Some("call"),
+        _ => None,
+    }
+}
+
+/// A tool the model called directly, on the step's tools run: the answer (or the error) as text.
+async fn direct(name: &str, raw: &str, msg: &mut Msg, t: &mut Turn, show: &mut impl FnMut(&Msg)) -> String {
+    let Some(inner) = direct_name(name) else { return format!("There is no tool named \"{name}\".") };
+    let args: Value = serde_json::from_str(if raw.trim().is_empty() { "{}" } else { raw }).unwrap_or(Value::Null);
+    if !args.is_object() {
+        return format!("{name} needs JSON arguments.");
+    }
+    let args = if inner == "call" {
+        json!({"id": args["id"], "input": if args["input"].is_object() { args["input"].clone() } else { json!({}) }, "max_cost_usd": args["max_cost_usd"]})
+    } else {
+        args
+    };
+    match use_tool(inner, &args, msg, t, show).await {
+        Ok(v) => clip_middle(&v.to_string(), t.result_chars),
+        Err(e) => format!("Error: {e}"),
+    }
+}
+
 /// Runs one piece of code, answering its tool calls; `show` redraws the reply.
 async fn execute(rx: &mut UnboundedReceiver<Value>, msg: &mut Msg, t: &mut Turn, base: &str, stop: impl Fn() -> bool, show: &mut impl FnMut(&Msg)) -> String {
     let started = crate::store::now();
@@ -492,29 +577,11 @@ async fn execute(rx: &mut UnboundedReceiver<Value>, msg: &mut Msg, t: &mut Turn,
                 let reply = if tools > MAX_TOOL_CALLS {
                     Err(format!("Too many tool calls in one run ({MAX_TOOL_CALLS})."))
                 } else {
-                    if name != "budget" {
-                        r.tools.push(ToolUse { name: name.clone(), detail: detail(&name, &ev["args"]), ..Default::default() });
-                        show(msg);
-                    }
                     let t0 = crate::store::now();
-                    let out = tool(&name, &ev["args"], t).await;
+                    let out = use_tool(&name, &ev["args"], msg, t, show).await;
                     tool_ms += crate::store::now() - t0;
                     out
                 };
-                let r = msg.runs.last_mut().unwrap();
-                // A generated video or picture comes back as a URL that expires: show it at once,
-                // with a way to open or save it, rather than leaving a link inside JSON.
-                if name == "call" && let Ok(v) = &reply {
-                    for url in media_urls(&v["output"]) {
-                        if !r.media.contains(&url) { r.media.push(url) }
-                    }
-                }
-                if name != "budget" && let Some(u) = r.tools.last_mut() {
-                    u.ok = Some(matches!(&reply, Ok(v) if v.get("ok") != Some(&json!(false))));
-                    u.cost = reply.as_ref().ok().and_then(|v| v["cost_usd"].as_f64()).unwrap_or(0.0);
-                    r.cost += u.cost;
-                }
-                msg.spent = t.spent;
                 post(&match reply {
                     Ok(v) => json!({"type": "tool_result", "callId": call_id, "ok": true, "value": v}),
                     Err(e) => json!({"type": "tool_result", "callId": call_id, "ok": false, "error": e}),
@@ -573,7 +640,7 @@ pub fn resume(mut app: App) {
     }
     let model = app.settings.peek().model.clone();
     if !active(&app, &model) {
-        return app.say("Turn Tools on and pick a model with tools to continue.");
+        return app.say(if app.code.peek().separate { "Turn Tools or Code on and pick a model with tools to continue." } else { "Turn Tools on and pick a model with tools to continue." });
     }
     let Some(mut prev) = app.conv.write().messages.pop() else { return };
     prev.content.clear();
@@ -622,7 +689,7 @@ fn tail(trace: &[Value], budget: u64) -> Vec<Value> {
 /// has the same prefix and tools as the step it follows, so it reads from the cache. False if no
 /// usable summary came back: nothing has changed then, and the run carries on appending.
 #[allow(clippy::too_many_arguments)]
-async fn compact(mut app: App, cfg: &Config, model: &str, context: u64, shrink: bool, history: &mut Vec<Value>, trace: &mut Vec<Value>, msg: &mut Msg, t: &mut Turn, stop: &impl Fn() -> bool) -> bool {
+async fn compact(mut app: App, setup: &Setup, model: &str, context: u64, shrink: bool, history: &mut Vec<Value>, trace: &mut Vec<Value>, msg: &mut Msg, t: &mut Turn, stop: &impl Fn() -> bool) -> bool {
     let sent: Vec<Value> = history.iter().chain(trace.iter()).cloned().collect();
     // Too big for one summary request (or already refused as too long): summarize it in chunks
     // that each fit (compact.rs), so a history of any length compacts.
@@ -635,7 +702,7 @@ async fn compact(mut app: App, cfg: &Config, model: &str, context: u64, shrink: 
     } else {
         let mut messages = sent;
         messages.push(json!({"role": "user", "content": SUMMARY_PROMPT}));
-        let body = json!({"model": model, "messages": messages, "stream": true, "stream_options": {"include_usage": true}, "tools": [cfg.run_code_tool]});
+        let body = json!({"model": model, "messages": messages, "stream": true, "stream_options": {"include_usage": true}, "tools": setup.tools});
         let mut delay = 1000;
         let mut waits = 0;
         let mut retries = 0;
@@ -682,10 +749,34 @@ async fn compact(mut app: App, cfg: &Config, model: &str, context: u64, shrink: 
         };
         c.compaction = Some(chat::Compaction { summary, through });
     }
-    *history = vec![json!({"role": "system", "content": cfg.system_prompt})];
+    *history = vec![json!({"role": "system", "content": setup.system})];
     history.extend(chat::api_history(&app.conv.peek(), model, true));
     msg.compacted = true;
     true
+}
+
+/// What one reply may use, fixed for the whole reply: its system prompt and tools.
+struct Setup {
+    code: bool,
+    system: String,
+    tools: Vec<Value>,
+    names: Vec<String>,
+}
+
+impl Setup {
+    fn new(app: &App, cfg: &Config) -> Self {
+        let (code, tools_on) = (code_on(app), tools_on(app));
+        let (system, tools) = if cfg.separate {
+            let system = match (code, tools_on) { (true, true) => &cfg.prompt_code_tools, (true, false) => &cfg.prompt_code, _ => &cfg.prompt_tools };
+            let mut tools = if code { vec![cfg.run_code_tool.clone()] } else { vec![] };
+            if tools_on { tools.extend(cfg.direct_tools.iter().cloned()) }
+            (system.clone(), tools)
+        } else {
+            (cfg.system_prompt.clone(), vec![cfg.run_code_tool.clone()])
+        };
+        let names = tools.iter().filter_map(|t| t["function"]["name"].as_str().map(String::from)).collect();
+        Setup { code: code || !cfg.separate, system, tools, names }
+    }
 }
 
 /// On disk after every step: a killed app comes back to this, with Continue.
@@ -712,6 +803,9 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
     let verify = crate::api::has_session() && app.settings.peek().verify;
     let chat_id = app.conv.peek().id.clone();
     let cfg = app.code.peek().clone();
+    let setup = Setup::new(&app, &cfg);
+    // With Tools off, code can't reach them either.
+    let use_tools = tools_on(&app);
     app.stop.set(false);
     let mut first = from.unwrap_or_else(|| Msg { role: "assistant".into(), model: model.clone(), ..Default::default() });
     first.runs.iter_mut().filter(|r| !r.done).for_each(|r| { r.done = true; r.status = "Cut off".into() });
@@ -723,15 +817,15 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
         *EVENTS.lock().unwrap() = Some(tx);
         let mut msg = app.live.peek().clone().unwrap();
         let mut t = Turn {
-            paid: cfg.paid_tools,
-            catalog: cfg.catalog,
-            web: cfg.web_search,
+            paid: use_tools && cfg.paid_tools,
+            catalog: use_tools && cfg.catalog,
+            web: use_tools && cfg.web_search,
             per_call: cfg.per_call,
             spent: if msg.spent > 0.0 { msg.spent } else { msg.runs.iter().map(|r| r.cost).sum() },
             result_chars: cfg.result_chars,
             app,
         };
-        let mut history = vec![json!({"role": "system", "content": cfg.system_prompt})];
+        let mut history = vec![json!({"role": "system", "content": setup.system})];
         history.extend(chat::api_history(&app.conv.peek(), &model, true));
         msg.spent = t.spent;
         let context = app.models.peek().iter().find(|m| m.id == model).map(|m| m.context).filter(|c| *c > 0).unwrap_or(DEFAULT_CONTEXT);
@@ -767,7 +861,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
             }
             let all = |h: &[Value], tr: &[Value]| h.iter().chain(tr.iter()).cloned().collect::<Vec<_>>();
             if compact_tries < MAX_COMPACT_TRIES && used.unwrap_or_else(|| estimate(&all(&history, &trace))) as f64 >= COMPACT_AT * context as f64 && !stop() {
-                if compact(app, &cfg, &model, context, false, &mut history, &mut trace, &mut msg, &mut t, &stop).await {
+                if compact(app, &setup, &model, context, false, &mut history, &mut trace, &mut msg, &mut t, &stop).await {
                     used = None;
                     // Still over, with nothing left to summarize: don't do it again for nothing.
                     compact_tries = if estimate(&all(&history, &trace)) as f64 >= COMPACT_AT * context as f64 { MAX_COMPACT_TRIES } else { 0 };
@@ -780,7 +874,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
                     break;
                 }
             }
-            let mut body = json!({"model": model, "messages": all(&history, &trace), "stream": true, "stream_options": {"include_usage": true}, "tools": [cfg.run_code_tool]});
+            let mut body = json!({"model": model, "messages": all(&history, &trace), "stream": true, "stream_options": {"include_usage": true}, "tools": setup.tools});
             if step == MAX_STEPS - 1 {
                 body["tool_choice"] = json!("none");
             }
@@ -820,7 +914,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
                     // Too long for the model: compact, once, and ask again.
                     if too_long(&e) && !overflowed && !stop() {
                         overflowed = true;
-                        if compact(app, &cfg, &model, context, true, &mut history, &mut trace, &mut msg, &mut t, &stop).await {
+                        if compact(app, &setup, &model, context, true, &mut history, &mut trace, &mut msg, &mut t, &stop).await {
                             used = None;
                             body["messages"] = json!(all(&history, &trace));
                             app.live.set(Some(msg.clone()));
@@ -872,7 +966,11 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
                 if s.tool_calls.is_empty() && written_call(&msg.content) && repairs < MAX_REPAIRS && step + 1 < MAX_STEPS && !stop() {
                     repairs += 1;
                     trace.push(json!({"role": "assistant", "content": msg.content}));
-                    trace.push(json!({"role": "user", "content": "That tool call was written out as text, so it did not run. Call the run_code tool itself, with JSON arguments {\"language\": \"python\" | \"javascript\", \"code\": \"...\"}."}));
+                    trace.push(json!({"role": "user", "content": if setup.code {
+                        "That tool call was written out as text, so it did not run. Call the run_code tool itself, with JSON arguments {\"language\": \"python\" | \"javascript\", \"code\": \"...\"}."
+                    } else {
+                        "That tool call was written out as text, so it did not run. Call the tool itself, with JSON arguments."
+                    }}));
                     msg.content.clear();
                     msg.steps = step + 1;
                     checkpoint(app, &msg, &trace);
@@ -896,12 +994,27 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
             retries = 0;
             checkpoint(app, &msg, &trace);
             let mut intro = std::mem::take(&mut msg.content);
+            // The step's direct tool calls share one run, as on the web.
+            let mut tools_run: Option<usize> = None;
             for call in calls {
                 let id = call["id"].clone();
                 let name = call["function"]["name"].as_str().unwrap_or("");
-                let args: Value = serde_json::from_str(call["function"]["arguments"].as_str().unwrap_or("{}")).unwrap_or(Value::Null);
-                let result = if name != "run_code" {
-                    format!("There is no tool named \"{name}\". The only tool is run_code.")
+                let raw = call["function"]["arguments"].as_str().unwrap_or("{}");
+                let args: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+                let result = if !setup.names.iter().any(|n| n == name) {
+                    format!("There is no tool named \"{name}\". The tools are: {}.", setup.names.join(", "))
+                } else if name != "run_code" {
+                    // Its chips go on this step's tools run, which has to be the last run.
+                    if tools_run != Some(msg.runs.len().wrapping_sub(1)) {
+                        msg.runs.push(Run { direct: true, intro: std::mem::take(&mut intro), ..Default::default() });
+                        tools_run = Some(msg.runs.len() - 1);
+                    }
+                    app.live.set(Some(msg.clone()));
+                    let out = direct(name, raw, &mut msg, &mut t, &mut show).await;
+                    let r = msg.runs.last_mut().unwrap();
+                    r.done = true;
+                    r.ok = r.tools.iter().all(|u| u.ok == Some(true));
+                    out
                 } else if !args["code"].is_string() {
                     "run_code needs JSON arguments {\"language\": \"python\" | \"javascript\", \"code\": \"...\"}.".to_string()
                 } else {
