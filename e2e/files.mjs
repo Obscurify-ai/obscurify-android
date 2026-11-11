@@ -2,7 +2,7 @@
 // text files on the phone and sends their text with the message. Build a test APK against a
 // server, install it on a running emulator, then: ACCOUNT=<account number> node e2e/files.mjs
 // (PKG=ai.obscurify.play for the Play build). Each fixture hides a code word the model must find.
-import { launch, ok, shot } from './lib.mjs';
+import { launch, agentSwitches, ok, shot } from './lib.mjs';
 
 const fx = new URL('./fixtures/', import.meta.url).pathname;
 const { page } = await launch(true);
@@ -17,7 +17,7 @@ await page.locator('.pick', { hasText: 'Meta: Llama 3.3 70b Instruct' }).first()
 
 ok(await page.locator('.attach').count() === 1, 'one attach button');
 await page.waitForSelector('.tools-switch', { timeout: 20000 });
-if (await page.locator('.tools-switch.on').count()) await page.locator('.tools-switch').click();
+await agentSwitches(page, false);
 const attach = async (names) => {
   await page.setInputFiles('#pick', names.map(n => fx + n));
   await page.waitForFunction(n => document.querySelectorAll('.docs .chip').length === n, names.length, { timeout: 60000 });

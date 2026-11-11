@@ -28,3 +28,12 @@ export async function launch(clear) {
   await page.waitForSelector('#main > *', { timeout: 45000 });
   return { browser: { close: async () => {} }, page };
 }
+
+/** Tools and Code (Code shows when the server has separate switches) both on, or both off:
+ *  off is plain chat. */
+export async function agentSwitches(page, on) {
+  for (const sel of ['.tools-switch', '.code-switch']) {
+    const sw = page.locator(sel);
+    if (await sw.count() && (await sw.getAttribute('aria-checked') === 'true') !== on) await sw.click();
+  }
+}

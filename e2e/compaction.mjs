@@ -6,7 +6,7 @@
 // The proxy lists every model with an 8K context, so a short chat is already "long"; the chat's
 // answers are scripted, the summaries come from the real model.
 // With flaky-proxy.mjs running (see there): ACCOUNT=<funded number> node e2e/compaction.mjs
-import { launch, ok, sleep } from './lib.mjs';
+import { launch, agentSwitches, ok, sleep } from './lib.mjs';
 
 const ctl = (q) => fetch('http://127.0.0.1:8093/' + q).then((r) => r.text());
 const script = (s) => fetch('http://127.0.0.1:8093/__script', { method: 'POST', body: JSON.stringify(s) });
@@ -20,8 +20,8 @@ await page.waitForSelector('.tools-switch', { timeout: 30000 });
 await page.locator('.title.model').click();
 await page.locator('input.search').fill('DeepSeek V4 Flash');
 await page.locator('.pick', { hasText: 'DeepSeek: DeepSeek V4 Flash' }).first().locator('.grow').click();
-// Plain chat: Tools off.
-if (await page.locator('.tools-switch.on').count()) await page.locator('.tools-switch').click();
+// Plain chat: Tools and Code off.
+await agentSwitches(page, false);
 
 const say = async (text) => {
   await page.locator('#composer').fill(text);

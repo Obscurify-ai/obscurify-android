@@ -1,7 +1,7 @@
 // Features the app shares with the website: guest chat, the Tools switch, the provider filter,
 // raw view and editing any answer, chat times, links, plan confirmation, amount presets, and
 // deleting the account. Test APK against a server, then: ACCOUNT=<funded number> node e2e/parity.mjs
-import { launch, ok, sleep } from './lib.mjs';
+import { launch, agentSwitches, ok, sleep } from './lib.mjs';
 
 const answered = (page, n) => page.waitForFunction((n) => document.querySelectorAll('.msg.assistant').length >= n && !document.querySelector('.send.stop'), n, { timeout: 150000 });
 
@@ -83,20 +83,21 @@ await page.locator('.providers .chip', { hasText: /^Anthropic$/ }).click();
 await page.locator('input.search').fill('Llama 3.3 70b Instruct');
 await page.locator('.pick', { hasText: 'Meta: Llama 3.3 70b Instruct' }).first().locator('.grow').click();
 await page.locator('.tools-switch').click();
+if (await page.locator('.code-switch.on').count()) await page.locator('.code-switch').click();
 ok(await page.locator('.tools-switch.on').count() === 0 && (await page.locator('.tools-switch').getAttribute('aria-checked')) === 'false', 'Tools switches off');
 for (const [i, w] of [[1, 'mango'], [2, 'papaya']]) {
   await page.locator('#composer').fill(`Reply with exactly the word: ${w}`);
   await page.locator('.send').click();
   await answered(page, i);
 }
-ok(await page.locator('.run').count() === 0, 'with Tools off, no code runs');
+ok(await page.locator('.run').count() === 0, 'with Tools (and Code) off, no code runs');
 await page.locator('.msg.assistant').first().locator('.meta button', { hasText: 'Raw' }).click();
 ok(await page.locator('.msg.assistant').first().locator('pre.raw').count() === 1, 'an answer can be shown raw');
 await page.locator('.msg.assistant').first().locator('.meta button', { hasText: 'Edit' }).click();
 await sleep(500);
 ok(await page.locator('.msg').count() === 0 && (await page.locator('#composer').inputValue()).includes('mango'), 'Edit on an earlier answer goes back to its question');
 await page.locator('#composer').fill('');
-await page.locator('.tools-switch').click();
+await agentSwitches(page, true);
 
 // 4. Account: a plan change asks first; Add funds has amount presets.
 await page.locator('.bar .icon').first().click();

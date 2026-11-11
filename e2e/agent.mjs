@@ -4,7 +4,7 @@
 // through a kill, Continue and a new message; Edit drops it; no spend limit; DSML tool calls; errors
 // back to the model; a run past the old 180s
 // with the app in the background, delivering a notification.
-import { launch, ok, sleep, adb, shot, PKG } from './lib.mjs';
+import { launch, agentSwitches, ok, sleep, adb, shot, PKG } from './lib.mjs';
 
 const ctl = (q) => fetch('http://127.0.0.1:8093/' + q).then((r) => r.text());
 const log = async () => JSON.parse(await ctl('__log'));
@@ -90,15 +90,15 @@ reqs = await log();
 ok(summaryOf(reqs[0]).includes('SUMMARY-ONE') && JSON.stringify(reqs[0].messages).includes('Finished after compacting'), 'a new message sends the summary and what came after');
 ok(isPrefix(after.at(-1), { messages: reqs[0].messages }), 'and keeps the prefix of the last request');
 
-// 4. Tools off, plain chat honors it too.
-await page.locator('.tools-switch').click();
+// 4. Tools and Code off, plain chat honors it too.
+await agentSwitches(page, false);
 await reset();
 await script([{ text: 'Plain answer.' }]);
 await say('Plain question');
 await idle();
 reqs = await log();
 ok(String(reqs[0].messages[0].content).includes('SUMMARY-ONE') && !reqs[0].tools, 'plain chat sends the summary too');
-await page.locator('.tools-switch').click();
+await agentSwitches(page, true);
 
 // 5. Reopening keeps it: kill the app, send again.
 ({ page } = await launch(false));
@@ -282,14 +282,14 @@ await sleep(2000);
 ok((await page.locator('.msg').last().textContent()).includes('Done in the background'), 'the answer is there on return');
 
 // 11b. Plain chat keeps going in the background too. No crash on a reply that ends at once.
-await page.locator('.tools-switch').click();
+await agentSwitches(page, false);
 await fresh();
 await reset();
 await script([{ text: 'Plain and quick.' }]);
 await say('Plain.');
 await idle();
 ok((await page.locator('.msg').last().textContent()).includes('Plain and quick'), 'a quick plain reply starts and stops the service cleanly');
-await page.locator('.tools-switch').click();
+await agentSwitches(page, true);
 
 // 12. OUTAGE_MS=960000: longer than the old 15 minute cap, and it still delivers by itself.
 if (process.env.OUTAGE_MS) {

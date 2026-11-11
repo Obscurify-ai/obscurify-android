@@ -1,8 +1,8 @@
-// Answers appear as they're written, not all at once at the end: Code Mode (Tools on) and plain
-// chat (Tools off). Samples the live answer while it streams. Real model, any server:
+// Answers appear as they're written, not all at once at the end: Code Mode (Tools and Code on) and plain
+// chat (both off). Samples the live answer while it streams. Real model, any server:
 //   ACCOUNT=<funded number> [MODEL="Anthropic: Claude Sonnet 5.5"] [ONLY=code|plain] node e2e/stream.mjs
 // Pick a model whose provider streams: some (GLM 5.3 on one route) send the whole answer as one chunk.
-import { launch, ok, sleep } from './lib.mjs';
+import { launch, agentSwitches, ok, sleep } from './lib.mjs';
 
 const MODEL = process.env.MODEL || 'Anthropic: Claude Sonnet 5.5';
 let { page } = await launch(true);
@@ -33,8 +33,7 @@ const lengths = (seen) => [...new Set(seen.filter((n) => n > 0))];
 const PROMPT = 'Write about 250 words on how tides work. Plain prose, no tools.';
 
 for (const tools of process.env.ONLY ? [process.env.ONLY === 'code'] : [true, false]) {
-  const on = await page.locator('.tools-switch.on').count() > 0;
-  if (on !== tools) await page.locator('.tools-switch').click();
+  await agentSwitches(page, tools);
   const seen = await watch(PROMPT);
   const steps = lengths(seen);
   const final = (await page.locator('.msg.assistant').last().textContent()) || '';

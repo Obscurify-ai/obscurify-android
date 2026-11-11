@@ -5,7 +5,7 @@
 //  2. Code Mode: an answer that goes silent is asked again after a minute and the turn finishes.
 //  3. Plain chat: an answer that goes silent ends with an error after a minute.
 // With flaky-proxy.mjs running (see there): ACCOUNT=<funded number> node e2e/stuck.mjs
-import { launch, ok, sleep } from './lib.mjs';
+import { launch, agentSwitches, ok, sleep } from './lib.mjs';
 
 const ctl = (q) => fetch('http://127.0.0.1:8093/' + q).then((r) => r.text());
 const script = (s) => fetch('http://127.0.0.1:8093/__script', { method: 'POST', body: JSON.stringify(s) });
@@ -60,14 +60,14 @@ await say('What is 17 * 23?');
 r = await untilIdle(200);
 ok(r.done && /391/.test(await last()), `Code Mode: a silent answer is asked again and the turn finishes (${JSON.stringify(r)})`);
 
-// 3. Plain chat (Tools off): a silent answer ends with an error.
-await page.locator('.tools-switch').click();
+// 3. Plain chat (Tools and Code off): a silent answer ends with an error.
+await agentSwitches(page, false);
 await ctl('__set?silent=1');
 await say('Hello');
 r = await untilIdle(150);
 ok(r.done && r.seconds <= 90, `plain chat: a silent answer ends instead of waiting for good (${JSON.stringify(r)})`);
 ok(/connection dropped|isn't answering|Obscurify/i.test(await last()), 'it says the connection dropped');
-await page.locator('.tools-switch').click();
+await agentSwitches(page, true);
 
 console.log('stuck: all passed');
 process.exit(0);
