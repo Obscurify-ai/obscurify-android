@@ -1,0 +1,1 @@
+TEE models in the picker show their maker (Z.ai, Qwen, Google...) where the provider goes, with green TEE and ZDR badges beside the price.
