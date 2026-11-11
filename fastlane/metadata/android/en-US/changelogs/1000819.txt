@@ -1,0 +1,1 @@
+Adding funds now puts the payment straight on your balance when it confirms, so you can close the app. Blind vouchers are still there as an option, with a clear warning that they live only on this phone until added.

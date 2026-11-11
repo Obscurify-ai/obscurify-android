@@ -1,7 +1,7 @@
 //! Obscurify for Android: a thin client of the Obscurify API. Sign in with the account number, chat
 //! with any model (streaming, web search, images), keep chats on the phone, manage the plan and
-//! API key, and add funds through unlinkable vouchers. No local models. The Android glue (Back,
-//! opening links and wallets, copying) is the MainActivity that build.sh writes in.
+//! API key, and add funds (top-ups to the account, or blind vouchers). No local models. The Android
+//! glue (Back, opening links and wallets, copying) is the MainActivity that build.sh writes in.
 
 mod api;
 mod chat;
@@ -168,6 +168,9 @@ struct App {
     /// Files read for the next message (see files.rs).
     docs: Signal<Vec<files::Doc>>,
     wallet: Signal<Wallet>,
+    /// The account's recent top-ups (`GET /top_ups`), and what each had credited when last seen.
+    top_ups: Signal<Vec<wallet::TopUp>>,
+    top_up_seen: Signal<Option<std::collections::BTreeMap<String, i64>>>,
     balance: Signal<Option<f64>>,
     toast: Signal<Option<String>>,
     visible: Signal<bool>,
@@ -214,6 +217,7 @@ impl App {
     fn signed_in(mut self) {
         self.screen.set(Screen::Chat);
         self.refresh_balance();
+        self.refresh_top_ups();
     }
     fn sign_out(mut self) {
         bg(async move { let _ = api::call("POST", "/logout", Some(json!({}))).await; api::forget(); });
@@ -225,10 +229,38 @@ impl App {
         self.conv.set(Conv::new());
         self.balance.set(None);
         self.access.set(None);
+        self.top_ups.set(vec![]);
+        self.top_up_seen.set(None);
         self.screen.set(Screen::Login);
     }
 
-    /// Polls open voucher orders, collects vouchers, and adds the ones that are due.
+    /// Reloads the account's top-ups. The server credits them by itself; this says "$X added"
+    /// when one has gone up since the last look, and refreshes the balance.
+    fn refresh_top_ups(mut self) {
+        static BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !api::has_session() || BUSY.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        bg(async move {
+            if let Ok(list) = wallet::top_ups().await && api::has_session() {
+                let now: std::collections::BTreeMap<String, i64> = list.iter().map(|t| (t.order_id.clone(), t.credited_cents)).collect();
+                let seen = self.top_up_seen.peek().clone();
+                let added: i64 = seen.as_ref().map_or(0, |s| list.iter().map(|t| (t.credited_cents - s.get(&t.order_id).copied().unwrap_or(0)).max(0)).sum());
+                let changed = seen.as_ref() != Some(&now);
+                self.top_up_seen.set(Some(now));
+                self.top_ups.set(list);
+                if added > 0 {
+                    self.say(format!("{} added to your balance", cents(added)))
+                }
+                if changed {
+                    self.refresh_balance()
+                }
+            }
+            BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+
+    /// Polls open blind voucher orders, collects vouchers, and adds the ones that are due.
     fn work_wallet(mut self, force: bool) {
         static BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if BUSY.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -305,6 +337,8 @@ fn Root() -> Element {
             attach: Signal::new(vec![]),
             docs: Signal::new(vec![]),
             wallet: Signal::new(Wallet::load()),
+            top_ups: Signal::new(vec![]),
+            top_up_seen: Signal::new(None),
             balance: Signal::new(None),
             toast: Signal::new(None),
             visible: Signal::new(true),
@@ -315,7 +349,8 @@ fn Root() -> Element {
     use_future(move || async move {
         let mut app = app;
         if *app.screen.peek() == Screen::Chat {
-            app.refresh_balance()
+            app.refresh_balance();
+            app.refresh_top_ups()
         } else {
             code::load(app).await
         }
@@ -359,12 +394,20 @@ fn Root() -> Element {
         }
     });
 
-    // Vouchers: poll every 10 s while the app is on screen and there's something to do.
+    // Blind vouchers: poll every 10 s while the app is on screen and there's something to do.
+    // Top-ups: every 10 s on Add funds, once a minute elsewhere while one is still open.
     use_future(move || async move {
+        let mut last_top_ups = store::now();
         loop {
             let w = app.wallet.peek().clone();
             if *app.visible.peek() && (w.active() || w.vouchers.iter().any(|v| !v.invalid && v.due <= store::now())) {
                 app.work_wallet(false);
+            }
+            let screen = *app.screen.peek();
+            let every = if screen == Screen::Funds { 10_000 } else if app.top_ups.peek().iter().any(|t| t.open) { 60_000 } else { i64::MAX };
+            if *app.visible.peek() && !matches!(screen, Screen::Login | Screen::Signup) && store::now() - last_top_ups >= every {
+                last_top_ups = store::now();
+                app.refresh_top_ups();
             }
             sleep(10_000).await;
         }
@@ -392,7 +435,8 @@ fn Root() -> Element {
                 app.visible.set(vis);
                 if vis {
                     api::kick();
-                    app.work_wallet(false)
+                    app.work_wallet(false);
+                    if !matches!(*app.screen.peek(), Screen::Login | Screen::Signup) { app.refresh_top_ups() }
                 }
             } else if let Some(e) = v["doc_error"].as_str() {
                 app.say(e)
@@ -590,7 +634,7 @@ fn Account() -> Element {
                         button { class: "go", onclick: move |_| { let mut s = app.screen; s.set(Screen::Funds) }, "Add funds" }
                     }
                     if w.held_cents() > 0 {
-                        p { class: "muted", "{cents(w.held_cents())} in vouchers is on its way to your balance." }
+                        p { class: "muted", "{cents(w.held_cents())} in blind vouchers is waiting to be added to your balance." }
                     }
                 }
                 div { class: "section",
@@ -754,7 +798,7 @@ fn Account() -> Element {
                 div { class: "section",
                     if *confirm.read() == Some("out") {
                         p { class: "muted", "Chats on this phone are deleted. Make sure you have your account number." }
-                        if w.held_cents() > 0 { p { class: "muted", "{cents(w.held_cents())} in vouchers stays on this phone and goes to the next account that signs in." } }
+                        if w.held_cents() > 0 { p { class: "muted", "{cents(w.held_cents())} in blind vouchers stays on this phone and goes to the next account that signs in." } }
                         div { class: "row",
                             button { class: "danger", onclick: move |_| app.sign_out(), "Sign out" }
                             button { class: "bare", onclick: move |_| confirm.set(None), "Cancel" }
@@ -802,16 +846,23 @@ fn tier_name(t: &str) -> &'static str {
 
 const METHODS: [(&str, &str); 4] = [("card", "Card"), ("BTC", "Bitcoin"), ("Lightning", "Lightning"), ("XMR", "Monero")];
 
+fn method_name(m: &str) -> &'static str { METHODS.iter().find(|x| x.0 == m).map(|x| x.1).unwrap_or("") }
+
 #[component]
 fn Funds() -> Element {
     let app = use_context::<App>();
     let mut method = use_signal(|| "card");
     let mut amount = use_signal(|| "20".to_string());
+    // Top-up unless this is on. Not remembered: every visit starts with a top-up.
+    let mut blind = use_signal(|| false);
+    // Continue was tapped with Blind voucher on; waiting for the second tap.
+    let mut asking = use_signal(|| false);
     let mut busy = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
-    let mut open = use_signal(|| None::<String>); // order being paid
+    let mut open = use_signal(|| None::<wallet::Order>); // order being paid
     let mut code = use_signal(String::new);
     let mut card_ready = use_signal(|| false);
+    use_hook(move || app.refresh_top_ups());
 
     let pay = move |_| {
         let m = *method.peek();
@@ -821,18 +872,30 @@ fn Funds() -> Element {
             error.set(Some("Enter an amount from $0.50 to $10,000.".into()));
             return;
         }
+        let is_blind = *blind.peek();
+        if is_blind && !*asking.peek() {
+            asking.set(true);
+            return;
+        }
+        asking.set(false);
         busy.set(true);
         error.set(None);
         bg(async move {
-            match wallet::create_order(m, c.filter(|c| *c > 0)).await {
+            let c = c.filter(|c| *c > 0);
+            let r = if is_blind { wallet::create_order(m, c).await } else { wallet::create_top_up(m, c).await };
+            match r {
                 Ok(o) => {
-                    let mut w = Wallet::load();
-                    w.orders.push(o.clone());
-                    w.save();
-                    let mut ws = app.wallet;
-                    ws.set(w);
+                    if o.to_account {
+                        app.refresh_top_ups();
+                    } else {
+                        let mut w = Wallet::load();
+                        w.orders.push(o.clone());
+                        w.save();
+                        let mut ws = app.wallet;
+                        ws.set(w);
+                    }
                     card_ready.set(false);
-                    open.set(Some(o.id.clone()));
+                    open.set(Some(o.clone()));
                     if let (Some(pk), Some(cs)) = (o.publishable_key, o.client_secret) {
                         let r = document::eval(&format!(r#"
                             if (!window.Stripe) await new Promise((ok, no) => {{ const s = document.createElement('script'); s.src = 'https://js.stripe.com/v3/'; s.onload = ok; s.onerror = no; document.head.appendChild(s); }});
@@ -855,7 +918,17 @@ fn Funds() -> Element {
         bg(async move {
             let r = document::eval("const r = await obsStripe.confirmPayment({ elements: obsElements, confirmParams: { return_url: location.href }, redirect: 'if_required' }); return r.error ? (r.error.message || 'Payment failed') : '';").join::<String>().await;
             match r {
-                Ok(e) if e.is_empty() => { open.set(None); app.say("Paid. Collecting your vouchers…"); app.work_wallet(true) }
+                Ok(e) if e.is_empty() => {
+                    let to_account = open.peek().as_ref().is_some_and(|o| o.to_account);
+                    open.set(None);
+                    if to_account {
+                        app.say("Paid. It goes on your balance in a moment.");
+                        app.refresh_top_ups()
+                    } else {
+                        app.say("Paid. Collecting your vouchers…");
+                        app.work_wallet(true)
+                    }
+                }
                 Ok(e) => error.set(Some(e)),
                 Err(_) => error.set(Some("Payment failed".into())),
             }
@@ -864,8 +937,10 @@ fn Funds() -> Element {
     };
 
     let w = app.wallet.read().clone();
-    let order = open.read().as_ref().and_then(|id| w.orders.iter().find(|o| &o.id == id).cloned());
+    let top_ups = app.top_ups.read().clone();
+    let order = open.read().clone();
     let m = *method.read();
+    let is_blind = *blind.read();
 
     rsx! {
         div { class: "screen", "data-back": "1",
@@ -907,7 +982,14 @@ fn Funds() -> Element {
                                     }
                                 }
                             }
-                            p { class: "muted", style: "margin-top: 12px", "Pay within 1 hour. Whatever you send is added once it confirms, so you can leave and come back." }
+                            if o.to_account {
+                                if let Some(t) = top_ups.iter().find(|t| t.order_id == o.id && t.credited_cents > 0) {
+                                    p { class: "ok", style: "margin-top: 12px", "Added {cents(t.credited_cents)} to your balance" }
+                                }
+                                p { class: "muted", style: "margin-top: 12px", "Pay within 1 hour. It goes on your balance when the payment confirms. You can close the app." }
+                            } else {
+                                p { class: "muted", style: "margin-top: 12px", "Pay within 1 hour. Then open the app again so it can collect your blind vouchers and add them." }
+                            }
                         } else {
                             div { id: "stripe", style: "min-height: 120px" }
                             button { class: "go", style: "width: 100%; margin-top: 16px", disabled: *busy.read() || !*card_ready.read(), onclick: confirm_card,
@@ -930,29 +1012,67 @@ fn Funds() -> Element {
                         }
                         input { class: "field", inputmode: "decimal", value: "{amount}", placeholder: if m == "BTC" || m == "XMR" { "Any amount (USD, optional)" } else { "Amount (USD)" },
                             oninput: move |e| amount.set(e.value()) }
-                        button { class: "go", disabled: *busy.read(), onclick: pay, if *busy.read() { "…" } else { "Continue" } }
+                        label { class: "check blind-toggle",
+                            input { r#type: "checkbox", checked: is_blind, onchange: move |e| { blind.set(e.checked()); asking.set(false) } }
+                            "Blind voucher"
+                        }
+                        if is_blind {
+                            div { class: "warn", role: "alert",
+                                p { strong { "The credit stays only on this phone until it's added." } }
+                                p { "It's added while the app is open, so open the app again after paying. If you uninstall the app or clear its data before then, the money is lost and we can't get it back. To keep it, tap Copy codes under Vouchers and save them." }
+                            }
+                        }
+                        if *asking.read() {
+                            p { class: "confirm", "Pay with a blind voucher? Keep the app on this phone until the credit is on your balance." }
+                            div { class: "row", style: "border: 0; justify-content: flex-end; padding: 0",
+                                button { class: "bare", onclick: move |_| asking.set(false), "Cancel" }
+                                button { class: "go", disabled: *busy.read(), onclick: pay, "Yes, continue" }
+                            }
+                        } else {
+                            button { class: "go", disabled: *busy.read(), onclick: pay, if *busy.read() { "…" } else { "Continue" } }
+                        }
                         if let Some(e) = error.read().clone() { p { class: "err", "{e}" } }
-                        p { class: "muted", "You pay anonymously and get vouchers the server signs without seeing. They're added to your balance over the next hour, so the payment can't be linked to your account." }
+                        if is_blind {
+                            p { class: "muted", "You pay anonymously and get vouchers the server signs without seeing. They're added to your balance over the next hour, so the payment can't be linked to your account." }
+                        } else {
+                            p { class: "muted", "The payment goes on your balance when it confirms, even if you close the app. It's tied to this account. Turn on Blind voucher for a payment we can't link to it." }
+                        }
                     }
                 }
                 {
-                    let orders: Vec<_> = w.orders.iter().rev().filter(|o| !o.done).cloned().collect();
+                    let orders: Vec<_> = w.orders.iter().rev().filter(|o| !o.done && !o.to_account).cloned().collect();
+                    let showing = order.as_ref().map(|o| o.id.clone());
                     rsx! {
-                        if !orders.is_empty() {
-                            div { class: "section",
+                        if !orders.is_empty() || !top_ups.is_empty() {
+                            div { class: "section payments",
                                 h2 { "Payments" }
-                                for o in orders {
+                                for t in top_ups.clone() {
                                     div { class: "row",
                                         div { class: "grow",
-                                            div { {METHODS.iter().find(|m| m.0 == o.method).map(|m| m.1).unwrap_or("")} " · " {o.amount_cents.map(cents).unwrap_or("any amount".into())} }
-                                            div { class: "muted", {if o.funded_cents > 0 { format!("{} received", cents(o.funded_cents)) } else { "Waiting for payment".to_string() }} }
+                                            div { {method_name(&t.payment_method)} " · " {t.amount_cents.map(cents).unwrap_or("any amount".into())} }
+                                            div { class: if t.credited_cents > 0 { "ok" } else { "muted" },
+                                                {if t.credited_cents > 0 { format!("Added {} to your balance", cents(t.credited_cents)) }
+                                                 else if t.open { "Waiting for payment. It's added when it confirms, even if you close the app.".to_string() }
+                                                 else { "No payment received".to_string() }}
+                                            }
                                         }
-                                        if o.crypto() && open.read().as_deref() != Some(&o.id) {
-                                            button { class: "bare", onclick: { let id = o.id.clone(); move |_| open.set(Some(id.clone())) }, "Details" }
+                                        if t.open && t.crypto() && !t.order().addresses.is_empty() && showing.as_deref() != Some(&t.order_id) {
+                                            button { class: "bare", onclick: { let o = t.order(); move |_| open.set(Some(o.clone())) }, "Details" }
                                         }
                                     }
                                 }
-                                button { class: "bare", style: "padding-left: 0", onclick: move |_| app.work_wallet(true), "Check now" }
+                                for o in orders {
+                                    div { class: "row",
+                                        div { class: "grow",
+                                            div { "Blind voucher · " {method_name(&o.method)} " · " {o.amount_cents.map(cents).unwrap_or("any amount".into())} }
+                                            div { class: "muted", {if o.funded_cents > 0 { format!("{} received", cents(o.funded_cents)) } else { "Waiting for payment. Open the app again after paying.".to_string() }} }
+                                        }
+                                        if o.crypto() && showing.as_deref() != Some(&o.id) {
+                                            button { class: "bare", onclick: { let o = o.clone(); move |_| open.set(Some(o.clone())) }, "Details" }
+                                        }
+                                    }
+                                }
+                                button { class: "bare", style: "padding-left: 0", onclick: move |_| { app.work_wallet(true); app.refresh_top_ups() }, "Check now" }
                             }
                         }
                     }
@@ -960,8 +1080,8 @@ fn Funds() -> Element {
                 if !w.vouchers.is_empty() {
                     div { class: "section",
                         h2 { "Vouchers" }
-                        p { "{cents(w.held_cents())} waiting to be added" }
-                        p { class: "muted", "Each voucher is added at its own random time within the hour." }
+                        p { "{cents(w.held_cents())} in blind vouchers waiting to be added" }
+                        p { class: "muted", "They're only on this phone. Each one is added at its own random time within the hour while the app is open. Copy the codes to keep them safe." }
                         if w.vouchers.iter().any(|v| v.invalid) { p { class: "err", "Some vouchers were refused. Copy them and contact support." } }
                         div { class: "row",
                             button { class: "go", onclick: move |_| bg(async move {

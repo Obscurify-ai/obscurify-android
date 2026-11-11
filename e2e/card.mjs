@@ -38,13 +38,15 @@ const answer = await page.locator('.msg.assistant, .msg.err').last().textContent
 ok(/red/i.test(answer), 'vision model saw the image: ' + answer.slice(0, 40));
 shot('image');
 
-// 3. Card: the Stripe form loads in the app, a test card pays, and the order becomes vouchers.
+// 3. Card, as a blind voucher: the Stripe form loads in the app, a test card pays, and the order becomes vouchers.
 await page.locator('.bar .icon').first().click();
 await page.locator('.drawer .foot button').click();
 const before = parseFloat((await page.locator('.big').textContent({ timeout: 20000 })).slice(1)) || 0;
 await page.getByText('Add funds').click();
 await page.locator('input.field').fill('3');
+await page.locator('.blind-toggle input').check();
 await page.getByText('Continue').click();
+await page.getByRole('button', { name: 'Yes, continue' }).click();
 const stripe = page.frameLocator('#stripe iframe').first();
 await stripe.locator('input[name="number"]').fill('4242424242424242', { timeout: 45000 });
 await stripe.locator('input[name="expiry"]').fill('12/34');

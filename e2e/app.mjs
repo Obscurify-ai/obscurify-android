@@ -3,10 +3,10 @@
 //   OBSCURIFY_API=https://<dev server> DEVTOOLS=1 ./build.sh x86_64
 // install it on a running emulator, then: BTC_RPC_PASSWORD=… node e2e/app.mjs
 // (BTC_CONTAINER names the regtest bitcoind container, default obscurify-bitcoind-dev.)
-// Steps: create an account, fund it with a BTC voucher (regtest), chat with streaming and web
+// Steps: create an account, fund it with a BTC blind voucher (regtest), chat with streaming and web
 // search, model picker and favorites, chats drawer, account page, restart, sign out and back in.
 import { execFileSync } from 'node:child_process';
-import { launch, ok, shot, device } from './lib.mjs';
+import { launch, ok, shot, device, agentSwitches } from './lib.mjs';
 
 const btc = (...a) => execFileSync('docker', ['exec', process.env.BTC_CONTAINER || 'obscurify-bitcoind-dev', 'bitcoin-cli', '-regtest', '-rpcuser=btcrpc',
   `-rpcpassword=${process.env.BTC_RPC_PASSWORD}`, '-rpcwallet=payer', ...a], { encoding: 'utf8' }).trim();
@@ -28,14 +28,16 @@ await page.getByRole('button', { name: 'Start Chatting' }).click();
 await page.waitForSelector('#composer');
 ok(true, 'chat opens after sign-up');
 
-// 2. Add funds with Bitcoin: the app makes the order, the regtest wallet pays it, the app collects
-// vouchers (blind-signed) and adds them.
+// 2. Add funds with a Bitcoin blind voucher (top-ups, the default, are in top-ups.mjs): the app makes
+// the order, the regtest wallet pays it, the app collects vouchers (blind-signed) and adds them.
 await page.locator('.bar .icon').first().click();
 await page.getByText('Account', { exact: false }).last().click();
 await page.getByText('Add funds').click();
 await page.getByRole('button', { name: 'Bitcoin' }).click();
 await page.locator('input.field').fill('5');
+await page.locator('.blind-toggle input').check();
 await page.getByText('Continue').click();
+await page.getByRole('button', { name: 'Yes, continue' }).click();
 const addr = (await page.locator('p.mono').first().textContent({ timeout: 30000 })).trim();
 ok(addr.startsWith('bcrt1'), 'BTC address shown: ' + addr.slice(0, 12) + '…');
 ok(await page.locator('.qr svg').count() === 1, 'QR code drawn');
@@ -77,8 +79,8 @@ const freeRows = await page.locator('.pick .grow > div:first-child').allTextCont
 ok(freeProviders.length > 0 && freeProviders.every(p => freeRows.some(r => r.startsWith(p + ':'))), 'providers offered are only those with models in the category');
 await page.locator('.drawer .bar .icon').click(); // close the picker
 
-// 5. Chat: a streamed answer, without web search.
-await page.locator('.chip', { hasText: 'Web search' }).click(); // on by default, so this turns it off
+// 5. Chat: a streamed answer, plain (Tools and Code off).
+await agentSwitches(page, false);
 await page.locator('#composer').fill('Reply with exactly the word: pineapple');
 await page.locator('.send').click();
 await page.waitForSelector('.msg.assistant .meta', { timeout: 90000 });
@@ -86,8 +88,8 @@ const answer = await page.locator('.msg.assistant').last().textContent();
 ok(/pineapple/i.test(answer), 'streamed answer: ' + answer.slice(0, 40));
 shot('chat');
 
-// 6. Web search: the search chip appears above the answer.
-await page.locator('.chip', { hasText: 'Web search' }).click();
+// 6. Web search: with Tools on, the model calls web_search directly and the run shows on the answer.
+await agentSwitches(page, true);
 await page.locator('#composer').fill('Search the web: what is the latest stable Rust version? One line.');
 await page.locator('.send').click();
 // Providers sometimes fail a tool call; the app shows the error with Retry, which a user would tap.
@@ -99,13 +101,13 @@ for (let attempt = 0; ; attempt++) {
   await page.getByRole('button', { name: 'Retry' }).click();
   await page.waitForFunction(() => !document.querySelector('.msg.err'));
 }
-const searched = await page.locator('.msg.assistant').last().locator('summary').allTextContents();
-console.log('   search chips:', searched);
-ok(searched.some(s => s.startsWith('Searched')), 'web search ran');
+const searched = await page.locator('.msg.assistant').last().locator('.run .tool-name, summary').allTextContents();
+console.log('   search runs:', searched);
+ok(searched.some(s => s.includes('web_search') || s.startsWith('Searched')), 'web search ran');
 shot('search');
 
 // 7. Edit the last prompt; the chat is in the drawer, survives a restart, and can be deleted.
-await page.getByRole('button', { name: 'Edit' }).click();
+await page.getByRole('button', { name: 'Edit' }).last().click();
 ok(await page.locator('.msg').count() === 2 && (await page.locator('#composer').inputValue()).includes('latest stable Rust'), 'edit puts the prompt back');
 await page.locator('#composer').fill('');
 await browser.close();

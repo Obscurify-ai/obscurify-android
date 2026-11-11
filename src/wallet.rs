@@ -1,10 +1,18 @@
-//! Paying without linking the payment to the account, the way the web's account page does.
-//! An order is paid anonymously (card, BTC, Lightning, XMR). Once it's funded, the app blinds
-//! random voucher messages (RFC 9474, RSABSSA-SHA384-PSS-Deterministic), the server signs them
-//! without seeing them, and the app unblinds them into voucher codes. Each code is added to the
-//! balance at its own random time 5-60 minutes later, so the redemption can't be matched to the
-//! payment by timing. Every step is saved before the next network call: a batch is written before
-//! it's sent (signing the same batch again is idempotent), so a crash or lost reply never loses money.
+//! Adding funds, the way the web's account page does it.
+//!
+//! By default a payment is a top-up (`POST /top_ups`, card, BTC, Lightning or XMR): it's tied to the
+//! signed-in account, and the server puts every confirmed payment on the balance by itself, so the
+//! app can close and any device lists it (`GET /top_ups`). Nothing about it is kept on the phone.
+//!
+//! Blind vouchers are the opt-in, for a payment that can't be linked to the account. An order is
+//! paid anonymously. Once it's funded, the app blinds random voucher messages (RFC 9474,
+//! RSABSSA-SHA384-PSS-Deterministic), the server signs them without seeing them, and the app
+//! unblinds them into voucher codes. Each code is added to the balance at its own random time 5-60
+//! minutes later, so the redemption can't be matched to the payment by timing. The catch: until a
+//! voucher is added it exists only in this app's storage, and the app does the work only while it's
+//! open, so uninstalling or clearing its data first loses the money (Copy codes keeps them). Every
+//! step is saved before the next network call: a batch is written before it's sent (signing the same
+//! batch again is idempotent), so a crash or lost reply never loses money.
 
 use crate::{api, store};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
@@ -48,6 +56,43 @@ pub struct Order {
     pub last_poll: i64,
     #[serde(default)]
     pub done: bool,
+    /// A top-up: the server credits the account itself. Never stored in wallet.json, and
+    /// `tick`/`collect` skip it if it ever is.
+    #[serde(default)]
+    pub to_account: bool,
+}
+
+/// One of the account's top-ups from `GET /top_ups` (last 7 days, newest first).
+#[derive(Deserialize, Clone, Default, PartialEq)]
+pub struct TopUp {
+    pub order_id: String,
+    pub payment_method: String,
+    #[serde(default)]
+    pub amount_cents: Option<i64>,
+    #[serde(default)]
+    pub credited_cents: i64,
+    #[serde(default)]
+    pub addresses: Value,
+    #[serde(default)]
+    pub amounts: Value,
+    #[serde(default)]
+    pub open: bool,
+}
+
+impl TopUp {
+    pub fn crypto(&self) -> bool { self.payment_method != "card" }
+    /// As an order, to show its address again.
+    pub fn order(&self) -> Order {
+        Order {
+            id: self.order_id.clone(),
+            method: self.payment_method.clone(),
+            amount_cents: self.amount_cents,
+            addresses: strings(&self.addresses),
+            amounts: strings(&self.amounts),
+            to_account: true,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
@@ -87,17 +132,42 @@ impl Wallet {
     pub fn load() -> Self { store::load(FILE) }
     pub fn save(&self) { store::save(FILE, self) }
     pub fn held_cents(&self) -> i64 { self.vouchers.iter().filter(|v| !v.invalid).map(|v| v.cents).sum() }
-    pub fn active(&self) -> bool { self.orders.iter().any(|o| !o.done) || !self.batches.is_empty() }
+    pub fn active(&self) -> bool { self.orders.iter().any(|o| !o.done && !o.to_account) || !self.batches.is_empty() }
     pub fn codes(&self) -> String { self.vouchers.iter().map(|v| v.code.as_str()).collect::<Vec<_>>().join("\n") }
 }
 
+/// A blind voucher order: sent with no cookie or key.
 pub async fn create_order(method: &str, amount_cents: Option<i64>) -> Result<Order, String> {
+    let v = api::public("POST", "/vouchers/orders", Some(order_body(method, amount_cents))).await.map_err(api::msg)?;
+    parse_order(&v, method, amount_cents, false)
+}
+
+/// A top-up of the signed-in account.
+pub async fn create_top_up(method: &str, amount_cents: Option<i64>) -> Result<Order, String> {
+    let v = api::post("/top_ups", order_body(method, amount_cents)).await?;
+    parse_order(&v, method, amount_cents, true)
+}
+
+pub async fn top_ups() -> Result<Vec<TopUp>, String> {
+    let v = api::get("/top_ups").await?;
+    serde_json::from_value(v["top_ups"].clone()).map_err(|e| e.to_string())
+}
+
+fn order_body(method: &str, amount_cents: Option<i64>) -> Value {
     let mut body = json!({"payment_method": method});
     if let Some(c) = amount_cents {
         body["amount_cents"] = json!(c);
     }
-    let v = api::public("POST", "/vouchers/orders", Some(body)).await.map_err(api::msg)?;
-    let map = |k: &str| -> BTreeMap<String, String> { v[k].as_object().map(|m| m.iter().filter_map(|(k, a)| Some((k.clone(), a.as_str()?.to_string()))).collect()).unwrap_or_default() };
+    body
+}
+
+/// `{"BTC": "bcrt1…"}` as a map, skipping anything that isn't a string.
+fn strings(v: &Value) -> BTreeMap<String, String> {
+    v.as_object().map(|m| m.iter().filter_map(|(k, a)| Some((k.clone(), a.as_str()?.to_string()))).collect()).unwrap_or_default()
+}
+
+fn parse_order(v: &Value, method: &str, amount_cents: Option<i64>, to_account: bool) -> Result<Order, String> {
+    let map = |k: &str| strings(&v[k]);
     Ok(Order {
         id: v["order_id"].as_str().ok_or("No order id came back")?.to_string(),
         method: method.to_string(),
@@ -108,6 +178,7 @@ pub async fn create_order(method: &str, amount_cents: Option<i64>) -> Result<Ord
         client_secret: v["client_secret"].as_str().map(String::from),
         publishable_key: v["publishable_key"].as_str().map(String::from),
         status: "waiting".into(),
+        to_account,
         ..Default::default()
     })
 }
@@ -120,7 +191,7 @@ pub async fn tick(w: &mut Wallet, force: bool) -> Result<bool, String> {
     for i in 0..w.orders.len() {
         let o = &w.orders[i];
         let pending = w.batches.iter().any(|b| b.order_id == o.id);
-        if o.done && !pending {
+        if o.to_account || (o.done && !pending) {
             continue;
         }
         let every = if now - o.created < 10 * MIN { 10_000 } else { MIN };
@@ -153,6 +224,9 @@ pub async fn tick(w: &mut Wallet, force: bool) -> Result<bool, String> {
 
 /// Signs everything the order has available: first any batch saved but never answered, then new ones.
 async fn collect(w: &mut Wallet, i: usize) -> Result<(), String> {
+    if w.orders[i].to_account {
+        return Ok(());
+    }
     let id = w.orders[i].id.clone();
     let mut keys: Option<Vec<Value>> = None;
     loop {

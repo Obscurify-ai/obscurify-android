@@ -1,8 +1,9 @@
 # Obscurify for Android
 
 Private AI chat from [Obscurify](https://obscurify.ai): hundreds of models behind one anonymous account.
-There's no email, username or password, only a 16-digit account number. You pay with vouchers the
-server signs without seeing them, so a payment can't be linked to the account it funds.
+There's no email, username or password, only a 16-digit account number. A payment goes straight on
+the account's balance, or, if you choose, buys blind vouchers the server signs without seeing them, so
+the payment can't be linked to the account it funds.
 
 The app is a small, native Rust client of the Obscurify API (Dioxus 0.7 in the system WebView). Chats
 are stored only on the phone.
@@ -32,11 +33,10 @@ are stored only on the phone.
   - Code, data and results stay on the phone; only tool calls leave it.
 - **Models.** Search, categories (Free, Cheap, Reasoning, Uncensored, Roleplay, Frontier) and favorites. Models and categories your plan includes come first; the rest are listed last.
 - **Account.** Balance, plans (paid from the balance), API key, referral link and transactions.
-- **Add funds with unlinkable vouchers.**
-  - Pay by card, Bitcoin, Lightning or Monero.
-  - The app blinds random voucher messages (RFC 9474, RSABSSA-SHA384-PSS-Deterministic). The server signs them blind, and the app unblinds them into voucher codes.
-  - Each code is added to the balance at its own random time within the hour, so timing doesn't link the payment to the account either.
-  - Orders go out with no cookie or key.
+- **Add funds.** Pay by card, Bitcoin, Lightning or Monero.
+  - By default it's a top-up tied to the account: the server puts every confirmed payment on the balance by itself, so you can close the app, and any device lists it under Payments.
+  - **Blind voucher** (off each time Add funds opens) makes the payment unlinkable. The app blinds random voucher messages (RFC 9474, RSABSSA-SHA384-PSS-Deterministic), the server signs them blind, and the app unblinds them into voucher codes. Each code is added to the balance at its own random time within the hour, so timing doesn't link the payment to the account either. Orders go out with no cookie or key.
+  - The catch: until a blind voucher is added it exists only on this phone, and the app adds it only while it's open. Open the app again after paying, and don't uninstall it or clear its data before the credit is on the balance, or the money is lost. Copy codes keeps them safe. The app warns and asks before every blind payment.
   - Every step is saved before the next request, so a crash never loses a payment.
 
 ## Build
@@ -68,14 +68,14 @@ obscurify.ai/android links through `releases/latest/download/obscurify.apk`. Upl
 
 | File | What |
 |---|---|
-| `src/main.rs` | App state, the JS bridge (links, Back, image picker, pinned scrolling), sign-in, sign-up, Account, Add funds |
+| `src/main.rs` | App state, the JS bridge (links, Back, image picker, pinned scrolling), sign-in, sign-up, Account, Add funds and top-ups |
 | `src/chat.rs` | Chat, streaming, chats on the phone, model picker, safe markdown |
 | `src/files.rs` | Reading attached files into text: PDF, spreadsheets, Word, PowerPoint, OpenDocument, text |
 | `src/code.rs` | Code Mode: the agent loop, the sandbox bridge, tools the model calls directly, budgets, runs on the message |
 | `src/tee.rs` | Verify: checking TEE replies against their receipts and attestation, the chip |
 | `src/compact.rs` | Compaction: earlier messages summarized in chunks so a chat goes on past the model's context |
-| `src/api.rs` | HTTP. Signed-in calls carry the session; voucher calls carry nothing |
-| `src/wallet.rs` | Voucher orders: blind, sign, unblind, redeem |
+| `src/api.rs` | HTTP. Signed-in calls (top-ups too) carry the session; blind voucher calls carry nothing |
+| `src/wallet.rs` | Top-ups (`/top_ups`), and blind voucher orders: blind, sign, unblind, redeem |
 | `src/store.rs` | JSON files in the app's private storage |
 | `MainActivity.kt` | The only Kotlin: Back asks the page first; opening links and wallet URIs; copy; Code Mode's sandbox WebView and full-screen pages |
 | `assets/style.css` | OLED black, green trim |
@@ -88,8 +88,9 @@ with the regtest payment stack.
 ```sh
 OBSCURIFY_API=https://<dev server> DEVTOOLS=1 ./build.sh x86_64 && adb install -r target/obscurify.apk
 cd e2e && npm i playwright
-BTC_RPC_PASSWORD=… node app.mjs   # sign-up, BTC voucher top-up, chat, web search, models, restart, new number, sign in
-node card.mjs                     # image picker and a vision model; Stripe test-card top-up
+BTC_RPC_PASSWORD=… node app.mjs   # sign-up, BTC blind voucher, chat, web search, models, restart, new number, sign in
+BTC_RPC_PASSWORD=… node top-ups.mjs  # BTC top-up paid while the app is closed, added on relaunch; the Blind voucher warning and confirm
+node card.mjs                     # image picker and a vision model; Stripe test-card blind voucher
 ACCOUNT=… PLAN=casual node plans.mjs  # models the plan can use first, the rest under "Upgrade to use"
 ACCOUNT=… node agent.mjs             # Long runs, compaction, errors back to the model, background work (scripted replies, through flaky-proxy.mjs)
 ACCOUNT=… node code.mjs              # Code Mode: Python, a chart, a paid tool, a page full screen, the sandbox sealed off

@@ -203,3 +203,7 @@ h2.group { font-size: 13px; font-weight: 500; text-transform: uppercase; letter-
 .tee-row.pass .mark { color: var(--g); }
 .tee-row.fail .mark, .tee-row.fail { color: var(--e); }
 .tee-row .small, .tee-checks .small { font-size: 12px; word-break: break-all; }
+.blind-toggle { justify-content: flex-start; }
+.warn { border: 1px solid #ffb020; background: #1f1600; border-radius: 8px; padding: 12px 14px; color: #ffd27a; font-size: 14px; display: flex; flex-direction: column; gap: 6px; }
+.warn strong { color: #fff; font-weight: 600; }
+.confirm { color: #ffd27a; font-size: 14px; }
