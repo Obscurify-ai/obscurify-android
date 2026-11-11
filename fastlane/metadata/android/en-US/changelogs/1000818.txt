@@ -1,0 +1,1 @@
+An answer whose connection died while the phone slept is picked up the moment you open the app again, instead of looking stuck.
