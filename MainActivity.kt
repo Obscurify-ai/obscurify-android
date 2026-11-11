@@ -187,7 +187,9 @@ class MainActivity : WryActivity() {
                 !request.url.toString().startsWith(allowed)
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 val url = request.url.toString()
-                if (url.startsWith(allowed) || url.startsWith("data:") || url.startsWith("blob:")) return null
+                // Code has the internet from the phone (as on the web since 2026-11-11): https loads
+                // pass; navigating away still doesn't (shouldOverrideUrlLoading above).
+                if (url.startsWith(allowed) || url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("https://")) return null
                 return WebResourceResponse("text/plain", "utf-8", 403, "Blocked", emptyMap(), ByteArrayInputStream(ByteArray(0)))
             }
             override fun onPageFinished(view: WebView, url: String) {

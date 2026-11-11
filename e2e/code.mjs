@@ -1,7 +1,7 @@
 // Code Mode on the phone, end to end: the model runs Python in the sandbox WebView, draws a chart,
 // calls a paid tool billed to the balance, and builds a page that opens full screen. Then, from
-// inside the sandbox WebView itself: no app bridges, no network, no cookies, no way to navigate
-// away. Needs a funded account on the server the app was built for:
+// inside the sandbox WebView itself: no app bridges, no cookies, no way to navigate away, and the
+// internet works (code fetches from the phone) while our API never answers it with a session. Needs a funded account on the server the app was built for:
 //
 //   OBSCURIFY_API=https://<dev server> DEVTOOLS=1 ./build.sh x86_64 && adb install -r target/obscurify.apk
 //   ACCOUNT=<16 digits> MODEL=anthropic/claude-haiku-5.5 node code.mjs
@@ -88,14 +88,14 @@ const probe = await evaluate(runner, `(async () => {
   const r = { android: ['open', 'copy', 'sandboxStart', 'sandboxPost', 'openPage'].filter(k => k in bridge).join(',') || 'none', ipc: typeof window.ipc, origin: String(self.origin) };
   try { r.cookie = document.cookie; } catch (e) { r.cookie = 'blocked'; }
   try { r.storage = String(localStorage.length); } catch (e) { r.storage = 'blocked'; }
-  for (const [name, url] of [['internet', 'https://example.com/'], ['app api', location.origin + '/get_user_balance']]) {
-    try { await fetch(url); r[name] = 'allowed'; } catch (e) { r[name] = 'blocked'; }
-  }
+  try { r.internet = (await (await fetch('https://pypi.org/pypi/six/json')).json()).info.name; } catch (e) { r.internet = 'blocked: ' + e.message; }
+  try { const q = await fetch(${JSON.stringify(new URL(runner.url).origin)} + '/get_user_balance', { credentials: 'include' }); r['app api'] = q.status + ' ' + (await q.text()).slice(0, 40); } catch (e) { r['app api'] = 'blocked'; }
   return r;
 })()`);
 ok(probe.android === 'none' && probe.ipc === 'undefined', 'no app bridges in the sandbox: ' + JSON.stringify(probe));
 ok(probe.origin === 'null' && probe.cookie === 'blocked' && probe.storage === 'blocked', 'opaque origin, no cookies or storage');
-ok(probe.internet === 'blocked' && probe['app api'] === 'blocked', 'no network');
+ok(probe.internet === 'six', 'the internet works from the sandbox: ' + probe.internet);
+ok(probe['app api'] === 'blocked' || !/^200/.test(probe['app api']), "our API never answers the sandbox with the user's session: " + probe['app api']);
 await evaluate(runner, "location.href = 'https://example.com/?leak=1'; 1").catch(() => {});
 await sleep(1500);
 ok((await targets()).every(t => !t.url.startsWith('https://example.com')), 'it cannot navigate away');

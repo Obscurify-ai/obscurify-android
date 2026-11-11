@@ -98,7 +98,7 @@ s = await state();
 ok(s.tools === 'false' && s.code === 'true', 'Tools off, Code on: ' + JSON.stringify(s));
 r = await ask('Use run_code with Python to run exactly this, then tell me what it printed:\n\nprint(6 * 7)\ntry:\n    print(await tools.web_search("weather"))\nexcept Exception as e:\n    print("refused:", e)');
 ok(offered(r.reqs[0]) === 'run_code', 'tools off: only run_code: ' + offered(r.reqs[0]));
-ok(/no tools are available to code/.test(system(r.reqs[0])), 'tools off: the prompt says code has no tools');
+ok(/no tools are available to code/i.test(system(r.reqs[0])), 'tools off: the prompt says code has no tools');
 ok(await r.reply.locator('.run.ok').count() > 0 && /42/.test(r.text), 'tools off: the code really runs: ' + r.text.slice(0, 160));
 ok(r.tools.length === 0, 'tools off: a tool call from inside the code never left the phone: ' + JSON.stringify(r.tools.map((t) => t.path)));
 ok(/not available/i.test(await r.reply.locator('.run-out').first().textContent()), 'the sandbox was told no: ' + (await r.reply.locator('.run-out').first().textContent()).slice(0, 160));
