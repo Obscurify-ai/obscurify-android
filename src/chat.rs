@@ -698,12 +698,14 @@ fn glob(id: &str, pat: &str) -> bool {
 fn per_million(m: &Model) -> String {
     let price = if m.prompt == 0.0 && m.completion == 0.0 { "Free".into() } else { format!("{} / {} per 1M tokens", usd(m.prompt * 1e6), usd(m.completion * 1e6)) };
     let price = if m.context >= 1000 { format!("{price} · {}k context", m.context / 1000) } else { price };
-    let mut line = if m.tools { price } else { format!("{price} · no tools") };
-    // How privately it runs, as the server tags it.
-    for (tag, label) in [("Zero retention", "ZDR"), ("TEE", "TEE")] {
-        if m.categories.iter().any(|c| c == tag) { line = format!("{line} · {label}") }
-    }
-    line
+    if m.tools { price } else { format!("{price} · no tools") }
+}
+
+/// How privately a model runs, as the server tags it: green badges, as on the web.
+fn privacy_badges(m: &Model) -> Vec<&'static str> {
+    [("Zero retention", "ZDR"), ("TEE", "TEE")].into_iter()
+        .filter(|(tag, _)| m.categories.iter().any(|c| c == tag))
+        .map(|(_, label)| label).collect()
 }
 
 /// Who makes a model: "Anthropic" from "Anthropic: Claude Opus 5".
@@ -1268,7 +1270,9 @@ fn ModelRow(m: Model, needs: Option<&'static str>) -> Element {
                     app.overlay.set(Overlay::None);
                 } },
                 div { "{m.name}" }
-                div { class: "price", if let Some(plan) = needs { "Needs {plan} · " } {per_million(&m)} }
+                div { class: "price", if let Some(plan) = needs { "Needs {plan} · " } {per_million(&m)}
+                    for b in privacy_badges(&m) { span { class: "badge", "{b}" } }
+                }
             }
             button { class: "bare", style: if fav { "color: var(--g)" } else { "" },
                 onclick: { let id = m.id.clone(); move |_| {

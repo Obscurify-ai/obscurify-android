@@ -22,6 +22,10 @@ await page.locator('.toggles:not(.providers) .chip', { hasText: /^Writing/ }).cl
 ok(await page.locator('.pick', { hasText: /Hemingway/i }).count() > 0, 'Writing lists Hemingway');
 await page.locator('.toggles:not(.providers) .chip', { hasText: /^TEE/ }).click();
 const tee = await page.locator('.pick').allTextContents();
-ok(tee.length > 0 && tee.every(r => r.includes('· TEE')), 'every TEE model is labelled TEE');
+ok(tee.length > 0, 'TEE lists models');
+const badges = await page.locator('.pick').evaluateAll(rows => rows.map(r => [...r.querySelectorAll('.badge')].map(b => b.textContent + '/' + getComputedStyle(b).color)));
+ok(badges.every(b => b.includes('TEE/rgb(0, 217, 126)')), 'every TEE model has a green TEE badge: ' + JSON.stringify(badges.slice(0, 3)));
+const names = await page.locator('.pick .grow > div:first-child').allTextContents();
+ok(names.some(n => /^Z\.ai: GLM/.test(n)) && names.every(n => !n.startsWith('TEE: GLM')), 'TEE models are named after their maker: ' + names.slice(0, 4).join(', '));
 shot('categories');
 process.exit(0);
