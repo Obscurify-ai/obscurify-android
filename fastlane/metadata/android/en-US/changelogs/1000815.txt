@@ -1,0 +1,1 @@
+Code can reach the internet now, from your phone: it can fetch pages and APIs, and install Python packages from PyPI and JavaScript packages from npm. Sites see your own connection; turn Code off in the + menu if you don't want that.
