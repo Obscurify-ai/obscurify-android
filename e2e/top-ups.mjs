@@ -33,7 +33,7 @@ ok(true, 'signed up');
 await toFunds(page);
 ok(!(await page.locator('.blind-toggle input').isChecked()), 'Blind voucher is off by default');
 ok(await page.locator('.warn').count() === 0, 'no blind warning while it is off');
-ok(await page.getByText('goes on your balance when it confirms, even if you close the app', { exact: false }).count() === 1, 'copy describes a top-up');
+ok(await page.getByText('even if you close the app', { exact: false }).count() === 1, 'copy describes a top-up');
 
 // 3. A BTC top-up with no amount: the address and QR, and copy that says the app can close.
 await page.getByRole('button', { name: 'Bitcoin' }).click();
@@ -43,7 +43,7 @@ const addr = (await page.locator('p.mono').first().textContent({ timeout: 30000 
 ok(addr.startsWith('bcrt1'), 'BTC address shown: ' + addr.slice(0, 12) + '…');
 ok(await page.locator('.qr svg').count() === 1, 'QR code drawn');
 ok(await page.getByText('Send any amount of BTC').count() === 1, 'any amount');
-ok(await page.getByText('You can close the app', { exact: false }).count() === 1, 'says the app can be closed');
+ok(await page.getByText('You can close the app', { exact: false }).count() >= 1, 'says the app can be closed');
 await page.locator('.payments', { hasText: 'Waiting for payment' }).waitFor({ timeout: 30000 });
 ok(true, 'listed under Payments as waiting (from GET /top_ups)');
 shot('topup-address');
@@ -62,9 +62,9 @@ const t0 = Date.now();
 await page.locator('.payments .ok', { hasText: /^Added \$\d+\.\d\d to your balance$/ }).waitFor({ timeout: 300000 });
 const added = await page.locator('.payments .ok').first().textContent();
 ok(true, `Payments list says "${added}" after ${Math.round((Date.now() - t0) / 1000)} s`);
-await page.getByRole('button', { name: 'Details' }).first().click();
+await page.getByRole('button', { name: 'Show address' }).first().click();
 await page.locator('p.ok', { hasText: 'Added' }).waitFor({ timeout: 15000 });
-ok((await page.locator('p.mono').first().textContent()).trim() === addr, 'Details shows the same address, now Added');
+ok((await page.locator('p.mono').first().textContent()).trim() === addr, 'Show address shows the same address, now Added');
 shot('topup-added');
 await page.getByText('Done').click();
 await page.locator('.bar .icon').first().click(); // back to Account
@@ -76,8 +76,8 @@ ok(await page.getByText('Deposit', { exact: true }).count() > 0, 'deposit listed
 await page.getByText('Add funds').click();
 await page.locator('.blind-toggle input').check();
 const warn = await page.locator('.warn').textContent();
-ok(/only on this phone/.test(warn) && /open the app again/.test(warn) && /uninstall/.test(warn) && /Copy codes/.test(warn), 'blind warning shown: ' + warn.slice(0, 60) + '…');
-ok(await page.getByText('You pay anonymously', { exact: false }).count() === 1, 'copy describes a blind voucher');
+ok(/open the app again/i.test(warn) && /Uninstalling/.test(warn) && /How it works/.test(warn) && warn.length < 160, 'blind warning is short: ' + warn);
+ok(await page.getByText('Check now').count() === 0 && await page.getByText('Details', { exact: true }).count() === 0, 'no Check now or Details buttons');
 shot('blind-warning');
 await page.getByText('Continue').click();
 ok(await page.getByRole('button', { name: 'Yes, continue' }).count() === 1 && await page.locator('.confirm').count() === 1, 'Continue asks to confirm');

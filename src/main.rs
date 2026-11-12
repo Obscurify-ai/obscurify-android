@@ -1018,12 +1018,13 @@ fn Funds() -> Element {
                         }
                         if is_blind {
                             div { class: "warn", role: "alert",
-                                p { strong { "The credit stays only on this phone until it's added." } }
-                                p { "It's added while the app is open, so open the app again after paying. If you uninstall the app or clear its data before then, the money is lost and we can't get it back. To keep it, tap Copy codes under Vouchers and save them." }
+                                p { strong { "Open the app again after paying." } }
+                                p { "Uninstalling it before the credit is on your balance loses the money. "
+                                    a { href: "#", onclick: move |e| { e.prevent_default(); open_url("https://obscurify.ai/articles/blind_payments") }, "How it works" } }
                             }
                         }
                         if *asking.read() {
-                            p { class: "confirm", "Pay with a blind voucher? Keep the app on this phone until the credit is on your balance." }
+                            p { class: "confirm", "Pay with a blind voucher? Open the app again after paying." }
                             div { class: "row", style: "border: 0; justify-content: flex-end; padding: 0",
                                 button { class: "bare", onclick: move |_| asking.set(false), "Cancel" }
                                 button { class: "go", disabled: *busy.read(), onclick: pay, "Yes, continue" }
@@ -1032,10 +1033,8 @@ fn Funds() -> Element {
                             button { class: "go", disabled: *busy.read(), onclick: pay, if *busy.read() { "…" } else { "Continue" } }
                         }
                         if let Some(e) = error.read().clone() { p { class: "err", "{e}" } }
-                        if is_blind {
-                            p { class: "muted", "You pay anonymously and get vouchers the server signs without seeing. They're added to your balance over the next hour, so the payment can't be linked to your account." }
-                        } else {
-                            p { class: "muted", "The payment goes on your balance when it confirms, even if you close the app. It's tied to this account. Turn on Blind voucher for a payment we can't link to it." }
+                        if !is_blind {
+                            p { class: "muted", "It goes on your balance when the payment confirms, even if you close the app." }
                         }
                     }
                 }
@@ -1052,12 +1051,12 @@ fn Funds() -> Element {
                                             div { {method_name(&t.payment_method)} " · " {t.amount_cents.map(cents).unwrap_or("any amount".into())} }
                                             div { class: if t.credited_cents > 0 { "ok" } else { "muted" },
                                                 {if t.credited_cents > 0 { format!("Added {} to your balance", cents(t.credited_cents)) }
-                                                 else if t.open { "Waiting for payment. It's added when it confirms, even if you close the app.".to_string() }
+                                                 else if t.open { "Waiting for payment. You can close the app.".to_string() }
                                                  else { "No payment received".to_string() }}
                                             }
                                         }
                                         if t.open && t.crypto() && !t.order().addresses.is_empty() && showing.as_deref() != Some(&t.order_id) {
-                                            button { class: "bare", onclick: { let o = t.order(); move |_| open.set(Some(o.clone())) }, "Details" }
+                                            button { class: "bare", onclick: { let o = t.order(); move |_| open.set(Some(o.clone())) }, "Show address" }
                                         }
                                     }
                                 }
@@ -1065,14 +1064,13 @@ fn Funds() -> Element {
                                     div { class: "row",
                                         div { class: "grow",
                                             div { "Blind voucher · " {method_name(&o.method)} " · " {o.amount_cents.map(cents).unwrap_or("any amount".into())} }
-                                            div { class: "muted", {if o.funded_cents > 0 { format!("{} received", cents(o.funded_cents)) } else { "Waiting for payment. Open the app again after paying.".to_string() }} }
+                                            div { class: "muted", {if o.funded_cents > 0 { format!("{} received. Keep the app open.", cents(o.funded_cents)) } else { "Waiting for payment. Open the app again after paying.".to_string() }} }
                                         }
                                         if o.crypto() && showing.as_deref() != Some(&o.id) {
-                                            button { class: "bare", onclick: { let o = o.clone(); move |_| open.set(Some(o.clone())) }, "Details" }
+                                            button { class: "bare", onclick: { let o = o.clone(); move |_| open.set(Some(o.clone())) }, "Show address" }
                                         }
                                     }
                                 }
-                                button { class: "bare", style: "padding-left: 0", onclick: move |_| { app.work_wallet(true); app.refresh_top_ups() }, "Check now" }
                             }
                         }
                     }
@@ -1080,8 +1078,8 @@ fn Funds() -> Element {
                 if !w.vouchers.is_empty() {
                     div { class: "section",
                         h2 { "Vouchers" }
-                        p { "{cents(w.held_cents())} in blind vouchers waiting to be added" }
-                        p { class: "muted", "They're only on this phone. Each one is added at its own random time within the hour while the app is open. Copy the codes to keep them safe." }
+                        p { "{cents(w.held_cents())} blind voucher" }
+                        p { class: "muted", "Added within the hour while the app is open." }
                         if w.vouchers.iter().any(|v| v.invalid) { p { class: "err", "Some vouchers were refused. Copy them and contact support." } }
                         div { class: "row",
                             button { class: "go", onclick: move |_| bg(async move {
