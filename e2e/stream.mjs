@@ -23,7 +23,9 @@ const watch = async (text) => {
   return page.evaluate(() => new Promise((done) => {
     const seen = [];
     const t = setInterval(() => {
-      const live = document.querySelector('.msg.assistant .cursor');
+      const live = document.querySelector('.msg.assistant .live');
+      const tail = document.querySelector('.msg.assistant .cipher-tail');
+      if (tail) window.__tails = (window.__tails || new Set()).add(tail.textContent);
       seen.push(live ? live.textContent.length : -1);
       if (!document.querySelector('.send.stop')) { clearInterval(t); done(seen); }
     }, 100);
@@ -39,6 +41,9 @@ for (const tools of process.env.ONLY ? [process.env.ONLY === 'code'] : [true, fa
   const final = (await page.locator('.msg.assistant').last().textContent()) || '';
   ok(final.length > 600, `${tools ? 'Code Mode' : 'plain chat'}: a whole answer came back (${final.length} chars)`);
   ok(steps.length >= 5, `${tools ? 'Code Mode' : 'plain chat'}: it grew on screen as it streamed (${steps.length} sizes: ${steps.slice(0, 12).join(' ')})`);
+  const tails = await page.evaluate(() => { const n = (window.__tails || new Set()).size; window.__tails = null; return n; });
+  ok(tails >= 3, `${tools ? 'Code Mode' : 'plain chat'}: the cipher tail changed its bytes while it streamed (${tails} different)`);
+  ok(await page.locator('.cipher-tail, .spend').count() === 0, `${tools ? 'Code Mode' : 'plain chat'}: no cipher tail or Spent line once it's done`);
   await page.locator('.bar .icon').last().click();
   await sleep(300);
 }

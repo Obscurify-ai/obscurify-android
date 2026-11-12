@@ -59,7 +59,8 @@ a { color: var(--g); text-decoration: none; }
 .sources { font-size: 13px; color: var(--m); margin-top: 6px; }
 .sources a { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta { font-size: 12px; color: var(--m); margin-top: 4px; }
-.cursor::after { content: '▍'; color: var(--g); }
+.cipher-tail { margin-top: 6px; color: var(--g); font: 15px/1.4 ui-monospace, 'Roboto Mono', monospace; word-spacing: .3em; }
+.cipher-tail::after { content: '▍'; font-family: sans-serif; }
 .empty { height: 100%; display: flex; align-items: center; justify-content: center; color: var(--m); text-align: center; padding: 24px; }
 .composer { border-top: 1px solid var(--l); padding: 8px; }
 /* One box like the web's: the message, then + (Attach, Tools, Code) and Send at the right,
@@ -164,7 +165,7 @@ h2.group { font-size: 13px; font-weight: 500; text-transform: uppercase; letter-
 .foot .links { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 10px; font-size: 13px; }
 .foot .links a { color: var(--m); }
 .toggles.providers { flex-wrap: nowrap; overflow-x: auto; }
-.spend, .compacted { color: var(--m); font-size: 13px; margin: 4px 0; }
+.compacted { color: var(--m); font-size: 13px; margin: 4px 0; }
 .empty .muted { margin-top: 8px; font-size: 14px; }
 .empty { flex-direction: column; text-align: center; padding: 0 24px; }
 .interrupted { color: #fbbf24; font-size: 14px; }

@@ -870,6 +870,20 @@ pub fn ChatView() -> Element {
     }
 }
 
+/// While an answer arrives it ends in ciphertext, fresh bytes every 110 ms, like the web.
+#[component]
+fn CipherTail() -> Element {
+    let group = || format!("{:04x}", rand::random::<u16>());
+    let mut text = use_signal(move || String::new());
+    use_future(move || async move {
+        loop {
+            text.set(format!("{} {} {} ", group(), &group()[..2], group()));
+            crate::sleep(110).await;
+        }
+    });
+    rsx! { div { class: "cipher-tail", "aria-hidden": "true", "{text}" } }
+}
+
 #[component]
 fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Element {
     let mut app = use_context::<App>();
@@ -910,16 +924,14 @@ fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Elemen
                 }
             }
             if m.compacted { p { class: "compacted", "Compacted earlier work to save context" } }
-            if m.spent > 0.0 {
-                p { class: "spend", "Spent {usd(m.spent)}" }
-            }
             if !live && !m.tee.is_empty() { crate::tee::Chip { steps: m.tee.clone() } }
             if !m.interrupted.is_empty() {
                 p { class: "interrupted", "Stopped early: {m.interrupted} Everything so far is kept." }
             }
             if m.error { p { "{m.content}" } }
             else if *raw.read() { pre { class: "raw", "{m.content}" } }
-            else { div { class: if live { "cursor" } else { "" }, dangerous_inner_html: "{html}" } }
+            else { div { class: if live { "live" } else { "" }, dangerous_inner_html: "{html}" } }
+            if live { CipherTail {} }
             if !live {
                 for (pi, page) in crate::code::html_blocks(answer, &m.runs.iter().flat_map(|r| r.pages.iter().map(|p| p.html.as_str())).collect::<Vec<_>>()).into_iter().enumerate() {
                     button { key: "page-{pi}", class: "page-btn", onclick: move |_| crate::code::open_page(&app, "Page", &page), "▶ Open this page" }

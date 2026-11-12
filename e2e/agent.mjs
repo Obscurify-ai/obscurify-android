@@ -150,7 +150,7 @@ ok(Math.max(...toolIn(reqs[1])) > 8000 && Math.max(...toolIn(reqs[2])) <= 1600, 
 ok(summaryOf(reqs[3]).includes('SUMMARY-THREE'), 'and the retry sends the summary');
 ok(await page.locator('.interrupted').count() === 0 && (await page.locator('.msg').last().textContent()).includes('Recovered'), 'and the answer arrives');
 
-// 9. No spend limit: nothing to set, the spend just adds up and never stops a reply.
+// 9. No spend limit: nothing to set, the spend never stops a reply (and isn't shown under it).
 await fresh();
 ok(await page.locator('.limit').count() === 0, 'there is no limit control');
 await reset();
@@ -160,7 +160,7 @@ await idle();
 reqs = await log();
 ok(reqs.length === 4, `spending past the old $5 doesn't stop it (${reqs.length} requests)`);
 ok(await page.locator('.interrupted').count() === 0 && (await page.locator('.msg').last().textContent()).includes('Spent freely'), 'it finishes');
-ok((await page.locator('.spend').last().textContent()).trim() === 'Spent $10.00', 'it shows what was spent');
+ok(await page.locator('.spend').count() === 0 && !(await page.locator('.msg').last().textContent()).includes('Spent $'), 'no Spent line under the reply');
 shot('agent-spent');
 
 // 9b. DeepSeek's own markup for a tool call runs as the call it meant, with the words before it kept.
