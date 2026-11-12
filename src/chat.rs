@@ -1143,7 +1143,7 @@ fn Drawer() -> Element {
 const REASONING: [&str; 5] = ["*thinking*", "*reasoning*", "*deepseek-r1*", "*-r1-*", "*magistral*"];
 /// Roleplay and everything after Frontier (privacy, then use cases) come from the `categories` the
 /// server tags models with.
-const CATEGORIES: [&str; 18] = ["Favorites", "All", "Tools", "Free", "Cheap", "Reasoning", "Uncensored", "Roleplay", "Frontier",
+const CATEGORIES: [&str; 17] = ["Favorites", "All", "Free", "Cheap", "Reasoning", "Uncensored", "Roleplay", "Frontier",
     "Zero retention", "TEE", "Writing", "Security", "Legal", "Translation", "Languages", "Code tools", "Documents"];
 
 /// The plan a model needs that the account doesn't have (uncensored models need Pro, frontier
@@ -1183,7 +1183,6 @@ fn Models() -> Element {
         let free = m.prompt == 0.0 && m.completion == 0.0;
         match k {
             "Favorites" => favs.contains(&m.id),
-            "Tools" => m.tools,
             "Free" => free,
             "Cheap" => free || (m.prompt <= 0.000_000_25 && m.completion <= 0.000_000_5),
             "Reasoning" => any(&m.id, &REASONING),

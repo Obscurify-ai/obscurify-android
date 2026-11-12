@@ -61,8 +61,9 @@ in this repo. A build without it is unsigned, and you can sign it with your own 
 Its certificate's SHA-256 is
 `7c:a4:01:a8:fe:d2:19:c1:7f:19:7a:f6:b0:7c:10:d0:63:09:7f:b6:39:98:90:b5:8b:58:d5:8c:d8:72:a7:1c`.
 
-Every release carries the APK twice: `obscurify-<version>.apk`, and `obscurify.apk`, which
-obscurify.ai/android links through `releases/latest/download/obscurify.apk`. Upload both.
+Every release carries exactly one APK, `obscurify.apk` (the tag holds the version), which
+obscurify.ai/android links through `releases/latest/download/obscurify.apk`. Never add a second
+APK: Obtainium then asks which one to install.
 
 ## Code
 
