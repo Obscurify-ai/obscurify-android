@@ -1,0 +1,1 @@
+The model picker lists the newest models first, Frontier includes GPT 6 and 6.1, Gemini 4 and Claude Fable 5.2, and the Tools filter is gone. Each release now has a single APK, so Obtainium no longer asks which to install.

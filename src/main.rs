@@ -143,7 +143,7 @@ impl Default for Settings {
 }
 
 #[derive(Clone, PartialEq)]
-struct Model { id: String, name: String, prompt: f64, completion: f64, tools: bool, context: u64, categories: Vec<String>, verifiable: bool }
+struct Model { id: String, name: String, prompt: f64, completion: f64, tools: bool, context: u64, categories: Vec<String>, verifiable: bool, created: i64 }
 
 /// What the account's plan lets it chat with, from `/account_tier`.
 #[derive(Clone, Copy, PartialEq)]
@@ -366,8 +366,10 @@ fn Root() -> Element {
                 categories: m["categories"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(String::from)).collect(),
                 // A TEE model whose replies the phone can check (Verify).
                 verifiable: m["tee_verifiable"] == true,
+                // When it was first listed; the picker shows the newest first.
+                created: m["created"].as_i64().unwrap_or(0),
             }).collect();
-            models.sort_by_key(|m| m.name.to_lowercase());
+            models.sort_by_key(|m| (std::cmp::Reverse(m.created), m.name.to_lowercase()));
             app.models.set(models);
         }
         // An answer the app was writing when it closed: the server finished it; show it.
