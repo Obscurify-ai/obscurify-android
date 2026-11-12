@@ -186,7 +186,7 @@ fn after_answer(app: App, then: impl FnOnce(App) + 'static) {
     });
 }
 
-/// A fresh chat; it starts on the first favorite model, like the web.
+/// A fresh chat on the same model, like the web.
 fn new_chat(app: App) {
     after_answer(app, start_new_chat);
 }
@@ -198,11 +198,6 @@ fn start_new_chat(mut app: App) {
     // A new chat stays temporary while Temp is on, as on the web.
     let temp = app.conv.peek().temp;
     app.conv.set(Conv { temp, ..Conv::new() });
-    let first = app.settings.peek().favorites.first().cloned();
-    if let Some(f) = first {
-        app.settings.write().model = f;
-        app.save_settings();
-    }
 }
 
 /// Temp on: a fresh chat that is never saved. Temp off: a fresh, ordinary chat.
@@ -877,7 +872,7 @@ fn CipherTail() -> Element {
     let mut text = use_signal(move || String::new());
     use_future(move || async move {
         loop {
-            text.set(format!("{} {} {} ", group(), &group()[..2], group()));
+            text.set(format!("{} {} {} ", group(), group(), group()));
             crate::sleep(110).await;
         }
     });

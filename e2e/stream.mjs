@@ -10,6 +10,9 @@ await page.locator('.login input').fill(process.env.ACCOUNT);
 await page.getByRole('button', { name: 'Sign In' }).click();
 await page.waitForSelector('.tools-switch', { state: 'attached', timeout: 30000 });
 await page.locator('.title.model').click();
+// Star another model first: a new chat must keep the chosen model, not jump to the first favorite.
+await page.locator('input.search').fill('llama 3.3 70b');
+await page.locator('.pick', { hasText: 'Meta: Llama 3.3 70b Instruct' }).first().locator('button').click();
 await page.locator('input.search').fill(MODEL.split(': ').pop());
 await page.locator('.pick', { hasText: MODEL }).first().locator('.grow').click();
 
@@ -41,11 +44,15 @@ for (const tools of process.env.ONLY ? [process.env.ONLY === 'code'] : [true, fa
   const final = (await page.locator('.msg.assistant').last().textContent()) || '';
   ok(final.length > 600, `${tools ? 'Code Mode' : 'plain chat'}: a whole answer came back (${final.length} chars)`);
   ok(steps.length >= 5, `${tools ? 'Code Mode' : 'plain chat'}: it grew on screen as it streamed (${steps.length} sizes: ${steps.slice(0, 12).join(' ')})`);
+  const shapes = await page.evaluate(() => [...(window.__tails || [])]);
+  ok(shapes.every((t) => /^[0-9a-f]{4} [0-9a-f]{4} [0-9a-f]{4} $/.test(t)), `the tail is three 4-hex groups (${shapes[0]})`);
   const tails = await page.evaluate(() => { const n = (window.__tails || new Set()).size; window.__tails = null; return n; });
   ok(tails >= 3, `${tools ? 'Code Mode' : 'plain chat'}: the cipher tail changed its bytes while it streamed (${tails} different)`);
   ok(await page.locator('.cipher-tail, .spend').count() === 0, `${tools ? 'Code Mode' : 'plain chat'}: no cipher tail or Spent line once it's done`);
+  const model = await page.locator('.title.model').textContent();
   await page.locator('.bar .icon').last().click();
   await sleep(300);
+  ok(await page.locator('.msg').count() === 0 && await page.locator('.title.model').textContent() === model, `a new chat keeps the model (${model})`);
 }
 console.log('all ok');
 process.exit(0);
