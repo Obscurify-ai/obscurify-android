@@ -20,7 +20,7 @@ const shot = (name) => execFileSync('sh', ['-c', `adb exec-out screencap -p > ${
 const BYTES = 'The reply you received is the one the gateway signed';
 const REQUEST = 'The enclave received exactly the conversation you sent';
 // Easy for a model to copy exactly, and nowhere else.
-const MARKER = 'Orchid' + randomInt(10000, 99999);
+const MARKER = 'Orchid' + randomInt(100, 999);
 const leaks = async () => JSON.parse(await ctl('__grep?q=' + MARKER));
 
 let { page } = await launch(true);
