@@ -35,7 +35,7 @@ ok(await page.locator('.foot .more .links a', { hasText: 'All tools' }).isVisibl
   ok(acct.x >= foot.x + 8 && acct.x + acct.width <= foot.x + foot.width - 8 && acct.width >= foot.width - 40, 'the footer is padded and Sign in spans it: ' + JSON.stringify({ foot, acct }));
 }
 const links = await page.locator('.foot a').allTextContents();
-ok(['All tools', 'Model cards', 'About', 'FAQ', 'Privacy', 'Terms', 'Canary', 'Support'].every((l) => links.includes(l)) && (await page.locator('.quick #tor').count()) === 1, 'drawer links: ' + links.join(', ') + ' and Tor in the quick row');
+ok(['All tools', 'All models', 'About', 'FAQ', 'Privacy', 'Terms', 'Canary', 'Support'].every((l) => links.includes(l)) && (await page.locator('.quick #tor').count()) === 1, 'drawer links: ' + links.join(', ') + ' and Tor in the quick row');
 ok((await page.locator('.item .when').first().textContent()).includes('ago') || (await page.locator('.item .when').first().textContent()).includes('just now'), 'chats show when they were last used');
 await page.locator('.veil').click({ position: { x: 380, y: 400 } });
 await page.locator('.title.model').click();

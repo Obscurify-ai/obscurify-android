@@ -1269,7 +1269,7 @@ fn Drawer() -> Element {
                     summary { "More info" }
                     div { class: "links",
                         a { href: "{api::BASE}/tools", "All tools" }
-                        a { href: "{api::BASE}/model_cards", "Model cards" }
+                        a { href: "{api::BASE}/models", "All models" }
                         a { href: "{api::BASE}/about", "About" }
                         a { href: "{api::BASE}/faq", "FAQ" }
                         a { href: "{api::BASE}/guides", "Guides" }
