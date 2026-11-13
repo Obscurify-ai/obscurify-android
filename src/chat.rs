@@ -52,7 +52,7 @@ pub struct Msg {
     /// Earlier work was summarized while this answer ran.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub compacted: bool,
-    /// Verify mode: each model request's receipt and what its check found (tee.rs).
+    /// Encrypted (and the old Verify) mode: each model request's receipt and what its check found (tee.rs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tee: Vec<crate::tee::Step>,
 }
@@ -67,15 +67,20 @@ pub struct Pending {
     /// A Code Mode step (the run carries on after it) rather than a plain answer.
     #[serde(default)]
     pub code: bool,
+    /// An encrypted answer: its key and what checking it needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed: Option<api::Sealed>,
 }
 
 const PENDING: &str = "pending.json";
 
 /// Remembers the answer now being written (not for temporary chats, which aren't kept).
-pub(crate) fn remember(app: App, reply: &Option<String>, model: &str, code: bool) {
+pub(crate) fn remember(app: App, reply: &Option<String>, model: &str, code: bool) { remember_sealed(app, reply, model, code, None) }
+
+pub(crate) fn remember_sealed(app: App, reply: &Option<String>, model: &str, code: bool, sealed: Option<api::Sealed>) {
     let c = app.conv.peek();
     match reply {
-        Some(r) if !c.temp => store::save(PENDING, &Pending { reply: r.clone(), chat: c.id.clone(), model: model.into(), code }),
+        Some(r) if !c.temp => store::save(PENDING, &Pending { reply: r.clone(), chat: c.id.clone(), model: model.into(), code, sealed }),
         _ => store::remove(PENDING),
     }
 }
@@ -201,24 +206,34 @@ fn start_new_chat(mut app: App) {
 }
 
 /// Temp on: a fresh chat that is never saved. Temp off: a fresh, ordinary chat.
-/// Verify on: answers come from TEE models whose replies the phone checks; the picker lists only
-/// those, and the model switches to one if it has to.
-fn toggle_verify(mut app: App) {
+/// Encrypted on: end-to-end encrypted chat with TEE models, each answer checked on the phone; the
+/// picker lists only those models, the model switches to one if it has to, and tools are off.
+fn toggle_encrypted(mut app: App) {
     if !api::has_session() {
-        return app.say("Sign in to verify answers");
+        return app.say("Sign in for encrypted chat");
     }
-    let on = !app.settings.peek().verify;
+    let on = !app.settings.peek().encrypted;
     if on {
         let model = app.settings.peek().model.clone();
-        let ok = app.models.peek().iter().any(|m| m.id == model && m.verifiable);
+        let ok = app.models.peek().iter().any(|m| m.id == model && m.e2ee);
         if !ok {
-            let Some(pick) = crate::tee::pick_model(&app) else { return app.say("No verifiable model is available right now") };
+            let Some(pick) = crate::tee::pick_model(&app) else { return app.say("No model takes encrypted chats right now") };
             app.settings.write().model = pick;
         }
     }
-    app.settings.write().verify = on;
+    app.settings.write().encrypted = on;
     app.save_settings();
-    app.say(if on { "Verify on: each answer is checked on this phone" } else { "Verify off" });
+    app.say(if on { "Encrypted on: end to end, no tools" } else { "Encrypted off" });
+}
+
+/// An encrypted request's `reasoning_effort`, as the server adds it to a plain one: the enclave gets
+/// an encrypted request exactly as sent, so it goes in here.
+fn encrypted_reasoning(app: &App, model: &str, body: &mut Value) {
+    if model.ends_with(":thinking") {
+        body["reasoning_effort"] = json!("medium");
+    } else if app.models.peek().iter().any(|m| m.id == format!("{model}:thinking")) {
+        body["reasoning_effort"] = json!("none");
+    }
 }
 
 fn toggle_temp(app: App) {
@@ -398,7 +413,7 @@ pub(crate) struct Step {
     /// Tokens this step used (prompt + completion), if the server said.
     pub tokens: Option<u64>,
     pub cost: f64,
-    /// Verify mode: the receipt, the route that answered, and the reply's bytes to check.
+    /// Encrypted mode: the receipt, the route that answered, and the reply's bytes to check.
     pub tee: Option<(String, Option<String>, Vec<u8>)>,
 }
 
@@ -474,6 +489,9 @@ pub(crate) async fn stream_noting(body: &Value, msg: &mut Msg, stop: &impl Fn() 
 /// Reasoning text in a delta: `reasoning`, or `reasoning_content` as TEE gateways send it.
 pub(crate) fn reasoning(d: &Value) -> Option<&str> { d["reasoning"].as_str().or(d["reasoning_content"].as_str()) }
 
+/// A finished TEE reply to check: its receipt, route, bytes, and (encrypted) what checking needs.
+type Checked = (String, Option<String>, Vec<u8>, Option<api::Sealed>);
+
 /// Asks for the next answer and streams it into `live`, then appends it to the chat.
 fn run(app: App) { run_with(app, None) }
 
@@ -490,9 +508,14 @@ fn run_with(mut app: App, follow: Option<String>) {
     if crate::code::active(&app, &model) {
         return crate::code::turn(app, None);
     }
-    // With the Tools switch off there's no web search either, as on the web.
-    let verify = api::has_session() && app.settings.peek().verify;
-    let web_search = api::has_session() && app.settings.peek().web_search && !crate::code::capable(&app, &model) && !verify;
+    // With the Tools switch off there's no web search either, as on the web. None when encrypted.
+    let encrypted = api::has_session() && app.settings.peek().encrypted;
+    let web_search = api::has_session() && app.settings.peek().web_search && !crate::code::capable(&app, &model) && !encrypted;
+    // A reply picked up again is read with the key kept for it.
+    let follow_sealed = follow.as_ref().and_then(|id| {
+        let p: Pending = store::load(PENDING);
+        (p.reply == *id).then_some(p.sealed).flatten()
+    });
     app.stop.set(false);
     app.live.set(Some(Msg { role: "assistant".into(), model: model.clone(), ..Default::default() }));
     js("document.body.dataset.working = 1; const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }; window.android && android.working && android.working(true)");
@@ -507,11 +530,12 @@ fn run_with(mut app: App, follow: Option<String>) {
         let mut msg;
         let mut follow = follow;
         let chat_id = app.conv.peek().id.clone();
-        let mut checked: Option<(String, Option<String>, Vec<u8>)> = None;
+        let mut checked: Option<Checked> = None;
         loop {
             let force = resent;
             let mut shown = app.live.peek().clone().unwrap_or_default();
-            let summarized = if follow.is_some() { Ok(false) } else { crate::compact::if_needed(app, &model, context, force, &stop, &mut |note: String| {
+            // Summarizing would send the chat to be read: never when encrypted.
+            let summarized = if follow.is_some() || encrypted { Ok(false) } else { crate::compact::if_needed(app, &model, context, force, &stop, &mut |note: String| {
                 shown.content = note;
                 app.live.set(Some(shown.clone()));
             }).await };
@@ -536,8 +560,8 @@ fn run_with(mut app: App, follow: Option<String>) {
             if web_search {
                 body["web_search"] = json!(true);
             }
-            if verify {
-                body["tee_verify"] = json!(true);
+            if encrypted {
+                encrypted_reasoning(&app, &model, &mut body);
             }
             msg = app.live.peek().clone().unwrap();
             // No connection: wait for it. A server answering 502/503/504 is waited on for a while.
@@ -545,7 +569,12 @@ fn run_with(mut app: App, follow: Option<String>) {
             let mut waits = 0;
             let following = follow.take();
             let first = loop {
-                let asked = match &following { Some(id) => api::follow(id).await, None => api::chat(&body).await };
+                let asked = match (&following, &follow_sealed) {
+                    (Some(id), Some(sealed)) => api::follow_encrypted(id, sealed).await,
+                    (Some(id), None) => api::follow(id).await,
+                    (None, _) if encrypted => api::chat_encrypted(&body).await,
+                    (None, _) => api::chat(&body).await,
+                };
                 match asked {
                     Err(e) if (e == api::OFFLINE || e == api::UNAVAILABLE) && !*app.stop.peek()
                         && crate::code::wait_again(app, &mut delay, &mut waits, e == api::OFFLINE).await => {}
@@ -555,7 +584,7 @@ fn run_with(mut app: App, follow: Option<String>) {
             match first {
                 Err(e) => { msg.error = true; msg.content = e; }
                 Ok(mut resp) => {
-                    remember(app, &resp.id, &model, false);
+                    remember_sealed(app, &resp.id, &model, false, resp.sealed.clone());
                     let mut buf: Vec<u8> = vec![];
                     let mut drawn = store::now();
                     let mut ended = false;
@@ -602,7 +631,7 @@ fn run_with(mut app: App, follow: Option<String>) {
                     }
                     if ended && !msg.error && !*app.stop.peek() && let Some(r) = resp.receipt.take() {
                         msg.tee.push(crate::tee::Step { receipt: r.clone(), ..Default::default() });
-                        checked = Some((r, resp.route.take(), std::mem::take(&mut resp.raw)));
+                        checked = Some((r, resp.route.take(), std::mem::take(&mut resp.raw), resp.sealed.take()));
                     }
                 }
             }
@@ -619,8 +648,8 @@ fn run_with(mut app: App, follow: Option<String>) {
         js("document.body.dataset.working = 0; const f = document.getElementById('follow'); if (f) f.hidden = true; window.android && android.working && android.working(false)");
         save(app);
         forget_pending();
-        if let Some((receipt, route, raw)) = checked {
-            crate::tee::check(app, chat_id, model, receipt, route, raw);
+        if let Some((receipt, route, raw, sealed)) = checked {
+            crate::tee::check(app, chat_id, model, receipt, route, raw, sealed);
         }
         app.refresh_balance();
     });
@@ -720,7 +749,9 @@ pub fn ChatView() -> Element {
     let live = app.live.read().clone();
     let model = app.settings.read().model.clone();
     let streaming = live.is_some();
-    let capable = app.code.read().enabled && app.models.read().iter().find(|m| m.id == model).is_none_or(|m| m.tools);
+    // Tools and code need to read the text: none in an encrypted chat.
+    let encrypted = app.settings.read().encrypted && api::has_session();
+    let capable = !encrypted && app.code.read().enabled && app.models.read().iter().find(|m| m.id == model).is_none_or(|m| m.tools);
     // `settings` and `code` are read above and below, so the view follows the switches.
     let separate = app.code.read().separate;
     let tools_on = crate::code::tools_on(&app);
@@ -742,9 +773,9 @@ pub fn ChatView() -> Element {
                     if api::has_session() { app.overlay.set(Overlay::Models) }
                     else { app.say("Create an account to choose from every model"); app.screen.set(Screen::Signup) }
                 },
-                    if app.settings.read().verify && api::has_session() {
+                    if app.settings.read().encrypted && api::has_session() {
                         svg { class: "verify-mark", view_box: "0 0 24 24", width: "15", height: "15", fill: "none", stroke: "currentColor", stroke_width: "2.2", stroke_linecap: "round", stroke_linejoin: "round",
-                            path { d: "M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z" } path { d: "M8.5 12l2.5 2.5 4.5-5" } }
+                            rect { x: "5", y: "11", width: "14", height: "10", rx: "2" } path { d: "M8 11V7a4 4 0 0 1 8 0v4" } }
                     }
                     {app.model_name(&model)} " ▾" }
                 button { class: "icon", onclick: move |_| { new_chat(app); }, "＋" }
@@ -772,7 +803,7 @@ pub fn ChatView() -> Element {
                 div { class: "waiting", "Waiting for Obscurify. This picks up by itself." }
             }
             div { class: "composer",
-                if !capable && api::has_session() {
+                if !capable && !encrypted && api::has_session() {
                     div { class: "toggles",
                         button { class: if app.settings.read().web_search { "chip on" } else { "chip" },
                             onclick: move |_| { let v = !app.settings.peek().web_search; app.settings.write().web_search = v; app.save_settings() }, "Web search" }
@@ -817,7 +848,7 @@ pub fn ChatView() -> Element {
                                 button { class: if !capable { "item tools-switch na" } else if tools_on { "item tools-switch on" } else { "item tools-switch" },
                                     role: "switch", aria_checked: "{capable && tools_on}", aria_disabled: "{!capable}",
                                     onclick: move |_| {
-                                        if !capable { app.say("This model can't use tools"); return }
+                                        if !capable { app.say(if encrypted { "Encrypted chats can't use tools" } else { "This model can't use tools" }); return }
                                         let v = !app.settings.peek().tools; app.settings.write().tools = v; app.save_settings()
                                     },
                                     svg { view_box: "0 0 24 24", width: "20", height: "20",
@@ -830,7 +861,7 @@ pub fn ChatView() -> Element {
                                     button { class: if !capable { "item code-switch na" } else if code_on { "item code-switch on" } else { "item code-switch" },
                                         role: "switch", aria_checked: "{capable && code_on}", aria_disabled: "{!capable}",
                                         onclick: move |_| {
-                                            if !capable { app.say("This model can't run code"); return }
+                                            if !capable { app.say(if encrypted { "Encrypted chats can't run code" } else { "This model can't run code" }); return }
                                             let v = !app.settings.peek().code; app.settings.write().code = v; app.save_settings()
                                         },
                                         svg { view_box: "0 0 24 24", width: "20", height: "20",
@@ -1166,7 +1197,7 @@ fn Drawer() -> Element {
     let mut wiping = use_signal(|| false);
     let current = app.conv.read().id.clone();
     let temp = app.conv.read().temp;
-    let verify = app.settings.read().verify && api::has_session();
+    let encrypted = app.settings.read().encrypted && api::has_session();
     rsx! {
         div { class: "veil", "data-back": "1", onclick: move |_| app.overlay.set(Overlay::None) }
         div { class: "drawer",
@@ -1182,11 +1213,11 @@ fn Drawer() -> Element {
                         circle { cx: "12", cy: "12", r: "9", stroke_dasharray: "3 3" } path { d: "M12 7v5l3 2" } }
                     span { "Temp" }
                 }
-                button { class: if verify { "q on" } else { "q" }, id: "verify", aria_pressed: "{verify}",
-                    onclick: move |_| { toggle_verify(app); app.overlay.set(Overlay::None) },
+                button { class: if encrypted { "q on" } else { "q" }, id: "encrypted", aria_pressed: "{encrypted}",
+                    onclick: move |_| { toggle_encrypted(app); app.overlay.set(Overlay::None) },
                     svg { view_box: "0 0 24 24", width: "20", height: "20", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
-                        path { d: "M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z" } path { d: "M8.5 12l2.5 2.5 4.5-5" } }
-                    span { "Verify" }
+                        rect { x: "5", y: "11", width: "14", height: "10", rx: "2" } path { d: "M8 11V7a4 4 0 0 1 8 0v4" } }
+                    span { "Encrypted" }
                 }
                 a { class: "q", id: "tor", href: "{ONION}",
                     svg { view_box: "0 0 24 24", width: "20", height: "20", fill: "none", stroke: "currentColor", stroke_width: "2",
@@ -1279,8 +1310,8 @@ fn needs_plan(id: &str, access: Option<Access>, frontier: &[String], uncensored:
 fn Models() -> Element {
     let mut app = use_context::<App>();
     let favs = app.settings.read().favorites.clone();
-    let verifying = app.settings.read().verify && api::has_session();
-    let fav_ok = { let ms = app.models.read(); favs.iter().any(|f| !verifying || ms.iter().any(|m| &m.id == f && m.verifiable)) };
+    let encrypting = app.settings.read().encrypted && api::has_session();
+    let fav_ok = { let ms = app.models.read(); favs.iter().any(|f| !encrypting || ms.iter().any(|m| &m.id == f && m.e2ee)) };
     let mut cat = use_signal(move || if fav_ok { "Favorites" } else { "All" });
     let mut q = use_signal(String::new);
     let favs = app.settings.read().favorites.clone();
@@ -1291,8 +1322,8 @@ fn Models() -> Element {
     let models = app.models.read().clone();
     let query = q.read().to_lowercase();
     let c = *cat.read();
-    // Verify on: only models whose answers the phone can check.
-    let verify = app.settings.read().verify && api::has_session();
+    // Encrypted on: only models that take encrypted requests.
+    let encrypted = app.settings.read().encrypted && api::has_session();
     let any = |id: &str, pats: &[&str]| pats.iter().any(|p| glob(id, p));
     let needs = |id: &str| needs_plan(id, access, &frontier, &uncensored);
     let in_cat = |m: &Model, k: &str| {
@@ -1311,14 +1342,14 @@ fn Models() -> Element {
     // Categories with models the plan can use come first and ones it can't use any of last;
     // empty ones are hidden (Favorites stays, to say how to fill it).
     let mut chips: Vec<(&'static str, bool)> = CATEGORIES.iter().filter_map(|&k| {
-        let mut ms = models.iter().filter(|m| (!verify || m.verifiable) && in_cat(m, k)).peekable();
+        let mut ms = models.iter().filter(|m| (!encrypted || m.e2ee) && in_cat(m, k)).peekable();
         if ms.peek().is_none() { return (k == "Favorites" || k == "All").then_some((k, false)) }
         Some((k, ms.all(|m| needs(&m.id).is_some())))
     }).collect();
     chips.sort_by_key(|&(_, locked)| locked);
     // A search looks through every model, whatever category is picked.
     let shown: Vec<&Model> = models.iter()
-        .filter(|m| !verify || m.verifiable)
+        .filter(|m| !encrypted || m.e2ee)
         .filter(|m| !query.is_empty() || in_cat(m, c))
         .filter(|m| query.is_empty() || m.name.to_lowercase().contains(&query) || m.id.to_lowercase().contains(&query))
         .collect();

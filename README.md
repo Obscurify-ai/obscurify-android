@@ -16,8 +16,8 @@ are stored only on the phone.
 - **Long-running agent.** A reply can take 100 steps and a run 30 minutes, and keeps going in the background with a notification. What it has spent shows as it goes. A lost connection is waited out for as long as it takes. A request that keeps failing goes back to the model. Requests only ever append, which keeps the provider's prompt cache working, and a conversation near the model's context is compacted into a summary instead of having old results trimmed.
 - **Nothing paid is thrown away.** A failed step retries by itself, then the answer stops, keeps its runs and tool results, and offers Continue; a new message carries them too, and they survive the app closing.
 - **Answers keep going when the app closes.** A signed-in answer is written on the server whatever happens to the phone, and held there for up to an hour. A dropped connection picks it up from where it was, and one that died quietly while the phone slept is replaced the moment the app is back on screen or online; an app that was closed or killed finishes it into its chat when it opens again, and Code Mode carries on its run. Stop ends it on the server too.
-- **Verify.** Answers from TEE models (confidential-computing enclaves), checked on the phone with [obscurify-tee-verify](https://github.com/Obscurify-ai/tee-verify): the reply's bytes match the receipt the enclave's gateway signed, the signing key is bound to a genuine Intel TDX machine that answered the phone's own nonce, the gateway runs an approved release, and it verified the model host. Each answer gets a Verified or Not verified chip with the checks; Code Mode checks every step. The picker lists only the models this works with while Verify is on.
-- **Temp, Verify, Tor and Wipe** at the top of the chat list. Temp starts a chat that is never written to the phone. Tor opens the onion site. Wipe deletes every chat and setting on the phone but keeps the sign-in and the wallet, since unspent vouchers are money.
+- **Encrypted.** End-to-end encrypted chat with TEE models (confidential-computing enclaves), using [obscurify-tee-verify](https://github.com/Obscurify-ai/tee-verify). Before anything is sent, the phone checks the enclave gateway's attestation for a nonce of its own (a genuine Intel TDX machine running an approved gateway release) and encrypts every message to the key that attestation vouches for. Obscurify's server passes the request to the enclave without being able to read it, and each piece of the answer comes back encrypted to the phone's key. Then the receipt is checked: the reply's bytes are the ones the gateway signed, the enclave received exactly the conversation the phone encrypted, and the gateway verified the model host. Each answer gets an "Encrypted · Verified" or "Not verified" chip with the checks. While Encrypted is on, the picker lists only the models that take encrypted requests, and tools, web search and summarizing long chats are off (they would need the text).
+- **Temp, Encrypted, Tor and Wipe** at the top of the chat list. Temp starts a chat that is never written to the phone. Tor opens the onion site. Wipe deletes every chat and setting on the phone but keeps the sign-in and the wallet, since unspent vouchers are money.
 - **Account number sign-in.**
   - Sign-up shows the number once.
   - The app keeps only the session, never the number.
@@ -73,7 +73,7 @@ APK: Obtainium then asks which one to install.
 | `src/chat.rs` | Chat, streaming, chats on the phone, model picker, safe markdown |
 | `src/files.rs` | Reading attached files into text: PDF, spreadsheets, Word, PowerPoint, OpenDocument, text |
 | `src/code.rs` | Code Mode: the agent loop, the sandbox bridge, tools the model calls directly, budgets, runs on the message |
-| `src/tee.rs` | Verify: checking TEE replies against their receipts and attestation, the chip |
+| `src/tee.rs` | Encrypted: checking TEE replies against their receipts and attestation, the chip (sealing a request is `api::chat_encrypted`) |
 | `src/compact.rs` | Compaction: earlier messages summarized in chunks so a chat goes on past the model's context |
 | `src/api.rs` | HTTP. Signed-in calls (top-ups too) carry the session; blind voucher calls carry nothing |
 | `src/wallet.rs` | Top-ups (`/top_ups`), and blind voucher orders: blind, sign, unblind, redeem |
@@ -102,7 +102,7 @@ node flaky-proxy.mjs & ACCOUNT=… node resume.mjs  # failures keep tool work: r
 ACCOUNT=… node files.mjs             # files: PDF, CSV, Excel, Word, PowerPoint, OpenDocument, text; refusals; a long file cut
 node categories.mjs                  # specialist categories (Writing, Security, Translation…) from the server's model tags
 node flaky-proxy.mjs & ACCOUNT=… node background.mjs  # background answers: a dropped connection, a killed app (plain and Code Mode), Stop
-node flaky-proxy.mjs & ACCOUNT=… node verify.mjs      # Verify: verifiable models only, Verified with seven checks, a changed byte fails, Code Mode steps, kept after a restart
+node flaky-proxy.mjs & ACCOUNT=… node encrypted.mjs   # Encrypted: e2ee models only, a marker word never leaves the phone, Encrypted · Verified with eight checks, history recalled, a swapped key sends nothing, a changed byte fails, a killed app reads the rest, kept after a restart
 ```
 
 ## License

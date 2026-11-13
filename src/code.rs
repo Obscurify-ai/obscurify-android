@@ -109,7 +109,9 @@ pub fn media_filename(url: &str) -> String {
 }
 
 pub fn capable(app: &App, model: &str) -> bool {
-    app.code.peek().enabled && app.models.peek().iter().find(|m| m.id == model).is_none_or(|m| m.tools)
+    // Tools and code need to read the text: never in an encrypted chat.
+    let encrypted = crate::api::has_session() && app.settings.peek().encrypted;
+    !encrypted && app.code.peek().enabled && app.models.peek().iter().find(|m| m.id == model).is_none_or(|m| m.tools)
 }
 
 /// The Tools switch is on: the model calls web search and the marketplace directly.
@@ -825,7 +827,9 @@ pub fn turn(app: App, from: Option<Msg>) { turn_following(app, from, None) }
 /// the app was closed.
 pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
     let model = app.settings.peek().model.clone();
-    let verify = crate::api::has_session() && app.settings.peek().verify;
+    // Code Mode never runs in an encrypted chat (`capable`), so its replies are never sealed; the
+    // old Verify mode's receipt checks went with it.
+    let verify = false;
     let chat_id = app.conv.peek().id.clone();
     let cfg = app.code.peek().clone();
     let setup = Setup::new(&app, &cfg);
@@ -933,7 +937,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
                 // Every step that came through whole is checked, as it comes.
                 if let Ok(chat::Step { tee: Some((receipt, route, raw)), .. }) = &out {
                     msg.tee.push(crate::tee::Step { receipt: receipt.clone(), ..Default::default() });
-                    crate::tee::check(app, chat_id.clone(), model.clone(), receipt.clone(), route.clone(), raw.clone());
+                    crate::tee::check(app, chat_id.clone(), model.clone(), receipt.clone(), route.clone(), raw.clone(), None);
                 }
                 if let Some(e) = problem {
                     // Too long for the model: compact, once, and ask again.

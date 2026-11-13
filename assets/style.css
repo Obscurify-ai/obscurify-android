@@ -183,7 +183,7 @@ h2.group { font-size: 13px; font-weight: 500; text-transform: uppercase; letter-
 .wipe-ask p { margin: 0 0 10px; color: var(--m); font-size: 14px; }
 .wipe-ask .row { display: flex; justify-content: flex-end; gap: 10px; }
 
-/* Verify: the check of a TEE answer, on the answer */
+/* Encrypted: the check of a TEE answer, on the answer */
 .verify-mark { vertical-align: -2px; margin-right: 5px; }
 .tee { margin: 6px 0 2px; }
 .tee-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--l); color: var(--m); background: #000; }

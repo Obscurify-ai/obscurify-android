@@ -131,19 +131,20 @@ struct Settings {
     /// Code Mode's code: the model can run code. On unless switched off.
     #[serde(default = "yes")]
     code: bool,
-    /// Verify mode: answers come from TEE models and the phone checks each one (tee.rs).
-    #[serde(default)]
-    verify: bool,
+    /// Encrypted mode: end-to-end encrypted chat with TEE models, each answer checked on the
+    /// phone (tee.rs). Was Verify mode (checked, not encrypted): its setting carries over.
+    #[serde(default, alias = "verify")]
+    encrypted: bool,
 }
 
 fn yes() -> bool { true }
 
 impl Default for Settings {
-    fn default() -> Self { Settings { model: FREE_MODEL.into(), web_search: true, favorites: vec![], tools: true, code: true, verify: false } }
+    fn default() -> Self { Settings { model: FREE_MODEL.into(), web_search: true, favorites: vec![], tools: true, code: true, encrypted: false } }
 }
 
 #[derive(Clone, PartialEq)]
-struct Model { id: String, name: String, prompt: f64, completion: f64, tools: bool, context: u64, categories: Vec<String>, verifiable: bool, created: i64 }
+struct Model { id: String, name: String, prompt: f64, completion: f64, tools: bool, context: u64, categories: Vec<String>, verifiable: bool, e2ee: bool, created: i64 }
 
 /// What the account's plan lets it chat with, from `/account_tier`.
 #[derive(Clone, Copy, PartialEq)]
@@ -364,8 +365,10 @@ fn Root() -> Element {
                 context: m["context_length"].as_u64().unwrap_or(0),
                 // Specialist use cases (Writing, Security, ...) the server tags models with.
                 categories: m["categories"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(String::from)).collect(),
-                // A TEE model whose replies the phone can check (Verify).
+                // A TEE model whose replies the phone can check (the old Verify mode).
                 verifiable: m["tee_verifiable"] == true,
+                // Takes end-to-end encrypted requests (Encrypted).
+                e2ee: m["e2ee"] == true,
                 // When it was first listed; the picker shows the newest first.
                 created: m["created"].as_i64().unwrap_or(0),
             }).collect();

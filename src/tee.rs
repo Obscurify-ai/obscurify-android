@@ -1,9 +1,12 @@
-//! Verify mode: answers from a TEE model the phone checks itself. The server passes the enclave
-//! gateway's reply through byte for byte (`"tee_verify": true`), with the id of the receipt the
-//! gateway signed for it. After the answer, the app fetches that receipt and the gateway's
-//! attestation report for a nonce of its own, and checks them with `obscurify_tee_verify`: the
-//! bytes it got are the ones signed, by a key bound to a genuine Intel TDX machine running an
-//! approved gateway build, which checked the model host. Nothing here trusts Obscurify's server.
+//! Encrypted mode: end-to-end encrypted chat with a TEE model, checked on the phone. Before sending,
+//! the app fetches the TEE gateway's attestation for a nonce of its own and checks it, then
+//! encrypts every message to the key it vouches for (`api::chat_encrypted`); the server passes the
+//! request to the enclave unread and the answer back byte for byte, each piece encrypted to the
+//! phone's key. After the answer, the app fetches the receipt the gateway signed for it and checks
+//! it with `obscurify_tee_verify` against the same attestation: the bytes it got are the ones
+//! signed, the enclave received exactly the conversation it encrypted, by a key bound to a genuine
+//! Intel TDX machine running an approved gateway build, which checked the model host. Nothing here
+//! trusts Obscurify's server.
 
 use crate::{App, api, bg, chat, store};
 use dioxus::prelude::*;
@@ -23,6 +26,9 @@ pub struct Step {
     /// Why it couldn't be checked at all (the receipt never came, the app closed first...).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub error: String,
+    /// Sent end-to-end encrypted (Encrypted mode).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub encrypted: bool,
 }
 
 impl Step {
@@ -61,19 +67,21 @@ fn current(s: &Step) -> Step {
 }
 
 /// Checks one reply (the bytes it came in, its receipt and route) in the background. `model` is
-/// the model asked, as the app names it. The result lands on the message (`apply`).
-pub fn check(app: App, chat: String, model: String, receipt: String, route: Option<String>, raw: Vec<u8>) {
+/// the model asked, as the app names it; `sealed`, an encrypted reply's attestation, nonce and
+/// plain request. The result lands on the message (`apply`).
+pub fn check(app: App, chat: String, model: String, receipt: String, route: Option<String>, raw: Vec<u8>, sealed: Option<api::Sealed>) {
     CHECKING.lock().unwrap().push(receipt.clone());
     bg(async move {
-        let step = run(&model, &receipt, route, raw).await;
+        let step = run(&model, &receipt, route, raw, sealed).await;
         DONE.lock().unwrap().get_or_insert_with(HashMap::new).insert(receipt.clone(), step);
         CHECKING.lock().unwrap().retain(|r| *r != receipt);
         apply(app, &chat);
     });
 }
 
-async fn run(model: &str, receipt: &str, route: Option<String>, raw: Vec<u8>) -> Step {
-    let fail = |e: &str| Step { receipt: receipt.to_string(), report: None, error: e.to_string() };
+async fn run(model: &str, receipt: &str, route: Option<String>, raw: Vec<u8>, sealed: Option<api::Sealed>) -> Step {
+    let encrypted = sealed.is_some();
+    let fail = |e: &str| Step { receipt: receipt.to_string(), report: None, error: e.to_string(), encrypted };
     let headers: Vec<(&str, String)> = route.map(|r| vec![("X-Obscurify-TEE-Route", r)]).unwrap_or_default();
     let q = urlencoding(model);
     // A stream's receipt is ready a few seconds after it ends.
@@ -86,6 +94,13 @@ async fn run(model: &str, receipt: &str, route: Option<String>, raw: Vec<u8>) ->
         }
     }
     let Some(receipt_json) = receipt_json else { return fail("The receipt didn't come back in time.") };
+    // An encrypted reply is checked against the attestation it was encrypted to.
+    if let Some(s) = sealed {
+        let evidence = obscurify_tee_verify::Evidence { body: raw, receipt_json, attestation_json: s.attestation, nonce: s.nonce, request: Some(s.plain.into_bytes()) };
+        let options = obscurify_tee_verify::Options { pccs_url: format!("{}/tee/pccs", api::BASE), ..Default::default() };
+        let report = obscurify_tee_verify::verify(&evidence, &options).await;
+        return Step { receipt: receipt.to_string(), report: serde_json::to_value(&report).ok(), error: String::new(), encrypted };
+    }
     let nonce = obscurify_tee_verify::new_nonce();
     let mut attestation_json = None;
     for _ in 0..3 {
@@ -96,10 +111,10 @@ async fn run(model: &str, receipt: &str, route: Option<String>, raw: Vec<u8>) ->
         }
     }
     let Some(attestation_json) = attestation_json else { return fail("The attestation didn't come back in time.") };
-    let evidence = obscurify_tee_verify::Evidence { body: raw, receipt_json, attestation_json, nonce };
+    let evidence = obscurify_tee_verify::Evidence { body: raw, receipt_json, attestation_json, nonce, request: None };
     let options = obscurify_tee_verify::Options { pccs_url: format!("{}/tee/pccs", api::BASE), ..Default::default() };
     let report = obscurify_tee_verify::verify(&evidence, &options).await;
-    Step { receipt: receipt.to_string(), report: serde_json::to_value(&report).ok(), error: String::new() }
+    Step { receipt: receipt.to_string(), report: serde_json::to_value(&report).ok(), error: String::new(), encrypted }
 }
 
 fn short(text: &str) -> String {
@@ -107,7 +122,7 @@ fn short(text: &str) -> String {
     v["error"]["message"].as_str().or(v["error"].as_str()).unwrap_or("").chars().take(160).collect()
 }
 
-fn urlencoding(s: &str) -> String {
+pub fn urlencoding(s: &str) -> String {
     s.bytes().map(|b| match b {
         b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
         _ => format!("%{b:02X}"),
@@ -149,13 +164,14 @@ pub fn apply(mut app: App, chat_id: &str) {
     if changed { store::save(&name, &c) }
 }
 
-/// The verifiable model to use when Verify is switched on and the current one isn't.
+/// The model to use when Encrypted is switched on and the current one takes no encrypted requests.
 pub fn pick_model(app: &App) -> Option<String> {
     let models = app.models.peek();
     let favs = app.settings.peek().favorites.clone();
-    let ok: Vec<&crate::Model> = models.iter().filter(|m| m.verifiable).collect();
+    let ok: Vec<&crate::Model> = models.iter().filter(|m| m.e2ee).collect();
     ok.iter().find(|m| favs.contains(&m.id))
         .or_else(|| ok.iter().find(|m| m.id == "tee/glm-5.3"))
+        .or_else(|| ok.iter().find(|m| m.id == "tee/glm-5.3-flash"))
         .or(ok.first())
         .map(|m| m.id.clone())
 }
@@ -171,6 +187,8 @@ pub fn Chip(steps: Vec<Step>) -> Element {
         State::Verified => ("tee-chip ok", "Verified".to_string()),
         State::Failed => ("tee-chip bad", "Not verified".to_string()),
     };
+    let encrypted = steps.iter().any(|s| s.encrypted);
+    let text = if encrypted { format!("Encrypted · {text}") } else { text };
     let reports: Vec<Value> = steps.iter().map(|s| s.report.clone().unwrap_or_else(|| json!({"receipt_id": s.receipt, "error": s.error}))).collect();
     let many = steps.len() > 1;
     // The first thing that failed, said on the chip itself.
@@ -182,8 +200,12 @@ pub fn Chip(steps: Vec<Step>) -> Element {
         div { class: "tee",
             button { class, onclick: move |_| { let o = !*open.peek(); open.set(o) }, aria_expanded: "{open}",
                 svg { view_box: "0 0 24 24", width: "14", height: "14", fill: "none", stroke: "currentColor", stroke_width: "2.2", stroke_linecap: "round", stroke_linejoin: "round",
-                    path { d: "M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z" }
-                    if st == State::Verified { path { d: "M8.5 12l2.5 2.5 4.5-5" } }
+                    if encrypted {
+                        rect { x: "5", y: "11", width: "14", height: "10", rx: "2" } path { d: "M8 11V7a4 4 0 0 1 8 0v4" }
+                    } else {
+                        path { d: "M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z" }
+                        if st == State::Verified { path { d: "M8.5 12l2.5 2.5 4.5-5" } }
+                    }
                 }
                 "{text}"
                 if many { span { class: "muted", " · {steps.len()} steps" } }

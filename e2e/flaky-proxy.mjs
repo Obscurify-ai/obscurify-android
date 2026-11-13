@@ -8,6 +8,9 @@
 //   GET /__set?toolfail=N                            tool requests answer 503 with an error N times (-1: always)
 //   GET /__set?sandboxdown=1                         the Code Mode sandbox page answers 500
 //   GET /__set?context=N                             /models lists every model with an N-token context
+//   GET /__set?swapkey=1                             attestation reports name a key of the proxy's instead of the
+//     enclave's encryption key (Encrypted mode must refuse to send)
+//   GET /__grep?q=WORD                               every request (path) whose URL or body contained WORD so far
 //   GET /__log, /__tools                             the completion and tool request bodies so far
 //   POST /__script  [{...}, ...]                     canned replies for the next completions, in order:
 //     {code, usage: {prompt_tokens, completion_tokens, cost}} a run_code call; {text, usage} an answer;
@@ -62,6 +65,11 @@ let silent = 0;
 let teeflip = 0;
 // Every path asked for, for tests that check a call was made (Stop's cancel).
 let paths = [];
+// Every request as it went upstream, for tests that look for a word that must never leave the phone.
+let wire = [];
+let swapkey = 0;
+// The secp256k1 generator point: a valid key that isn't the enclave's.
+const KEY_G = '0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8';
 
 // `rewrite(json)` changes a JSON answer before it reaches the app.
 function forward(req, res, body, onChunk, onEnd, rewrite) {
@@ -103,6 +111,7 @@ http.createServer((req, res) => {
     sandboxdown = +url.searchParams.get('sandboxdown') || 0;
     silent = +url.searchParams.get('silent') || 0;
     teeflip = +url.searchParams.get('teeflip') || 0;
+    swapkey = +url.searchParams.get('swapkey') || 0;
     toolScript = [];
     log = [];
     paths = [];
@@ -123,6 +132,10 @@ http.createServer((req, res) => {
   }
   if (url.pathname === '/__log') return res.end(JSON.stringify(log));
   if (url.pathname === '/__paths') return res.end(JSON.stringify(paths));
+  if (url.pathname === '/__grep') {
+    const q = url.searchParams.get('q');
+    return res.end(JSON.stringify(wire.filter((w) => w.includes(q)).map((w) => w.split('\n')[0])));
+  }
   paths.push(req.method + ' ' + url.pathname);
   if (sandboxdown && url.pathname.startsWith('/sandbox/')) { res.writeHead(500, { 'content-type': 'text/html' }); return res.end('down'); }
   if (url.pathname === '/__tools') return res.end(JSON.stringify(tools));
@@ -133,6 +146,13 @@ http.createServer((req, res) => {
   req.on('data', (c) => chunks.push(c));
   req.on('end', () => {
     const body = Buffer.concat(chunks);
+    wire.push(req.method + ' ' + req.url + '\n' + JSON.stringify(req.headers) + '\n' + body.toString());
+    if (swapkey && url.pathname === '/web/tee/attestation') {
+      return forward(req, res, body, null, null, (json) => {
+        for (const k of json.attestation?.workload_keyset?.e2ee_public_keys || []) if (k.algo.startsWith('secp256k1')) k.public_key = KEY_G;
+        return json;
+      });
+    }
     if (/\/tools\//.test(url.pathname)) {
       tools.push({ path: url.pathname, body: JSON.parse(body.toString() || 'null') });
       if (toolScript.length) {

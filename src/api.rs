@@ -251,6 +251,108 @@ pub async fn chat(body: &Value) -> Result<ReplyStream, String> {
     Ok(ReplyStream::new(r))
 }
 
+// ---- Encrypted mode ----------------------------------------------------------------------------
+
+/// The route (`X-Obscurify-TEE-Route`) whose attestation and receipts belong to encrypted replies.
+pub const E2EE_ROUTE: &str = "e2ee";
+
+/// What reading and checking an encrypted answer needs, kept with a pending reply so a reopened app
+/// can still read it: this request's key (hex), the attestation it was encrypted to and the nonce
+/// it answered, and the request in plain text (the enclave must have received exactly that).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default, PartialEq)]
+pub struct Sealed {
+    pub secret: String,
+    pub attestation: String,
+    pub nonce: String,
+    pub plain: String,
+}
+
+fn verifier_options() -> obscurify_tee_verify::Options {
+    obscurify_tee_verify::Options { pccs_url: format!("{BASE}/tee/pccs"), ..Default::default() }
+}
+
+/// Starts an end-to-end encrypted chat completion: the TEE gateway's attestation is fetched with a
+/// fresh nonce and checked on the phone, then every message is encrypted to the key it vouches for
+/// and sent whole (never as a held thread). Nothing is sent when that fails ("Not sent: ...").
+/// The stream decrypts each event as it reads it.
+pub async fn chat_encrypted(body: &Value) -> Result<ReplyStream, String> {
+    let model = body["model"].as_str().unwrap_or_default().to_string();
+    let nonce = obscurify_tee_verify::new_nonce();
+    let route = [("X-Obscurify-TEE-Route", E2EE_ROUTE.to_string())];
+    let path = format!("/web/tee/attestation?model={}&nonce={nonce}", crate::tee::urlencoding(&model));
+    let attestation = match web_get(&path, &route, 100).await {
+        Ok((200, text)) => text,
+        Ok((status, _)) => return Err(format!("Not sent: the enclave's attestation couldn't be fetched (error {status}).")),
+        Err(_) => return Err(OFFLINE.into()),
+    };
+    let attested = obscurify_tee_verify::verify_attestation(&attestation, &nonce, &verifier_options()).await;
+    let Some(key) = attested.e2ee_public_key.clone().filter(|_| attested.verified) else {
+        let bad = attested.checks.iter().find(|c| c.status == obscurify_tee_verify::Status::Fail);
+        return Err(format!("Not sent: the enclave's attestation didn't verify{}.", bad.map(|c| format!(" (failed: {})", c.label)).unwrap_or_default()));
+    };
+    let mut out = body.clone();
+    if let Some(o) = out.as_object_mut() {
+        for k in ["web_search", "thread", "tee_verify", "tools", "tool_choice"] { o.remove(k); }
+    }
+    out["stream"] = json!(true);
+    out["stream_options"] = json!({"include_usage": true});
+    if has_session() {
+        out["background"] = json!(true);
+    }
+    let session = obscurify_tee_verify::e2ee::Session::new();
+    let sealed = session.encrypt_request(&key, &out.to_string()).map_err(|e| format!("Not sent: {e}."))?;
+    let headers = [
+        (obscurify_tee_verify::e2ee::HEADER_CLIENT_KEY, session.public_key_hex().to_string()),
+        (obscurify_tee_verify::e2ee::HEADER_MODEL_KEY, key),
+        (obscurify_tee_verify::e2ee::HEADER_SIGNING_ALGO, obscurify_tee_verify::e2ee::SIGNING_ALGO.to_string()),
+    ];
+    let r = post_raw_chat(sealed.body, &headers).await?;
+    let mut stream = ReplyStream::new(r);
+    stream.sealed = Some(Sealed { secret: session.secret_hex(), attestation, nonce, plain: sealed.plain });
+    stream.session = Some(session);
+    Ok(stream)
+}
+
+/// An encrypted answer the server is holding, read with the key the app kept for it.
+pub async fn follow_encrypted(id: &str, sealed: &Sealed) -> Result<ReplyStream, String> {
+    let session = obscurify_tee_verify::e2ee::Session::from_secret_hex(&sealed.secret).map_err(|e| e.to_string())?;
+    let mut stream = follow(id).await?;
+    stream.session = Some(session);
+    stream.sealed = Some(sealed.clone());
+    Ok(stream)
+}
+
+/// A signed-in POST of `body` exactly as given (an encrypted request) to `/web/chat/completions`.
+async fn post_raw_chat(body: String, headers: &[(&str, String)]) -> Result<reqwest::Response, String> {
+    let mut tries = 0;
+    loop {
+        let token = csrf().await?;
+        let mut req = with_session(client().post(format!("{BASE}/web/chat/completions")))
+            .header("X-CSRF-Token", token)
+            .header("Content-Type", "application/json");
+        for (k, v) in headers {
+            req = req.header(*k, v);
+        }
+        let r = req.body(body.clone()).send().await.map_err(|_| error_text(0, &Value::Null, ""))?;
+        let status = r.status().as_u16();
+        if (200..300).contains(&status) {
+            return Ok(r);
+        }
+        let text = r.text().await.unwrap_or_default();
+        let m = chat_error(status, &text);
+        if status == 401 {
+            expire();
+            return Err(m);
+        }
+        tries += 1;
+        if status == 403 && m.to_lowercase().contains("csrf") && tries < 2 {
+            *CSRF.lock().unwrap() = None;
+        } else {
+            return Err(m);
+        }
+    }
+}
+
 // ---- background replies ------------------------------------------------------------------------
 
 /// What an answer the server no longer holds says (it keeps them an hour).
@@ -282,6 +384,11 @@ pub struct ReplyStream {
     /// TEE verification: the receipt that signs these bytes, and the route that answered.
     pub receipt: Option<String>,
     pub route: Option<String>,
+    /// Encrypted mode: the key that decrypts each event, and what checking the answer needs.
+    pub session: Option<obscurify_tee_verify::e2ee::Session>,
+    pub sealed: Option<Sealed>,
+    /// An event that couldn't be decrypted: the answer stops there.
+    broken: Option<String>,
     events: usize,
     partial: Vec<u8>,
     pub raw: Vec<u8>,
@@ -304,6 +411,9 @@ impl ReplyStream {
             id,
             receipt: header(&r, "x-obscurify-tee-receipt"),
             route: header(&r, "x-obscurify-tee-route"),
+            session: None,
+            sealed: None,
+            broken: None,
             inner: Box::pin(r.bytes_stream()),
             events: 0,
             partial: vec![],
@@ -326,7 +436,16 @@ impl ReplyStream {
             if frame.starts_with(b"data: [DONE]") {
                 self.saw_done = true;
             }
-            out.extend_from_slice(&frame);
+            match &self.session {
+                Some(session) => match session.decrypt_event(&frame) {
+                    Ok(plain) => out.extend_from_slice(&plain),
+                    Err(e) => {
+                        self.broken = Some(format!("The answer couldn't be decrypted: {e}. Stopped reading it."));
+                        break;
+                    }
+                },
+                None => out.extend_from_slice(&frame),
+            }
         }
         (!out.is_empty()).then_some(out)
     }
@@ -337,6 +456,10 @@ impl ReplyStream {
         let mut delay = 1000u64;
         let mut lost_since: Option<Instant> = None;
         loop {
+            if let Some(e) = self.broken.take() {
+                self.finish();
+                return Some(Err(e));
+            }
             if let Some(events) = self.take_events() {
                 return Some(Ok(events));
             }
