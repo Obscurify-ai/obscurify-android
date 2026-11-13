@@ -3710,7 +3710,7 @@ dependencies = [
 
 [[package]]
 name = "obscurify"
-version = "0.8.22"
+version = "0.8.23"
 dependencies = [
  "base64 0.22.1",
  "blind-rsa-signatures",

@@ -144,7 +144,18 @@ pub struct ToolUse {
     pub cost: f64,
     #[serde(default)]
     pub ok: Option<bool>,
+    /// What it was called with, and what came back (clipped), for the row's details.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub args: Value,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub result: String,
+    /// Why it failed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
 }
+
+/// How much of a tool's answer a row keeps to show.
+pub const SHOWN_CHARS: usize = 4000;
 
 /// Media URLs named anywhere in a tool's answer, deduplicated, the first few only. A generated
 /// video or image comes back as a CDN link (MiniMax, Alibaba, Replicate), and it expires.
@@ -184,6 +195,9 @@ pub struct Run {
     /// What the model said before asking for this run.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub intro: String,
+    /// The step's reasoning, before it asked for this run (on the step's first run only).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reasoning: String,
     pub language: String,
     pub code: String,
     #[serde(default)]
@@ -465,7 +479,9 @@ fn detail(name: &str, args: &Value) -> String {
 /// what it cost and any media it made.
 async fn use_tool(name: &str, args: &Value, msg: &mut Msg, t: &mut Turn, show: &mut impl FnMut(&Msg)) -> Result<Value, String> {
     if name != "budget" {
-        msg.runs.last_mut().unwrap().tools.push(ToolUse { name: name.to_string(), detail: detail(name, args), ..Default::default() });
+        let shown = serde_json::to_string(args).unwrap_or_default();
+        let kept = if shown.chars().count() > SHOWN_CHARS { json!(clip_middle(&shown, SHOWN_CHARS)) } else { args.clone() };
+        msg.runs.last_mut().unwrap().tools.push(ToolUse { name: name.to_string(), detail: detail(name, args), args: kept, ..Default::default() });
         show(msg);
     }
     let reply = tool(name, args, t).await;
@@ -481,6 +497,15 @@ async fn use_tool(name: &str, args: &Value, msg: &mut Msg, t: &mut Turn, show: &
         u.ok = Some(matches!(&reply, Ok(v) if v.get("ok") != Some(&json!(false))));
         u.cost = reply.as_ref().ok().and_then(|v| v["cost_usd"].as_f64()).unwrap_or(0.0);
         r.cost += u.cost;
+        match &reply {
+            Ok(v) => {
+                u.result = clip_middle(&serde_json::to_string_pretty(v).unwrap_or_default(), SHOWN_CHARS);
+                if v.get("ok") == Some(&json!(false)) {
+                    u.note = format!("The tool answered {}", v["status"]);
+                }
+            }
+            Err(e) => u.note = e.clone(),
+        }
     }
     msg.spent = t.spent;
     reply
@@ -622,7 +647,7 @@ async fn execute(rx: &mut UnboundedReceiver<Value>, msg: &mut Msg, t: &mut Turn,
     clip_middle(&parts.join("\n\n"), t.result_chars)
 }
 
-fn clip_middle(s: &str, max: usize) -> String {
+pub(crate) fn clip_middle(s: &str, max: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
     if chars.len() <= max {
         return s.to_string();
@@ -994,6 +1019,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
             retries = 0;
             checkpoint(app, &msg, &trace);
             let mut intro = std::mem::take(&mut msg.content);
+            let mut thought = std::mem::take(&mut msg.reasoning);
             // The step's direct tool calls share one run, as on the web.
             let mut tools_run: Option<usize> = None;
             for call in calls {
@@ -1006,7 +1032,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
                 } else if name != "run_code" {
                     // Its chips go on this step's tools run, which has to be the last run.
                     if tools_run != Some(msg.runs.len().wrapping_sub(1)) {
-                        msg.runs.push(Run { direct: true, intro: std::mem::take(&mut intro), ..Default::default() });
+                        msg.runs.push(Run { direct: true, intro: std::mem::take(&mut intro), reasoning: std::mem::take(&mut thought), ..Default::default() });
                         tools_run = Some(msg.runs.len() - 1);
                     }
                     app.live.set(Some(msg.clone()));
@@ -1020,6 +1046,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
                 } else {
                     msg.runs.push(Run {
                         intro: std::mem::take(&mut intro),
+                        reasoning: std::mem::take(&mut thought),
                         language: args["language"].as_str().unwrap_or("python").to_lowercase(),
                         code: args["code"].as_str().unwrap_or("").to_string(),
                         status: "Running…".into(),

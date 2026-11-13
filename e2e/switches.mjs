@@ -72,8 +72,8 @@ ok(offered(r.reqs[0]) === 'call_tool,find_tools,inspect_tool,run_code,web_search
 ok(/Call tools directly whenever/.test(system(r.reqs[0])), 'both on: the system prompt says to call tools directly');
 ok(called(r.reqs).join(',') === 'web_search', 'both on: a web lookup calls web_search directly, without code: ' + called(r.reqs).join(','));
 ok(r.tools.some((t) => t.path.endsWith('/tools/web_search')), 'the app ran it against the tools endpoint: ' + r.tools.map((t) => t.path).join(', '));
-ok(await r.reply.locator('.run.direct .tool-name', { hasText: 'web_search' }).count() > 0 && await r.reply.locator('.run:not(.direct)').count() === 0,
-  'the reply shows the search as a tool chip, and no code run');
+ok(await r.reply.locator('.thinking .step > .tool-call .tool-name', { hasText: 'web_search' }).count() > 0 && await r.reply.locator('.run').count() === 0,
+  'the reply shows the search as a tool call in the thinking section, and no code run');
 ok(/\d/.test(r.text), 'a real answer: ' + r.text.slice(0, 120));
 const toolMsg = r.reqs.at(-1).messages.find((m) => m.role === 'tool');
 ok(toolMsg && /results|answer/.test(toolMsg.content), 'the search came back to the model as JSON: ' + String(toolMsg && toolMsg.content).slice(0, 80));
@@ -88,7 +88,7 @@ r = await ask('Search the web: who won the most recent Tour de France? Name only
 ok(offered(r.reqs[0]) === 'call_tool,find_tools,inspect_tool,web_search', 'code off: no run_code, the direct tools only: ' + offered(r.reqs[0]));
 ok(system(r.reqs[0]) && !system(r.reqs[0]).includes('run_code'), 'code off: the prompt never mentions run_code');
 ok(called(r.reqs).join(',') === 'web_search', 'code off: web_search was called: ' + called(r.reqs).join(','));
-ok(r.text.length > 2 && await r.reply.locator('.run:not(.direct)').count() === 0, 'code off: a real answer, no code run: ' + r.text.slice(0, 120));
+ok(r.text.length > 2 && await r.reply.locator('.run').count() === 0, 'code off: a real answer, no code run: ' + r.text.slice(0, 120));
 
 // 3. Tools off, Code on: code with no tools, and code can't reach them.
 await newChat();

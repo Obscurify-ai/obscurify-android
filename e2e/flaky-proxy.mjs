@@ -12,6 +12,9 @@
 //   POST /__script  [{...}, ...]                     canned replies for the next completions, in order:
 //     {code, usage: {prompt_tokens, completion_tokens, cost}} a run_code call; {text, usage} an answer;
 //     {error: "..."} a failure; {status: 502} a proxy's error page. No model is called, so these cost nothing.
+//     Any of them may carry {reasoning: "..."} (streamed first); {tools: [{name, args}]} makes direct
+//     tool calls instead, after `text` if there is one.
+//   POST /__toolscript [{status, body}, ...]          canned answers for the next tool requests, in order
 import http from 'node:http';
 import https from 'node:https';
 
@@ -23,15 +26,21 @@ let tools = [];
 // `outage` ms of nothing working, starting at the next tool call (tooldown) or completion (chatdown).
 let down = { tool: 0, chat: 0, until: 0 };
 let script = [];
+let toolScript = [];
 let scriptedCalls = 0;
 function scripted(res, r) {
   if (r.status) { res.writeHead(r.status, { 'content-type': 'text/html' }); return res.end('<html>Bad Gateway</html>'); }
   res.writeHead(200, { 'content-type': 'text/event-stream' });
   const send = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
   if (r.error) { send({ error: { message: r.error } }); return res.end(); }
-  if (r.code) {
-    const id = `script_${++scriptedCalls}`;
-    send({ choices: [{ delta: { tool_calls: [{ index: 0, id, type: 'function', function: { name: 'run_code', arguments: JSON.stringify({ language: 'python', code: r.code }) } }] } }] });
+  if (r.reasoning) send({ choices: [{ delta: { reasoning: r.reasoning } }] });
+  const calls = r.tools || (r.code ? [{ name: 'run_code', args: { language: 'python', code: r.code } }] : null);
+  if (r.text && (calls || r.tools)) send({ choices: [{ delta: { content: r.text } }] });
+  if (calls) {
+    calls.forEach((c, index) => {
+      const id = `script_${++scriptedCalls}`;
+      send({ choices: [{ delta: { tool_calls: [{ index, id, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.args) } }] } }] });
+    });
     send({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] });
   } else {
     send({ choices: [{ delta: { content: r.text } }] });
@@ -94,6 +103,7 @@ http.createServer((req, res) => {
     sandboxdown = +url.searchParams.get('sandboxdown') || 0;
     silent = +url.searchParams.get('silent') || 0;
     teeflip = +url.searchParams.get('teeflip') || 0;
+    toolScript = [];
     log = [];
     paths = [];
     tools = [];
@@ -103,6 +113,12 @@ http.createServer((req, res) => {
     const c = [];
     req.on('data', (d) => c.push(d));
     req.on('end', () => { script = JSON.parse(Buffer.concat(c).toString()); res.end('ok'); });
+    return;
+  }
+  if (url.pathname === '/__toolscript') {
+    const c = [];
+    req.on('data', (d) => c.push(d));
+    req.on('end', () => { toolScript = JSON.parse(Buffer.concat(c).toString()); res.end('ok'); });
     return;
   }
   if (url.pathname === '/__log') return res.end(JSON.stringify(log));
@@ -119,6 +135,11 @@ http.createServer((req, res) => {
     const body = Buffer.concat(chunks);
     if (/\/tools\//.test(url.pathname)) {
       tools.push({ path: url.pathname, body: JSON.parse(body.toString() || 'null') });
+      if (toolScript.length) {
+        const a = toolScript.shift();
+        res.writeHead(a.status || 200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify(a.body));
+      }
       if (toolbusy && url.pathname.endsWith('/call')) {
         const busy = toolbusy < 0 || toolbusy-- > 1;
         res.writeHead(busy ? 429 : 200, { 'content-type': 'application/json' });

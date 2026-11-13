@@ -897,26 +897,37 @@ fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Elemen
     let (think, answer) = split_think(&m.content);
     let reasoning = if m.reasoning.is_empty() { think.to_string() } else { m.reasoning.clone() };
     let html = md(answer);
-    let thinking = live && answer.is_empty();
+    let fold = !m.searches.is_empty() || !reasoning.trim().is_empty() || !m.runs.is_empty();
+    let fold_key = format!("{}-{i}", app.conv.peek().id);
     rsx! {
         div { class: if m.error { "msg err" } else { "msg assistant" },
-            for s in m.searches.iter() {
-                details { class: "sources",
-                    summary { {match s.status.as_str() { "searching" => format!("Searching “{}”…", s.query), "error" => format!("Search failed: {}", s.query), _ => format!("Searched “{}”", s.query) }} }
-                    div { class: "think", "{s.results}" }
+            // How it got the answer, in the order it happened: searches, then each step's
+            // reasoning, what it said, and the tools and code it ran. Folded until opened.
+            if fold {
+                Fold { fold_id: fold_key.clone(), class: "thinking".to_string(),
+                    summary: rsx! { span { class: "fold-label", {fold_label(&m, live)} } },
+                    for (si, s) in m.searches.iter().enumerate() {
+                        ToolRow { key: "s{si}", fold_id: format!("{fold_key}-s{si}"), u: search_use(s) }
+                    }
+                    for (ri, r) in m.runs.iter().enumerate() {
+                        div { key: "step-{ri}", class: "step",
+                            if !r.reasoning.trim().is_empty() { div { class: "think", "{r.reasoning.trim()}" } }
+                            if !r.intro.trim().is_empty() { div { class: "step-text", dangerous_inner_html: md(&r.intro) } }
+                            if r.direct {
+                                for (ti, u) in r.tools.iter().enumerate() {
+                                    ToolRow { key: "t{ti}", fold_id: format!("{fold_key}-r{ri}-t{ti}"), u: u.clone() }
+                                }
+                            } else {
+                                RunView { r: r.clone(), fold_id: format!("{fold_key}-r{ri}") }
+                            }
+                        }
+                    }
+                    if !reasoning.trim().is_empty() { div { class: "think", "{reasoning.trim()}" } }
                 }
             }
-            if !reasoning.is_empty() {
-                details { class: "sources", open: thinking,
-                    summary { if thinking { "Thinking…" } else { "Thought" } }
-                    div { class: "think", "{reasoning}" }
-                }
-            }
+            // What the tools and code made stays in view: pictures, charts, players, pages.
             for (ri, r) in m.runs.iter().enumerate() {
-                div { key: "run-{ri}",
-                    if !r.intro.trim().is_empty() { div { dangerous_inner_html: md(&r.intro) } }
-                    RunView { r: r.clone() }
-                }
+                RunOutputs { key: "out-{ri}", r: r.clone() }
             }
             if m.compacted { p { class: "compacted", "Compacted earlier work to save context" } }
             if !live && !m.tee.is_empty() { crate::tee::Chip { steps: m.tee.clone() } }
@@ -962,17 +973,153 @@ fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Elemen
     }
 }
 
-/// One piece of code the model ran: its code, the tools it called, what it printed, its charts,
-/// and the pages it built (they open full screen).
+/// Which folds (the thinking section, a tool row) the reader opened, by chat, message and place, so
+/// they stay open while the answer is redrawn and when it moves from live to the chat.
+static FOLDS: GlobalSignal<std::collections::HashSet<String>> = Signal::global(std::collections::HashSet::new);
+
+/// A `details` that starts folded and remembers being opened.
 #[component]
-fn RunView(r: crate::code::Run) -> Element {
-    let app = use_context::<App>();
+fn Fold(fold_id: String, class: String, summary: Element, children: Element) -> Element {
+    let open = FOLDS.read().contains(&fold_id);
+    rsx! {
+        details { class: "{class}", open,
+            summary { onclick: move |_| { let mut f = FOLDS.write(); if !f.remove(&fold_id) { f.insert(fold_id.clone()); } }, {summary} }
+            {children}
+        }
+    }
+}
+
+/// The thinking section's title: what it's doing now, or how many tool calls it made and their cost.
+fn fold_label(m: &Msg, live: bool) -> String {
+    if live {
+        let now = m.runs.last().filter(|r| !r.done).map(|r| {
+            match r.tools.iter().rev().find(|u| u.ok.is_none()) {
+                Some(u) => format!("{} {}", u.name, u.detail),
+                None if r.direct => String::new(),
+                None => format!("Running {}", if r.language.starts_with('j') { "JavaScript" } else { "Python" }),
+            }
+        }).or_else(|| m.searches.iter().find(|s| s.status == "searching").map(|s| format!("web_search “{}”", s.query)));
+        return match now { Some(n) if !n.trim().is_empty() => format!("Thinking… · {}", n.trim()), _ => "Thinking…".into() };
+    }
+    let calls: usize = m.searches.len() + m.runs.iter().map(|r| if r.direct { r.tools.len() } else { 1 }).sum::<usize>();
+    let cost: f64 = m.runs.iter().map(|r| r.cost).sum();
+    let mut label = "Thinking".to_string();
+    if calls > 0 { label.push_str(&format!(" · {calls} tool call{}", if calls == 1 { "" } else { "s" })) }
+    if cost > 0.0 { label.push_str(&format!(" · {}", usd(cost))) }
+    label
+}
+
+/// A server web search, shown as a tool call like the others.
+fn search_use(s: &Search) -> code::ToolUse {
+    let failed = s.status == "error";
+    code::ToolUse {
+        name: "web_search".into(),
+        detail: format!("“{}”", s.query),
+        ok: match s.status.as_str() { "searching" => None, "error" => Some(false), _ => Some(true) },
+        args: json!({"query": s.query}),
+        result: if failed { String::new() } else { code::clip_middle(&s.results, code::SHOWN_CHARS) },
+        note: if failed { if s.results.is_empty() { "The search failed.".into() } else { s.results.clone() } } else { String::new() },
+        ..Default::default()
+    }
+}
+
+/// What a call was charged, to the micro-dollar: rows round to cents, this doesn't.
+fn exact_usd(d: f64) -> String {
+    let s = format!("{d:.6}");
+    let s = s.trim_end_matches('0');
+    let s = if s.split('.').nth(1).map_or(0, str::len) < 2 { format!("{s:0<width$}", width = s.find('.').map_or(s.len(), |i| i + 3)) } else { s.to_string() };
+    format!("${s}")
+}
+
+/// One tool call: its name, what it was asked, and its cost; open it for the input, the answer
+/// and the cost.
+#[component]
+fn ToolRow(fold_id: String, u: code::ToolUse) -> Element {
+    let (state, cost) = match u.ok {
+        None => ("running", String::new()),
+        Some(false) => ("failed", if u.cost > 0.0 { usd(u.cost) } else { String::new() }),
+        Some(true) => ("", if u.cost > 0.0 { usd(u.cost) } else { "free".into() }),
+    };
+    let charged = match u.ok {
+        None => "Not finished yet".to_string(),
+        _ if u.cost > 0.0 => exact_usd(u.cost),
+        Some(true) => "Free".into(),
+        Some(false) => "Nothing charged".into(),
+    };
+    let input = match &u.args {
+        Value::Null => String::new(),
+        Value::String(s) => s.clone(),
+        v => serde_json::to_string_pretty(v).unwrap_or_default(),
+    };
+    rsx! {
+        Fold { fold_id, class: if state.is_empty() { "tool-call".to_string() } else { format!("tool-call {state}") },
+            summary: rsx! {
+                span { class: "tool-name", "{u.name}" }
+                span { class: "tool-detail", "{u.detail}" }
+                if !state.is_empty() { span { class: "tool-state", "{state}" } }
+                if !cost.is_empty() { span { class: "tool-cost", "{cost}" } }
+            },
+            div { class: "tool-body",
+                if !input.is_empty() {
+                    div { class: "tool-label", "Input" }
+                    pre { "{input}" }
+                }
+                if !u.result.is_empty() {
+                    div { class: "tool-label", "Result" }
+                    pre { "{u.result}" }
+                }
+                div { class: "tool-label", "Cost" }
+                div { class: "tool-charged", "{charged}" }
+                if !u.note.is_empty() { p { class: "err", "{u.note}" } }
+            }
+        }
+    }
+}
+
+/// One piece of code the model ran, inside the thinking section: its code, the tools it called and
+/// what it printed. What it showed (charts, files, pages) is in `RunOutputs`, below the section.
+#[component]
+fn RunView(r: crate::code::Run, fold_id: String) -> Element {
     let lang = if r.language.starts_with('j') { "JavaScript" } else { "Python" };
     let lines = r.code.lines().count();
     let class = if !r.done { "run going" } else if r.ok { "run ok" } else { "run err" };
-    let media = rsx! {
+    rsx! {
+        div { class,
+            div { class: "run-head",
+                span { class: "run-lang", "{lang}" }
+                span { "{r.status}" }
+                if r.cost > 0.0 { span { class: "run-cost", {usd(r.cost)} } }
+            }
+            details { class: "run-code", open: lines <= 12,
+                summary { "Code · {lines} " if lines == 1 { "line" } else { "lines" } }
+                pre { "{r.code}" }
+            }
+            if !r.tools.is_empty() {
+                div { class: "run-tools",
+                    for (ti, u) in r.tools.iter().enumerate() {
+                        ToolRow { key: "{ti}", fold_id: format!("{fold_id}-t{ti}"), u: u.clone() }
+                    }
+                }
+            }
+            if !r.output.is_empty() || !r.error.is_empty() {
+                pre { class: "run-out",
+                    "{r.output}"
+                    if !r.error.is_empty() { span { class: "run-err", if r.output.is_empty() { "{r.error}" } else { "\n{r.error}" } } }
+                }
+            }
+        }
+    }
+}
+
+/// What a run or a tool made: charts, pictures, video and audio with a way to keep them, and pages
+/// to open. Shown under the thinking section, where it isn't folded away.
+#[component]
+fn RunOutputs(r: crate::code::Run) -> Element {
+    let app = use_context::<App>();
+    rsx! {
+        for (i, img) in r.images.iter().enumerate() { img { key: "img-{i}", class: "run-img out", src: "{img}" } }
         for (i, url) in r.media.iter().enumerate() {
-            div { key: "media-{i}", class: "run-media",
+            div { key: "media-{i}", class: "run-media out",
                 if code::is_video(url) {
                     video { class: "run-video", controls: true, playsinline: true, preload: "metadata", src: "{url}" }
                 } else if code::is_audio(url) {
@@ -987,50 +1134,10 @@ fn RunView(r: crate::code::Run) -> Element {
                 }
             }
         }
-    };
-    let tools = rsx! {
-        if !r.tools.is_empty() {
-            div { class: "run-tools",
-                for (i, u) in r.tools.iter().enumerate() {
-                    div { key: "{i}", class: match u.ok { None => "tool going", Some(true) => "tool", Some(false) => "tool failed" },
-                        span { {match u.name.as_str() { "web_search" => "🔍", "search" => "🧰", "inspect" => "📋", "call" => "💳", _ => "•" }} }
-                        span { class: "tool-name", " {u.name} " }
-                        span { class: "tool-detail", "{u.detail}" }
-                        if u.cost > 0.0 { span { class: "run-cost", " {usd(u.cost)}" } }
-                    }
-                }
-            }
-        }
-    };
-    // Tools the model called directly: only their chips and what they made.
-    if r.direct {
-        return rsx! { div { class: "run direct", {tools} {media} } };
-    }
-    rsx! {
-        div { class,
-            div { class: "run-head",
-                span { class: "run-lang", "{lang}" }
-                span { "{r.status}" }
-                if r.cost > 0.0 { span { class: "run-cost", {usd(r.cost)} } }
-            }
-            details { class: "run-code", open: lines <= 12,
-                summary { "Code · {lines} " if lines == 1 { "line" } else { "lines" } }
-                pre { "{r.code}" }
-            }
-            {tools}
-            if !r.output.is_empty() || !r.error.is_empty() {
-                pre { class: "run-out",
-                    "{r.output}"
-                    if !r.error.is_empty() { span { class: "run-err", if r.output.is_empty() { "{r.error}" } else { "\n{r.error}" } } }
-                }
-            }
-            for (i, img) in r.images.iter().enumerate() { img { key: "{i}", class: "run-img", src: "{img}" } }
-            {media}
-            for (i, p) in r.pages.iter().enumerate() {
-                button { key: "{i}", class: "page-btn",
-                    onclick: { let p = p.clone(); move |_| crate::code::open_page(&app, &p.title, &p.html) },
-                    "▶ Open " {if p.title.is_empty() { "page".to_string() } else { p.title.clone() }}
-                }
+        for (i, p) in r.pages.iter().enumerate() {
+            button { key: "page-{i}", class: "page-btn",
+                onclick: { let p = p.clone(); move |_| crate::code::open_page(&app, &p.title, &p.html) },
+                "▶ Open " {if p.title.is_empty() { "page".to_string() } else { p.title.clone() }}
             }
         }
     }

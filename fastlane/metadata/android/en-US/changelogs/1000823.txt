@@ -1,0 +1,1 @@
+How an answer came about sits in one Thinking section, folded until you tap it: each step's reasoning, its tool calls and its code, in the order they happened. Tap a tool call to see what it was asked, what came back and what it cost. Pictures and files the tools made stay in view below it.
