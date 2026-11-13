@@ -98,7 +98,7 @@ ACCOUNT=… node code.mjs              # Code Mode: Python, a chart, a paid tool
 node flaky-proxy.mjs & ACCOUNT=… node switches.mjs  # Tools and Code switches: on by default, a lookup is a direct web_search, code off, tools off (code can't reach them), both off is plain chat
 ACCOUNT=… node parity.mjs            # guest chat and tools, Tools switch, provider filter, raw, edit, plan confirmation, delete account
 node flaky-proxy.mjs & ACCOUNT=… node outage.mjs  # lost connections wait and deliver; PAID=1 also loses a paid answer and checks it's charged once
-node flaky-proxy.mjs & ACCOUNT=… node resume.mjs  # failures keep tool work: retries, Continue, new messages, Retry, a killed app; the Copy toolbar (test APK with OBSCURIFY_API=http://127.0.0.1:8093, adb reverse tcp:8093 tcp:8093)
+node flaky-proxy.mjs & ACCOUNT=… node resume.mjs  # failures keep tool work: retries, Continue, new messages, Retry only on failures, a killed app; the Copy toolbar (test APK with OBSCURIFY_API=http://127.0.0.1:8093, adb reverse tcp:8093 tcp:8093)
 ACCOUNT=… node files.mjs             # files: PDF, CSV, Excel, Word, PowerPoint, OpenDocument, text; refusals; a long file cut
 node categories.mjs                  # specialist categories (Writing, Security, Translation…) from the server's model tags
 node flaky-proxy.mjs & ACCOUNT=… node background.mjs  # background answers: a dropped connection, a killed app (plain and Code Mode), Stop

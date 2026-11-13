@@ -950,10 +950,12 @@ fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Elemen
                         button { class: "bare", onclick: move |_| { let r = !*raw.peek(); raw.set(r) }, if *raw.read() { "Rendered" } else { "Raw" } }
                     }
                     // An answer with tool work continues from it: paid calls aren't made again.
-                    if last && (!m.trace.is_empty() || !m.interrupted.is_empty()) {
-                        button { class: if m.interrupted.is_empty() { "bare" } else { "go continue" }, onclick: move |_| crate::code::resume(app),
-                            if m.interrupted.is_empty() { "Retry" } else { "Continue" } }
-                    } else if last {
+                    // Retry only shows on a failed answer.
+                    if last && !m.interrupted.is_empty() {
+                        button { class: "go continue", onclick: move |_| crate::code::resume(app), "Continue" }
+                    } else if last && m.error && !m.trace.is_empty() {
+                        button { class: "bare", onclick: move |_| crate::code::resume(app), "Retry" }
+                    } else if last && m.error {
                         button { class: "bare", onclick: move |_| { app.conv.write().messages.pop(); run(app) }, "Retry" }
                     }
                     // Back to the question this answered: later messages go, as on the web.

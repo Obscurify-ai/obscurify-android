@@ -1,7 +1,7 @@
 // A failure never throws away tool work. With flaky-proxy.mjs running (see there):
 //   ACCOUNT=<funded number> node e2e/resume.mjs
 // Failed steps retry by themselves; then the answer stops, keeps its runs and offers Continue; a new
-// message carries the tool results too; Retry doesn't redo paid work; a killed app comes back; and
+// message carries the tool results too; Retry shows only on a failed answer; a killed app comes back; and
 // selecting text offers Android's Copy toolbar.
 import { launch, ok, sleep, adb, shot } from './lib.mjs';
 
@@ -57,15 +57,19 @@ ok(await page.locator('.run').count() === 1 && reqs.length === 1, 'the code is n
 ok((await page.locator('.msg.assistant').last().textContent()).replace(/,/g, '').includes('7006652'), 'and the answer finishes');
 ok(await page.locator('.interrupted').count() === 0, 'the note is gone');
 
-// 3. Retry on a finished tool answer reuses the results too.
+// 3. Retry is only for failures: a finished answer has none, a failed one does.
+ok(await page.locator('.meta button', { hasText: 'Retry' }).count() === 0, 'a finished answer offers no Retry');
+await fresh();
+await set(0, 99);
+await say('Say hello in one word. Do not use any tools.');
+await idle();
+ok(await page.locator('.msg.err').count() === 1 && await page.locator('.meta button', { hasText: 'Retry' }).count() === 1, 'a failed answer offers Retry');
+shot('resume-error-retry');
 await set(0, 0);
 await page.locator('.meta button', { hasText: 'Retry' }).click();
 await page.waitForSelector('.send.stop', { timeout: 10000 }).catch(() => {});
 await idle();
-reqs = await log();
-// The tool result goes along, or the server already holds it (a held thread sends only new messages).
-const held = reqs[0].thread && reqs[0].thread.rev && reqs[0].messages.length === 0;
-ok((hasTool(reqs[0], '7006652') || held) && await page.locator('.run').count() === 1, 'Retry keeps the tool results and does not pay again');
+ok(await page.locator('.msg.err').count() === 0 && await page.locator('.meta button', { hasText: 'Retry' }).count() === 0, 'Retry answers it, and the Retry button goes');
 
 // 4. Sending another message instead of Continue keeps it all in the conversation.
 await fresh();
