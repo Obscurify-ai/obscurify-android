@@ -1,0 +1,1 @@
+In encrypted chats the chip now just says "Encrypted" once every check passes, "Check failed" if one doesn't, and "Checking…" in between. If the enclave's attestation doesn't check out, the app says "Not encrypted" and sends nothing. Chats from the old Verify mode keep their "Verified" chips.

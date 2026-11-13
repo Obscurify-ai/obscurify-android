@@ -273,7 +273,7 @@ fn verifier_options() -> obscurify_tee_verify::Options {
 
 /// Starts an end-to-end encrypted chat completion: the TEE gateway's attestation is fetched with a
 /// fresh nonce and checked on the phone, then every message is encrypted to the key it vouches for
-/// and sent whole (never as a held thread). Nothing is sent when that fails ("Not sent: ...").
+/// and sent whole (never as a held thread). Nothing is sent when that fails ("Not encrypted: ...").
 /// The stream decrypts each event as it reads it.
 pub async fn chat_encrypted(body: &Value) -> Result<ReplyStream, String> {
     let model = body["model"].as_str().unwrap_or_default().to_string();
@@ -282,13 +282,12 @@ pub async fn chat_encrypted(body: &Value) -> Result<ReplyStream, String> {
     let path = format!("/web/tee/attestation?model={}&nonce={nonce}", crate::tee::urlencoding(&model));
     let attestation = match web_get(&path, &route, 100).await {
         Ok((200, text)) => text,
-        Ok((status, _)) => return Err(format!("Not sent: the enclave's attestation couldn't be fetched (error {status}).")),
+        Ok((status, _)) => return Err(format!("Not encrypted: the enclave's attestation couldn't be fetched (error {status}), so nothing was sent.")),
         Err(_) => return Err(OFFLINE.into()),
     };
     let attested = obscurify_tee_verify::verify_attestation(&attestation, &nonce, &verifier_options()).await;
     let Some(key) = attested.e2ee_public_key.clone().filter(|_| attested.verified) else {
-        let bad = attested.checks.iter().find(|c| c.status == obscurify_tee_verify::Status::Fail);
-        return Err(format!("Not sent: the enclave's attestation didn't verify{}.", bad.map(|c| format!(" (failed: {})", c.label)).unwrap_or_default()));
+        return Err("Not encrypted: the enclave's attestation didn't verify, so nothing was sent.".into());
     };
     let mut out = body.clone();
     if let Some(o) = out.as_object_mut() {
@@ -300,7 +299,7 @@ pub async fn chat_encrypted(body: &Value) -> Result<ReplyStream, String> {
         out["background"] = json!(true);
     }
     let session = obscurify_tee_verify::e2ee::Session::new();
-    let sealed = session.encrypt_request(&key, &out.to_string()).map_err(|e| format!("Not sent: {e}."))?;
+    let sealed = session.encrypt_request(&key, &out.to_string()).map_err(|e| format!("Not encrypted: {e}, so nothing was sent."))?;
     let headers = [
         (obscurify_tee_verify::e2ee::HEADER_CLIENT_KEY, session.public_key_hex().to_string()),
         (obscurify_tee_verify::e2ee::HEADER_MODEL_KEY, key),
@@ -440,7 +439,7 @@ impl ReplyStream {
                 Some(session) => match session.decrypt_event(&frame) {
                     Ok(plain) => out.extend_from_slice(&plain),
                     Err(e) => {
-                        self.broken = Some(format!("The answer couldn't be decrypted: {e}. Stopped reading it."));
+                        self.broken = Some(format!("Check failed: the answer couldn't be decrypted ({e}). Stopped reading it."));
                         break;
                     }
                 },

@@ -37,7 +37,7 @@ impl Step {
 }
 
 /// What an answer's chip says.
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Copy)]
 pub enum State { Verifying, Verified, Failed }
 
 pub fn state(steps: &[Step]) -> State {
@@ -182,13 +182,17 @@ pub fn Chip(steps: Vec<Step>) -> Element {
     let steps: Vec<Step> = steps.iter().map(current).collect();
     let mut open = use_signal(|| false);
     let st = state(&steps);
-    let (class, text) = match st {
-        State::Verifying => ("tee-chip wait", "Verifying…".to_string()),
-        State::Verified => ("tee-chip ok", "Verified".to_string()),
-        State::Failed => ("tee-chip bad", "Not verified".to_string()),
-    };
+    // An encrypted answer says what it is; an old Verify-mode answer (never encrypted) keeps
+    // saying Verified or Not verified.
     let encrypted = steps.iter().any(|s| s.encrypted);
-    let text = if encrypted { format!("Encrypted · {text}") } else { text };
+    let (class, text) = match (st, encrypted) {
+        (State::Verifying, true) => ("tee-chip wait", "Checking…"),
+        (State::Verified, true) => ("tee-chip ok", "Encrypted"),
+        (State::Failed, true) => ("tee-chip bad", "Check failed"),
+        (State::Verifying, false) => ("tee-chip wait", "Verifying…"),
+        (State::Verified, false) => ("tee-chip ok", "Verified"),
+        (State::Failed, false) => ("tee-chip bad", "Not verified"),
+    };
     let reports: Vec<Value> = steps.iter().map(|s| s.report.clone().unwrap_or_else(|| json!({"receipt_id": s.receipt, "error": s.error}))).collect();
     let many = steps.len() > 1;
     // The first thing that failed, said on the chip itself.

@@ -1,18 +1,20 @@
 // Encrypted mode: end-to-end encrypted chat with TEE models, checked on the phone. The quick control
 // (where Verify was) turns it on and picks a model that takes encrypted requests; the picker lists
 // only those; a marker word sent in Encrypted mode never appears in anything the phone sends (the
-// proxy sees every request), while the decrypted answer shows it; the answer is "Encrypted ·
-// Verified" with eight checks, including that the enclave received exactly what was encrypted; a
-// second turn recalls the marker (the whole history went, encrypted); a server that swaps the
-// enclave's key gets nothing; a reply with one byte changed is Not verified on the reply-bytes check;
+// proxy sees every request), while the decrypted answer shows it; the answer's chip says
+// "Encrypted" once all eight checks pass, including that the enclave received exactly what was
+// encrypted; a second turn recalls the marker (the whole history went, encrypted); a server that
+// swaps the enclave's key gets "Not encrypted: ..." and nothing; a reply with one byte changed says
+// "Check failed", on the reply-bytes check;
 // an answer the app was killed in the middle of is read with the key it kept; results stay with the
 // chat. Real models, through flaky-proxy.mjs to a server with Encrypted mode:
 //   TARGET=http://127.0.0.1:8251 node e2e/flaky-proxy.mjs &   (test APK with OBSCURIFY_API=http://127.0.0.1:8093,
 //   adb reverse tcp:8093 tcp:8093)
-//   ACCOUNT=<funded number> node e2e/encrypted.mjs
+//   adb root; ACCOUNT=<funded number> node e2e/encrypted.mjs
 import { execFileSync } from 'node:child_process';
 import { randomInt } from 'node:crypto';
-import { launch, ok, sleep } from './lib.mjs';
+import { writeFileSync } from 'node:fs';
+import { launch, ok, sleep, PKG } from './lib.mjs';
 
 const ctl = (q) => fetch('http://127.0.0.1:8093/' + q).then((r) => r.text());
 const SHOTS = process.env.SHOTS || `${process.env.HOME}/Work/obscurify/screenshots`;
@@ -72,7 +74,7 @@ ok((await page.locator('.tools-switch').getAttribute('aria-checked')) !== 'true'
 await say(`The password is ${MARKER}. Reply with the password and nothing else.`);
 await settled();
 ok((await last().textContent()).includes(MARKER), 'the decrypted answer has the marker');
-ok((await lastChip().textContent()).includes('Encrypted · Verified'), 'the answer is Encrypted · Verified: ' + await lastChip().textContent());
+ok((await lastChip().textContent()).trim() === 'Encrypted', 'the answer says Encrypted: ' + await lastChip().textContent());
 let rows = await rowsOfLast();
 ok(rows.length === 8 && !rows.some((r) => r.cls.includes('fail')), 'eight checks, none failed: ' + rows.map((r) => r.cls).join(' '));
 ok(rows.some((r) => r.text.includes(REQUEST) && r.cls.includes('pass')), 'the enclave received exactly what was encrypted');
@@ -87,7 +89,7 @@ shot('android-encrypted-checks');
 await say('What was the password? Reply with it only.');
 await settled();
 ok((await last().textContent()).includes(MARKER), 'the second answer recalls the marker');
-ok((await lastChip().textContent()).includes('Encrypted · Verified'), 'the second answer is Encrypted · Verified');
+ok((await lastChip().textContent()).trim() === 'Encrypted', 'the second answer says Encrypted');
 ok(JSON.parse(await ctl('__log')).pop().messages.length >= 3, 'the second request carries the history');
 ok((await leaks()).length === 0, 'the marker still never left the phone');
 
@@ -95,15 +97,15 @@ ok((await leaks()).length === 0, 'the marker still never left the phone');
 await ctl('__set?swapkey=1');
 await say(`Never send this: ${MARKER}`);
 const refusal = (await page.locator('.msg.err').last().textContent().catch(() => '')) || '';
-ok(refusal.includes('Not sent'), 'a swapped key is refused: ' + refusal.slice(0, 200));
+ok(refusal.startsWith("Not encrypted: the enclave's attestation didn't verify, so nothing was sent."), 'a swapped key is refused: ' + refusal.slice(0, 200));
 ok(JSON.parse(await ctl('__log')).length === 0, 'no chat request was made');
 shot('android-encrypted-refused');
 
-// 5. One byte changed on the way: Not verified, on the reply-bytes check.
+// 5. One byte changed on the way: Check failed, on the reply-bytes check.
 await ctl('__set?teeflip=1');
 await say('Reply with exactly one word: fine');
 await settled();
-ok(await lastChip().evaluate((e) => e.classList.contains('bad')), 'a changed reply is Not verified');
+ok(await lastChip().evaluate((e) => e.classList.contains('bad')) && (await lastChip().textContent()).trim() === 'Check failed', 'a changed reply says Check failed: ' + await lastChip().textContent());
 const why = await last().locator('.tee-why').textContent();
 ok(why.includes(BYTES), 'and it says which check failed: ' + why);
 rows = await rowsOfLast();
@@ -117,15 +119,29 @@ await page.waitForFunction(() => /three/i.test([...document.querySelectorAll('.m
 await page.waitForFunction(() => /sixty/i.test([...document.querySelectorAll('.msg.assistant')].pop()?.textContent || '') && !document.querySelector('.send.stop'), null, { timeout: 280000 });
 await settled();
 ok(/fifty-nine|fifty nine/i.test(await last().textContent()), 'the picked-up answer is whole and decrypted');
-ok((await lastChip().textContent()).includes('Encrypted · Verified'), 'the picked-up answer is Encrypted · Verified: ' + await lastChip().textContent());
+ok((await lastChip().textContent()).trim() === 'Encrypted', 'the picked-up answer says Encrypted: ' + await lastChip().textContent());
 shot('android-encrypted-chip');
 
 // 7. The results stay with the chat.
 ({ page } = await launch(false));
 await page.waitForSelector('.tee-chip', { timeout: 20000 });
-const kept = await page.locator('.tee-chip').evaluateAll((cs) => cs.map((c) => c.className + ' ' + c.textContent));
-ok(kept.length === 4 && kept.every((c) => c.includes('Encrypted')) && kept.filter((c) => c.includes(' ok')).length === 3, 'the results are kept after a restart: ' + kept.join(' | '));
+const kept = await page.locator('.tee-chip').evaluateAll((cs) => cs.map((c) => c.className + ' ' + c.textContent.trim()));
+ok(kept.length === 4 && kept.filter((c) => c.endsWith(' ok Encrypted')).length === 3 && kept.filter((c) => c.endsWith(' bad Check failed')).length === 1, 'the results are kept after a restart: ' + kept.join(' | '));
 ok((await leaks()).length === 0, 'the marker never left the phone at all');
+
+// 7b. An answer from the old Verify mode (checked, never encrypted) is never called Encrypted.
+// Needs `adb root`: the chat's file loses its first answer's encrypted flag.
+const dir = `/data/user/0/${PKG}/files`;
+const file = execFileSync('adb', ['shell', `grep -l '"encrypted":true' ${dir}/chat-*.json`], { encoding: 'utf8' }).trim().split(/\s+/)[0];
+const json = execFileSync('adb', ['shell', 'cat', file], { encoding: 'utf8', maxBuffer: 1 << 26 });
+writeFileSync('/tmp/obs-e2e-chat.json', json.replace(',"encrypted":true', ''));
+const owner = execFileSync('adb', ['shell', 'stat', '-c', '%u:%g', file], { encoding: 'utf8' }).trim();
+execFileSync('adb', ['push', '/tmp/obs-e2e-chat.json', file]);
+execFileSync('adb', ['shell', 'chown', owner, file]);
+({ page } = await launch(false));
+await page.waitForSelector('.tee-chip', { timeout: 20000 });
+const legacy = await page.locator('.tee-chip').first().textContent();
+ok(legacy.trim() === 'Verified', 'an old Verify-mode answer still says Verified: ' + legacy);
 
 // 8. Encrypted off: plain chat again.
 await page.locator('.bar .icon').first().click();
