@@ -38,13 +38,13 @@ impl Step {
 
 /// What an answer's chip says.
 #[derive(PartialEq, Clone, Copy)]
-pub enum State { Verifying, Verified, Failed }
+pub enum State { Checking, Passed, Failed }
 
 pub fn state(steps: &[Step]) -> State {
     if steps.iter().any(Step::pending) {
-        State::Verifying
+        State::Checking
     } else if steps.iter().all(Step::verified) {
-        State::Verified
+        State::Passed
     } else {
         State::Failed
     }
@@ -66,10 +66,10 @@ fn current(s: &Step) -> Step {
     Step { error: ORPHANED.into(), ..s.clone() }
 }
 
-/// Checks one reply (the bytes it came in, its receipt and route) in the background. `model` is
-/// the model asked, as the app names it; `sealed`, an encrypted reply's attestation, nonce and
-/// plain request. The result lands on the message (`apply`).
-pub fn check(app: App, chat: String, model: String, receipt: String, route: Option<String>, raw: Vec<u8>, sealed: Option<api::Sealed>) {
+/// Checks one encrypted reply (the bytes it came in, its receipt and route) in the background,
+/// against the attestation it was encrypted to and the plain request (`sealed`). `model` is the
+/// model asked, as the app names it. The result lands on the message (`apply`).
+pub fn check(app: App, chat: String, model: String, receipt: String, route: Option<String>, raw: Vec<u8>, sealed: api::Sealed) {
     CHECKING.lock().unwrap().push(receipt.clone());
     bg(async move {
         let step = run(&model, &receipt, route, raw, sealed).await;
@@ -79,9 +79,8 @@ pub fn check(app: App, chat: String, model: String, receipt: String, route: Opti
     });
 }
 
-async fn run(model: &str, receipt: &str, route: Option<String>, raw: Vec<u8>, sealed: Option<api::Sealed>) -> Step {
-    let encrypted = sealed.is_some();
-    let fail = |e: &str| Step { receipt: receipt.to_string(), report: None, error: e.to_string(), encrypted };
+async fn run(model: &str, receipt: &str, route: Option<String>, raw: Vec<u8>, sealed: api::Sealed) -> Step {
+    let fail = |e: &str| Step { receipt: receipt.to_string(), report: None, error: e.to_string(), encrypted: true };
     let headers: Vec<(&str, String)> = route.map(|r| vec![("X-Obscurify-TEE-Route", r)]).unwrap_or_default();
     let q = urlencoding(model);
     // A stream's receipt is ready a few seconds after it ends.
@@ -94,27 +93,16 @@ async fn run(model: &str, receipt: &str, route: Option<String>, raw: Vec<u8>, se
         }
     }
     let Some(receipt_json) = receipt_json else { return fail("The receipt didn't come back in time.") };
-    // An encrypted reply is checked against the attestation it was encrypted to.
-    if let Some(s) = sealed {
-        let evidence = obscurify_tee_verify::Evidence { body: raw, receipt_json, attestation_json: s.attestation, nonce: s.nonce, request: Some(s.plain.into_bytes()) };
-        let options = obscurify_tee_verify::Options { pccs_url: format!("{}/tee/pccs", api::BASE), ..Default::default() };
-        let report = obscurify_tee_verify::verify(&evidence, &options).await;
-        return Step { receipt: receipt.to_string(), report: serde_json::to_value(&report).ok(), error: String::new(), encrypted };
-    }
-    let nonce = obscurify_tee_verify::new_nonce();
-    let mut attestation_json = None;
-    for _ in 0..3 {
-        match api::web_get(&format!("/web/tee/attestation?model={q}&nonce={nonce}"), &headers, 100).await {
-            Ok((200, text)) => { attestation_json = Some(text); break }
-            Ok((502..=504, _)) | Err(_) => crate::sleep(3000).await,
-            Ok((status, text)) => return fail(&format!("The attestation couldn't be fetched (error {status}). {}", short(&text))),
-        }
-    }
-    let Some(attestation_json) = attestation_json else { return fail("The attestation didn't come back in time.") };
-    let evidence = obscurify_tee_verify::Evidence { body: raw, receipt_json, attestation_json, nonce, request: None };
+    let evidence = obscurify_tee_verify::Evidence {
+        body: raw,
+        receipt_json,
+        attestation_json: sealed.attestation,
+        nonce: sealed.nonce,
+        request: Some(sealed.plain.into_bytes()),
+    };
     let options = obscurify_tee_verify::Options { pccs_url: format!("{}/tee/pccs", api::BASE), ..Default::default() };
     let report = obscurify_tee_verify::verify(&evidence, &options).await;
-    Step { receipt: receipt.to_string(), report: serde_json::to_value(&report).ok(), error: String::new(), encrypted }
+    Step { receipt: receipt.to_string(), report: serde_json::to_value(&report).ok(), error: String::new(), encrypted: true }
 }
 
 fn short(text: &str) -> String {
@@ -182,15 +170,16 @@ pub fn Chip(steps: Vec<Step>) -> Element {
     let steps: Vec<Step> = steps.iter().map(current).collect();
     let mut open = use_signal(|| false);
     let st = state(&steps);
-    // An encrypted answer says what it is; an old Verify-mode answer (never encrypted) keeps
-    // saying Verified or Not verified.
+    // An encrypted answer says what it is. A check saved before Encrypted mode, of an answer that
+    // was never encrypted, still shows as it was saved: Verified or Not verified. Nothing new is
+    // ever checked that way.
     let encrypted = steps.iter().any(|s| s.encrypted);
     let (class, text) = match (st, encrypted) {
-        (State::Verifying, true) => ("tee-chip wait", "Checking…"),
-        (State::Verified, true) => ("tee-chip ok", "Encrypted"),
+        (State::Checking, true) => ("tee-chip wait", "Checking…"),
+        (State::Passed, true) => ("tee-chip ok", "Encrypted"),
         (State::Failed, true) => ("tee-chip bad", "Check failed"),
-        (State::Verifying, false) => ("tee-chip wait", "Verifying…"),
-        (State::Verified, false) => ("tee-chip ok", "Verified"),
+        (State::Checking, false) => ("tee-chip wait", "Checking…"),
+        (State::Passed, false) => ("tee-chip ok", "Verified"),
         (State::Failed, false) => ("tee-chip bad", "Not verified"),
     };
     let reports: Vec<Value> = steps.iter().map(|s| s.report.clone().unwrap_or_else(|| json!({"receipt_id": s.receipt, "error": s.error}))).collect();
@@ -208,7 +197,7 @@ pub fn Chip(steps: Vec<Step>) -> Element {
                         rect { x: "5", y: "11", width: "14", height: "10", rx: "2" } path { d: "M8 11V7a4 4 0 0 1 8 0v4" }
                     } else {
                         path { d: "M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z" }
-                        if st == State::Verified { path { d: "M8.5 12l2.5 2.5 4.5-5" } }
+                        if st == State::Passed { path { d: "M8.5 12l2.5 2.5 4.5-5" } }
                     }
                 }
                 "{text}"

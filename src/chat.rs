@@ -52,7 +52,8 @@ pub struct Msg {
     /// Earlier work was summarized while this answer ran.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub compacted: bool,
-    /// Encrypted (and the old Verify) mode: each model request's receipt and what its check found (tee.rs).
+    /// Encrypted mode: each model request's receipt and what its check found (tee.rs). Chats saved
+    /// before Encrypted mode may hold checks of unencrypted answers (`encrypted` false).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tee: Vec<crate::tee::Step>,
 }
@@ -413,8 +414,6 @@ pub(crate) struct Step {
     /// Tokens this step used (prompt + completion), if the server said.
     pub tokens: Option<u64>,
     pub cost: f64,
-    /// Encrypted mode: the receipt, the route that answered, and the reply's bytes to check.
-    pub tee: Option<(String, Option<String>, Vec<u8>)>,
 }
 
 /// Streams one completion into `msg` (content and reasoning), calling `show` as it grows. Returns
@@ -482,15 +481,14 @@ pub(crate) async fn stream_noting(body: &Value, msg: &mut Msg, stop: &impl Fn() 
     if !finished {
         calls.clear();
     }
-    let tee = if finished && !stop() { resp.receipt.take().map(|r| (r, resp.route.take(), std::mem::take(&mut resp.raw))) } else { None };
-    Ok(Step { tool_calls: calls, details, cut: !finished, tokens, cost, tee })
+    Ok(Step { tool_calls: calls, details, cut: !finished, tokens, cost })
 }
 
 /// Reasoning text in a delta: `reasoning`, or `reasoning_content` as TEE gateways send it.
 pub(crate) fn reasoning(d: &Value) -> Option<&str> { d["reasoning"].as_str().or(d["reasoning_content"].as_str()) }
 
-/// A finished TEE reply to check: its receipt, route, bytes, and (encrypted) what checking needs.
-type Checked = (String, Option<String>, Vec<u8>, Option<api::Sealed>);
+/// A finished encrypted reply to check: its receipt, route, bytes, and what checking needs.
+type Checked = (String, Option<String>, Vec<u8>, api::Sealed);
 
 /// Asks for the next answer and streams it into `live`, then appends it to the chat.
 fn run(app: App) { run_with(app, None) }
@@ -629,9 +627,10 @@ fn run_with(mut app: App, follow: Option<String>) {
                         msg.error = true;
                         msg.content = "No answer came back. Try again or pick another model.".into();
                     }
-                    if ended && !msg.error && !*app.stop.peek() && let Some(r) = resp.receipt.take() {
-                        msg.tee.push(crate::tee::Step { receipt: r.clone(), ..Default::default() });
-                        checked = Some((r, resp.route.take(), std::mem::take(&mut resp.raw), resp.sealed.take()));
+                    // An encrypted answer is checked against the attestation it was sent to.
+                    if ended && !msg.error && !*app.stop.peek() && let Some(sealed) = resp.sealed.take() && let Some(r) = resp.receipt.take() {
+                        msg.tee.push(crate::tee::Step { receipt: r.clone(), encrypted: true, ..Default::default() });
+                        checked = Some((r, resp.route.take(), std::mem::take(&mut resp.raw), sealed));
                     }
                 }
             }

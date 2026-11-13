@@ -827,10 +827,6 @@ pub fn turn(app: App, from: Option<Msg>) { turn_following(app, from, None) }
 /// the app was closed.
 pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
     let model = app.settings.peek().model.clone();
-    // Code Mode never runs in an encrypted chat (`capable`), so its replies are never sealed; the
-    // old Verify mode's receipt checks went with it.
-    let verify = false;
-    let chat_id = app.conv.peek().id.clone();
     let cfg = app.code.peek().clone();
     let setup = Setup::new(&app, &cfg);
     // With Tools off, code can't reach them either.
@@ -907,9 +903,6 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
             if step == MAX_STEPS - 1 {
                 body["tool_choice"] = json!("none");
             }
-            if verify {
-                body["tee_verify"] = json!(true);
-            }
             let calls = loop {
                 msg.reasoning.clear();
                 msg.content.clear();
@@ -933,11 +926,6 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
                 if let Ok(s) = &out {
                     t.spent += s.cost;
                     msg.spent = t.spent;
-                }
-                // Every step that came through whole is checked, as it comes.
-                if let Ok(chat::Step { tee: Some((receipt, route, raw)), .. }) = &out {
-                    msg.tee.push(crate::tee::Step { receipt: receipt.clone(), ..Default::default() });
-                    crate::tee::check(app, chat_id.clone(), model.clone(), receipt.clone(), route.clone(), raw.clone(), None);
                 }
                 if let Some(e) = problem {
                     // Too long for the model: compact, once, and ask again.
@@ -1081,8 +1069,6 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
             msg.content = "No answer came back. Try again or pick another model.".into();
         }
         msg.trace = trace;
-        // Checks that finished while it ran.
-        crate::tee::fill(&mut msg.tee);
         if !msg.content.is_empty() || !msg.runs.is_empty() || !msg.interrupted.is_empty() {
             app.conv.write().messages.push(msg);
         }

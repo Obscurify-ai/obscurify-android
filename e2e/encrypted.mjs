@@ -62,7 +62,9 @@ await page.locator('.bar .icon').first().click();
 ok((await page.locator('#encrypted').getAttribute('aria-pressed')) === 'true', 'Encrypted is pressed');
 await page.locator('.veil').click({ position: { x: 380, y: 400 } }).catch(() => {});
 await sleep(300);
-const e2ee = (await (await fetch('http://127.0.0.1:8093/v1/models')).json()).data.filter((m) => m.e2ee).map((m) => m.name);
+const catalogue = (await (await fetch('http://127.0.0.1:8093/v1/models')).json()).data;
+const e2ee = catalogue.filter((m) => m.e2ee).map((m) => m.name);
+ok(catalogue.filter((m) => m.id.startsWith('tee/')).every((m) => m.e2ee), 'every tee/ model takes encrypted requests');
 await page.locator('.title.model').click();
 await page.locator('.chip', { hasText: /^All$/ }).click();
 const names = await page.locator('.pick .grow > div:first-child').allTextContents();
@@ -128,8 +130,11 @@ await page.waitForSelector('.tee-chip', { timeout: 20000 });
 const kept = await page.locator('.tee-chip').evaluateAll((cs) => cs.map((c) => c.className + ' ' + c.textContent.trim()));
 ok(kept.length === 4 && kept.filter((c) => c.endsWith(' ok Encrypted')).length === 3 && kept.filter((c) => c.endsWith(' bad Check failed')).length === 1, 'the results are kept after a restart: ' + kept.join(' | '));
 ok((await leaks()).length === 0, 'the marker never left the phone at all');
+const verifyAsks = JSON.parse(await ctl('__grep?q=tee_verify'));
+ok(verifyAsks.length === 0, 'no request ever asked for tee_verify: ' + JSON.stringify(verifyAsks));
 
-// 7b. An answer from the old Verify mode (checked, never encrypted) is never called Encrypted.
+// 7b. A check saved before Encrypted mode (an answer that was never encrypted) is never called
+// Encrypted: it still shows as it was saved.
 // Needs `adb root`: the chat's file loses its first answer's encrypted flag.
 const dir = `/data/user/0/${PKG}/files`;
 const file = execFileSync('adb', ['shell', `grep -l '"encrypted":true' ${dir}/chat-*.json`], { encoding: 'utf8' }).trim().split(/\s+/)[0];

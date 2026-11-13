@@ -1,0 +1,1 @@
+Encrypted is now the only TEE mode: the old Verify mode (checked but not encrypted) is gone from the app. Every TEE model takes encrypted chats, and the list is longer. Chats saved from Verify mode still show their old Verified chips.
