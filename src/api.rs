@@ -129,7 +129,16 @@ pub fn msg(e: String) -> String { status_of(&e).1.to_string() }
 /// Signs in with the 16-digit account number (spaces and dashes are fine). Only the session it
 /// starts is kept.
 pub async fn login(number: &str) -> Result<(), String> {
-    let (_, v, session) = send(false, "POST", "/login", Some(&json!({"account_number": number})), 20).await.map_err(msg)?;
+    // Only a key derived from the number is sent (private.rs); an account from before that is moved
+    // over by sending the number once.
+    let by_key = match crate::private::keys(number).await {
+        Ok(key) => send(false, "POST", "/login", Some(&json!({"account_key": key})), 20).await.ok().filter(|(_, v, _)| v["success"] != false),
+        Err(_) => None,
+    };
+    let (_, v, session) = match by_key {
+        Some(r) => r,
+        None => send(false, "POST", "/login", Some(&json!({"account_number": number})), 20).await.map_err(msg)?,
+    };
     if v["success"] == false {
         return Err(v["message"].as_str().unwrap_or("Sign-in failed").to_string());
     }
@@ -141,12 +150,17 @@ pub async fn login(number: &str) -> Result<(), String> {
 /// Makes a new account (the caller has had the Terms accepted), signed in. Returns its number and
 /// any starter credit it got.
 pub async fn create_account(referral: &str) -> Result<(String, Option<f64>), String> {
-    let mut body = json!({"accept_tos": true});
+    // The number is made here and only a key derived from it is sent: the server never learns it.
+    let number = crate::private::new_number();
+    let key = crate::private::keys(&number).await?;
+    let mut body = json!({"accept_tos": true, "account_key": key});
     if !referral.trim().is_empty() {
         body["referral_code"] = json!(referral.trim());
     }
     let (_, v, session) = send(false, "POST", "/create_account", Some(&body), 20).await.map_err(msg)?;
-    let n = v["account_number"].as_str().ok_or("Could not create an account. Try again.")?.to_string();
+    let n = v["account_number"].as_str().map(str::to_string).unwrap_or_else(|| {
+        number.as_bytes().chunks(4).map(|c| String::from_utf8_lossy(c).into_owned()).collect::<Vec<_>>().join(" ")
+    });
     set_session(Some(session.ok_or("Sign-up didn't start a session")?));
     EXPIRED.store(false, Ordering::SeqCst);
     let credit = v["starter_credit"].as_f64().or_else(|| v["starter_credit"].as_str().and_then(|s| s.parse().ok()));
@@ -513,7 +527,12 @@ const STALL: Duration = Duration::from_secs(45);
 const LOST_FOR: Duration = Duration::from_secs(15 * 60);
 
 async fn follow_from(id: &str, after: usize) -> Result<reqwest::Response, String> {
-    let r = with_session(client().get(format!("{BASE}/web/replies/{id}?after={after}")))
+    let req = client().get(format!("{BASE}/web/replies/{id}?after={after}"));
+    let req = match crate::private::secret(Some(id)).await {
+        Some(secret) => req.bearer_auth(secret),
+        None => with_session(req),
+    };
+    let r = req
         .send()
         .await
         .map_err(|_| offline())?;
@@ -582,6 +601,9 @@ async fn post_chat(body: &Value) -> Result<reqwest::Response, String> {
         let text = r.text().await.unwrap_or_default();
         return Err(chat_error(status, &text));
     }
+    if let Some(r) = post_private(body).await {
+        return r;
+    }
     let mut tries = 0;
     loop {
         let token = csrf().await?;
@@ -610,9 +632,53 @@ async fn post_chat(body: &Value) -> Result<reqwest::Response, String> {
     }
 }
 
+/// A chat request on this chat's private session (private.rs): its secret, no cookie, no CSRF.
+/// Tops the session up when it runs out. `None`: private sessions are off; use the cookie.
+async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>> {
+    for attempt in 0..4 {
+        let secret = crate::private::secret(None).await?;
+        let r = match client().post(format!("{BASE}/web/chat/completions")).bearer_auth(&secret).json(body).send().await {
+            Ok(r) => r,
+            Err(_) => return Some(Err(error_text(0, &Value::Null, ""))),
+        };
+        let status = r.status().as_u16();
+        if (200..300).contains(&status) {
+            if let Some(id) = header(&r, "x-obscurify-reply") {
+                crate::private::note_reply(&id, &secret).await;
+            }
+            return Some(Ok(r));
+        }
+        match status {
+            402 => crate::private::ran_out(&secret, attempt).await,
+            401 => crate::private::expired(&secret).await,
+            _ => return Some(Err(chat_error(status, &r.text().await.unwrap_or_default()))),
+        }
+    }
+    Some(Err(error_text(402, &Value::Null, "")))
+}
+
 /// A signed-in POST to a web endpoint (`/web/...`), which wants the CSRF token as well as the
 /// session (Code Mode's tools).
 pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, String> {
+    // On a private session: the reply's own session for /web/replies/<id>, else this chat's.
+    let reply = path.strip_prefix("/web/replies/").and_then(|r| r.split('/').next());
+    let private = match reply {
+        Some(id) => crate::private::secret(Some(id)).await,
+        None => crate::private::secret(None).await,
+    };
+    if let Some(secret) = private {
+        let r = client().post(format!("{BASE}{path}")).timeout(Duration::from_secs(timeout)).bearer_auth(&secret).json(body).send().await.map_err(|_| offline())?;
+        let status = r.status().as_u16();
+        let text = r.text().await.map_err(|_| offline())?;
+        let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        if (200..300).contains(&status) {
+            return Ok(v);
+        }
+        if status == 402 && reply.is_none() {
+            crate::private::ran_out(&secret, 0).await;
+        }
+        return Err(format!("{status}\u{1}{}", error_text(status, &v, &text)));
+    }
     for attempt in 0..2 {
         let token = csrf().await.map_err(|e| if e == OFFLINE { offline() } else { e })?;
         let r = with_session(client().post(format!("{BASE}{path}")))

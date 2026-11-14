@@ -77,6 +77,7 @@ APK: Obtainium then asks which one to install.
 | `src/compact.rs` | Compaction: earlier messages summarized in chunks so a chat goes on past the model's context |
 | `src/api.rs` | HTTP. Signed-in calls (top-ups too) carry the session; blind voucher calls carry nothing |
 | `src/wallet.rs` | Top-ups (`/top_ups`), and blind voucher orders: blind, sign, unblind, redeem |
+| `src/private.rs` | Private sessions (default once signed in): chat requests carry a session secret and no cookie, paid from a blind-voucher wallet derived from the account number (the open-source [unlinkable](https://github.com/Obscurify-ai/unlinkable) crate); a wiped phone gets it back at sign-in. Sign-up makes the number on the phone and sends only a key derived from it |
 | `src/store.rs` | JSON files in the app's private storage |
 | `MainActivity.kt` | The only Kotlin: Back asks the page first; opening links and wallet URIs; copy; Code Mode's sandbox WebView and full-screen pages |
 | `assets/style.css` | OLED black, green trim |
@@ -103,6 +104,7 @@ ACCOUNT=… node files.mjs             # files: PDF, CSV, Excel, Word, PowerPoin
 node categories.mjs                  # specialist categories (Writing, Security, Translation…) from the server's model tags
 node flaky-proxy.mjs & ACCOUNT=… node background.mjs  # background answers: a dropped connection, a killed app (plain and Code Mode), Stop
 node flaky-proxy.mjs & adb root; ACCOUNT=… node encrypted.mjs   # Encrypted (no request ever asks for tee_verify): e2ee models only, a marker word never leaves the phone, Encrypted chip after eight checks, history recalled, a swapped key sends nothing, a changed byte fails, a killed app reads the rest, kept after a restart
+adb root; DB=… node private.mjs      # private sessions: number made on the phone, only a key sent; chat with a session secret and no cookie, not charged to the account; wiped app signs in and gets every millicent back (test APK with OBSCURIFY_API=http://127.0.0.1:8231: the test records what leaves the phone)
 ```
 
 ## License

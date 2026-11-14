@@ -528,6 +528,7 @@ fn run_with(mut app: App, follow: Option<String>) {
         let mut msg;
         let mut follow = follow;
         let chat_id = app.conv.peek().id.clone();
+        crate::private::set_chat(&chat_id);
         let mut checked: Option<Checked> = None;
         loop {
             let force = resent;

@@ -30,6 +30,8 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 # Checks TEE replies on the phone (Verify). Path until the repo is published.
 obscurify-tee-verify = { git = "https://github.com/Obscurify-ai/tee-verify", rev = "e2a87ede406dbc78e24d069d6c66cbd804c00f55" }
 bytes = "1"
+# Private sessions: blind-voucher wallet derived from the account number. Path until published.
+unlinkable-core = { path = "../unlinkable/core" }
 
 [profile.release]
 opt-level = "s"

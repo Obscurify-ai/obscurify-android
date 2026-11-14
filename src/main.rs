@@ -7,6 +7,7 @@ mod api;
 mod chat;
 mod code;
 mod compact;
+mod private;
 mod files;
 mod store;
 mod tee;
@@ -222,6 +223,7 @@ impl App {
     }
     fn sign_out(mut self) {
         bg(async move { let _ = api::call("POST", "/logout", Some(json!({}))).await; api::forget(); });
+        private::forget();
         for m in self.convs.peek().iter() {
             store::remove(&format!("chat-{}.json", m.id));
         }
@@ -318,6 +320,13 @@ fn read_doc(app: App, name: String, b64: String) {
 #[component]
 fn Root() -> Element {
     store::remove("account.json"); // 0.2.0 kept the number; the app only keeps the session now
+    // Private sessions: close idle ones and keep the wallet topped up while the app runs.
+    use_hook(|| bg(async {
+        loop {
+            private::tick().await;
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    }));
     let app = use_context_provider(|| {
         let convs: Vec<Meta> = store::load("chats.json");
         let settings: Settings = store::load("settings.json");
