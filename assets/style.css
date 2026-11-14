@@ -163,6 +163,7 @@ h2.group { font-size: 13px; font-weight: 500; text-transform: uppercase; letter-
 .empty { flex-direction: column; text-align: center; padding: 0 24px; }
 .interrupted { color: #fbbf24; font-size: 14px; }
 .meta .continue { padding: 6px 14px; }
+.refusal-suggestion { display: flex; justify-content: flex-end; margin-top: 6px; }
 .waiting { padding: 6px 12px; font-size: 13px; text-align: center; color: #fbbf24; border-top: 1px solid var(--l); }
 /* A file the code or a paid tool produced: real player, and a way to keep it before the link expires. */
 .run-media { display: flex; flex-direction: column; gap: 6px; margin: 10px 12px; }

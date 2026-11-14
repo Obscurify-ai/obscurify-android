@@ -103,6 +103,7 @@ ACCOUNT=… node files.mjs             # files: PDF, CSV, Excel, Word, PowerPoin
 node categories.mjs                  # specialist categories (Writing, Security, Translation…) from the server's model tags
 node flaky-proxy.mjs & ACCOUNT=… node background.mjs  # background answers: a dropped connection, a killed app (plain and Code Mode), Stop
 node flaky-proxy.mjs & adb root; ACCOUNT=… node encrypted.mjs   # Encrypted (no request ever asks for tee_verify): e2ee models only, a marker word never leaves the phone, Encrypted chip after eight checks, history recalled, a swapped key sends nothing, a changed byte fails, a killed app reads the rest, kept after a restart
+TARGET=<dev server> node flaky-proxy.mjs & ACCOUNT=<Pro> node refusal.mjs  # Claude refusals (server's fake upstream): "declined" in italics, no button the first time, then "Ask <model> instead" bottom right that switches and asks again, plain and Code Mode; "Uncensored models need Pro" opens Account; the suggestion isn't kept
 ```
 
 ## License

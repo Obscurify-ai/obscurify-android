@@ -16,7 +16,8 @@
 //     {code, usage: {prompt_tokens, completion_tokens, cost}} a run_code call; {text, usage} an answer;
 //     {error: "..."} a failure; {status: 502} a proxy's error page. No model is called, so these cost nothing.
 //     Any of them may carry {reasoning: "..."} (streamed first); {tools: [{name, args}]} makes direct
-//     tool calls instead, after `text` if there is one.
+//     tool calls instead, after `text` if there is one. {refusal: true, suggest: {model, name, locked}} is a
+//     Claude-style refusal (finish_reason content_filter, no text), then the server's suggest_model chunk.
 //   POST /__toolscript [{status, body}, ...]          canned answers for the next tool requests, in order
 import http from 'node:http';
 import https from 'node:https';
@@ -36,6 +37,12 @@ function scripted(res, r) {
   res.writeHead(200, { 'content-type': 'text/event-stream' });
   const send = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
   if (r.error) { send({ error: { message: r.error } }); return res.end(); }
+  if (r.refusal) {
+    send({ choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: 'content_filter' }] });
+    if (r.suggest) send({ choices: [{ index: 0, delta: { suggest_model: r.suggest } }] });
+    res.write('data: [DONE]\n\n');
+    return res.end();
+  }
   if (r.reasoning) send({ choices: [{ delta: { reasoning: r.reasoning } }] });
   const calls = r.tools || (r.code ? [{ name: 'run_code', args: { language: 'python', code: r.code } }] : null);
   if (r.text && (calls || r.tools)) send({ choices: [{ delta: { content: r.text } }] });

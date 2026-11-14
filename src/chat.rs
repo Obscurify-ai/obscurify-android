@@ -56,6 +56,32 @@ pub struct Msg {
     /// before Encrypted mode may hold checks of unencrypted answers (`encrypted` false).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tee: Vec<crate::tee::Step>,
+    /// After a refusal, a model the server offers to ask instead. Never saved: it shows only under
+    /// the reply it came with.
+    #[serde(skip)]
+    pub suggest: Option<Suggest>,
+}
+
+/// The server's `suggest_model` chunk: from a user's second refusal of the day, an uncensored model
+/// to ask instead. `locked`: the plan doesn't include it (it needs Pro).
+#[derive(Deserialize, Clone, Default, PartialEq)]
+pub struct Suggest {
+    pub model: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub locked: bool,
+}
+
+/// What a reply that was refused with no text says, as on the web.
+pub(crate) const DECLINED: &str = "*The model declined to answer this.*";
+
+/// The model's own filter stopped it.
+fn refusal(v: &Value) -> bool { matches!(v["choices"][0]["finish_reason"].as_str(), Some("content_filter" | "refusal")) }
+
+/// A `suggest_model` in this chunk.
+fn suggestion(v: &Value) -> Option<Suggest> {
+    serde_json::from_value(v["choices"][0]["delta"]["suggest_model"].clone()).ok().filter(|s: &Suggest| !s.model.is_empty())
 }
 
 /// The answer being written when the app last ran, so a reopened app finishes it: the server
@@ -414,6 +440,8 @@ pub(crate) struct Step {
     /// Tokens this step used (prompt + completion), if the server said.
     pub tokens: Option<u64>,
     pub cost: f64,
+    /// The model refused (finish_reason content_filter or refusal).
+    pub refused: bool,
 }
 
 /// Streams one completion into `msg` (content and reasoning), calling `show` as it grows. Returns
@@ -437,6 +465,8 @@ pub(crate) async fn stream_noting(body: &Value, msg: &mut Msg, stop: &impl Fn() 
     let mut finished = false;
     let mut tokens = None;
     let mut cost = 0.0;
+    let mut refused = false;
+    let mut suggest = None;
     'read: while let Some(chunk) = resp.next(stop).await {
         if stop() { finished = true; break }
         let chunk = match chunk { Ok(c) => c, Err(e) => { if !got_any { return Err(e) } break } };
@@ -449,6 +479,8 @@ pub(crate) async fn stream_noting(body: &Value, msg: &mut Msg, stop: &impl Fn() 
             if data == "[DONE]" { finished = true; break 'read }
             let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
             if v["choices"][0]["finish_reason"].is_string() { finished = true }
+            refused |= refusal(&v);
+            if let Some(s) = suggestion(&v) { suggest = Some(s) }
             if v["usage"].is_object() {
                 tokens = Some(v["usage"]["prompt_tokens"].as_u64().unwrap_or(0) + v["usage"]["completion_tokens"].as_u64().unwrap_or(0));
                 cost = v["usage"]["cost"].as_f64().unwrap_or(0.0);
@@ -481,7 +513,8 @@ pub(crate) async fn stream_noting(body: &Value, msg: &mut Msg, stop: &impl Fn() 
     if !finished {
         calls.clear();
     }
-    Ok(Step { tool_calls: calls, details, cut: !finished, tokens, cost })
+    msg.suggest = if refused { suggest } else { None };
+    Ok(Step { tool_calls: calls, details, cut: !finished, tokens, cost, refused })
 }
 
 /// Reasoning text in a delta: `reasoning`, or `reasoning_content` as TEE gateways send it.
@@ -586,6 +619,7 @@ fn run_with(mut app: App, follow: Option<String>) {
                     let mut buf: Vec<u8> = vec![];
                     let mut drawn = store::now();
                     let mut ended = false;
+                    let mut refused = false;
                     'read: while let Some(chunk) = resp.next(&stop).await {
                         if *app.stop.peek() { break }
                         let chunk = match chunk { Ok(c) => c, Err(e) => { if msg.content.is_empty() { msg.error = true; msg.content = e } break } };
@@ -597,6 +631,8 @@ fn run_with(mut app: App, follow: Option<String>) {
                             let data = data.trim();
                             if data == "[DONE]" { ended = true; break 'read }
                             let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
+                            refused |= refusal(&v);
+                            if let Some(s) = suggestion(&v) { msg.suggest = Some(s) }
                             if !v["error"].is_null() {
                                 let e = v["error"]["message"].as_str().or(v["error"].as_str()).unwrap_or("The model returned an error");
                                 // Refused as too long: compact and send again, once.
@@ -623,6 +659,9 @@ fn run_with(mut app: App, follow: Option<String>) {
                             app.live.set(Some(msg.clone()));
                         }
                     }
+                    // The model's own filter stopped it before it said anything: say so, not a blank reply.
+                    if refused && !msg.error && msg.content.trim().is_empty() { msg.content = DECLINED.into() }
+                    if !refused || msg.error { msg.suggest = None }
                     if !overflow && msg.content.is_empty() && msg.reasoning.is_empty() && !*app.stop.peek() {
                         msg.error = true;
                         msg.content = "No answer came back. Try again or pick another model.".into();
@@ -668,6 +707,23 @@ fn send(mut app: App, text: String) {
         }
         c.messages.push(Msg { role: "user".into(), content: text.trim().to_string(), images, files, ..Default::default() });
     }
+    save(app);
+    run(app);
+}
+
+/// The suggestion under reply `i` taken: its model is chosen and asked the newest question again,
+/// as a new message.
+fn ask_instead(mut app: App, i: usize, model: &str) {
+    if app.live.peek().is_some() { return }
+    let text = {
+        let mut c = app.conv.write();
+        if let Some(m) = c.messages.get_mut(i) { m.suggest = None }
+        c.messages.iter().rev().find(|m| m.role == "user").map(|m| m.content.clone()).unwrap_or_default()
+    };
+    app.settings.write().model = model.to_string();
+    app.save_settings();
+    if text.trim().is_empty() { return }
+    app.conv.write().messages.push(Msg { role: "user".into(), content: text, ..Default::default() });
     save(app);
     run(app);
 }
@@ -999,6 +1055,17 @@ fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Elemen
                         save(app);
                     }, "Edit" }
                     if !m.model.is_empty() { span { " · {app.model_name(&m.model)}" } }
+                }
+            }
+            // Refused again today: one button, to ask the suggested model or to see the plans.
+            if !live && let Some(s) = m.suggest.clone() {
+                div { class: "refusal-suggestion",
+                    if s.locked {
+                        button { class: "go", onclick: move |_| app.screen.set(Screen::Account), "Uncensored models need Pro" }
+                    } else {
+                        button { class: "go", onclick: { let id = s.model.clone(); move |_| ask_instead(app, i, &id) },
+                            {format!("Ask {} instead", if s.name.is_empty() { &s.model } else { &s.name })} }
+                    }
                 }
             }
         }
