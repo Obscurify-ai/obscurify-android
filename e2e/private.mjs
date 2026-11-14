@@ -35,7 +35,8 @@ adb('reverse', 'tcp:8231', 'tcp:8231');
 const files = `/data/user/0/${PKG}/files`;
 const walletMillicents = () => {
   let w;
-  try { w = JSON.parse(execFileSync('adb', ['shell', 'cat', `${files}/unlinkable-wallet.json`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return -1; }
+  try { w = JSON.parse(execFileSync('adb', ['shell', 'cat', `${files}/unlinkable-state.json`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })).wallet; } catch { return -1; }
+  if (!w) return -1;
   return w.vouchers.reduce((s, h) => s + h.voucher.denomination_cents * (h.voucher.dust ? 1 : 1000), 0);
 };
 
