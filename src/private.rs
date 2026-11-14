@@ -13,8 +13,8 @@ use std::sync::{Mutex as StdMutex, OnceLock};
 use chaumian_sessions::manager::Manager;
 use chaumian_sessions::seed::{account_keys, Seed};
 
-const SEED_FILE: &str = "unlinkable-seed.json";
-const STATE_FILE: &str = "unlinkable-state.json";
+const SEED_FILE: &str = "chaumian-seed.json";
+const STATE_FILE: &str = "chaumian-state.json";
 
 fn state() -> &'static tokio::sync::Mutex<Option<Manager>> {
     static S: OnceLock<tokio::sync::Mutex<Option<Manager>>> = OnceLock::new();
