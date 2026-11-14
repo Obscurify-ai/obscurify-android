@@ -77,7 +77,7 @@ APK: Obtainium then asks which one to install.
 | `src/compact.rs` | Compaction: earlier messages summarized in chunks so a chat goes on past the model's context |
 | `src/api.rs` | HTTP. Signed-in calls (top-ups too) carry the session; blind voucher calls carry nothing |
 | `src/wallet.rs` | Top-ups (`/top_ups`), and blind voucher orders: blind, sign, unblind, redeem |
-| `src/private.rs` | Private sessions (default once signed in): chat requests carry a session secret and no cookie, paid from a blind-voucher wallet derived from the account number (the open-source [unlinkable](https://github.com/Obscurify-ai/unlinkable) crate); a wiped phone gets it back at sign-in. Sign-up makes the number on the phone and sends only a key derived from it |
+| `src/private.rs` | Private sessions (default once signed in): chat requests carry a session secret and no cookie, paid from a blind-voucher wallet derived from the account number (the open-source [chaumian-sessions](https://github.com/Obscurify-ai/chaumian-sessions) crate); a wiped phone gets it back at sign-in. Sign-up makes the number on the phone and sends only a key derived from it |
 | `src/store.rs` | JSON files in the app's private storage |
 | `MainActivity.kt` | The only Kotlin: Back asks the page first; opening links and wallet URIs; copy; Code Mode's sandbox WebView and full-screen pages |
 | `assets/style.css` | OLED black, green trim |

@@ -1,4 +1,4 @@
-// Private sessions (unlinkable), on by default: the account number is made on the phone and only a
+// Private sessions (Chaumian sessions), on by default: the account number is made on the phone and only a
 // key derived from it is sent; chat requests carry a session secret and no cookie and are paid by
 // a throwaway session, not the account; and after the app's data is wiped, signing in with the
 // number brings the wallet and the money left in the open session back to the millicent.
@@ -57,7 +57,7 @@ try {
   shot('private-signed-up');
 
   // Fund the account ($5, as a deposit: there is no payment on dev). It is found by its key hash.
-  const key = execFileSync(process.env.UNLINKABLE_BIN || `${process.env.HOME}/Work/unlinkable/target/release/unlinkable`, ['login-key'], { input: digits }).toString().trim();
+  const key = execFileSync(process.env.SESSIONS_BIN || `${process.env.HOME}/Work/chaumian-sessions/target/release/chaumian-sessions`, ['login-key'], { input: digits }).toString().trim();
   const secretFile = process.env.SECRET_FILE || `${process.env.HOME}/Work/obscurify-unlinkable/local/anon_keys/account_secret`;
   const hash = execFileSync('python3', ['-c', 'import hmac,hashlib,sys; print(hmac.new(bytes.fromhex(open(sys.argv[1]).read().strip()), b"obscurify-login-key-v1:"+sys.argv[2].encode(), hashlib.sha256).hexdigest())', secretFile, key]).toString().trim();
   const userId = sql(`SELECT id FROM users WHERE account_number_hash = '${hash}'`);
@@ -74,7 +74,7 @@ try {
   ok(/pineapple/i.test(answer), 'answered: ' + answer.slice(0, 40));
   shot('private-chat');
   const chat = seen.filter((r) => r.path === '/web/chat/completions').pop();
-  ok(chat && /^Bearer sk-unl1_/.test(chat.headers.authorization || ''), 'sent with a session secret');
+  ok(chat && /^Bearer sk-chs1_/.test(chat.headers.authorization || ''), 'sent with a session secret');
   ok(chat && !chat.headers.cookie, 'sent with no cookie');
   const usage = sql(`SELECT COUNT(*) FROM transactions WHERE user_id = '${userId}' AND transaction_type NOT IN ('deposit', 'voucher_withdrawal', 'starter_credit')`);
   ok(usage === '0', 'the account was not charged for the chat');

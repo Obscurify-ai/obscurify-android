@@ -1,8 +1,8 @@
-//! Private sessions (unlinkable), on by default once signed in on this phone. The chat's requests
+//! Private sessions (Chaumian sessions), on by default once signed in on this phone. The chat's requests
 //! (`/web/chat/completions`, tools, held replies) go out with a session secret paid from a wallet of
 //! blind vouchers kept here, and with no cookie, so the server can't tell which account a chat
 //! belongs to, or which chats go together. The work is done by the open-source crate
-//! `unlinkable-core` (`manager`): the phone keeps only a seed derived from the account number and
+//! `chaumian-sessions` (`manager`): the phone keeps only a seed derived from the account number and
 //! the manager's state, and a new or wiped phone gets the wallet back at the next sign-in.
 //!
 //! Encrypted mode, the account page and buying vouchers still use the signed-in session.
@@ -10,8 +10,8 @@
 use crate::{api, store};
 use serde_json::json;
 use std::sync::{Mutex as StdMutex, OnceLock};
-use unlinkable_core::manager::Manager;
-use unlinkable_core::seed::{account_keys, Seed};
+use chaumian_sessions::manager::Manager;
+use chaumian_sessions::seed::{account_keys, Seed};
 
 const SEED_FILE: &str = "unlinkable-seed.json";
 const STATE_FILE: &str = "unlinkable-state.json";
@@ -41,7 +41,7 @@ pub async fn keys(number: &str) -> Result<String, String> {
 }
 
 /// A new 16-digit account number, made on the phone (the server never learns it).
-pub fn new_number() -> String { unlinkable_core::seed::new_account_number() }
+pub fn new_number() -> String { chaumian_sessions::seed::new_account_number() }
 
 /// Signing out: the seed and wallet go (they come back from the number at the next sign-in).
 pub fn forget() {
