@@ -1,0 +1,1 @@
+If this phone signed in before private chats existed, the app asks for your account number once to turn them on (with a link to how it works).

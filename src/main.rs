@@ -108,7 +108,7 @@ fn js(code: &str) { document::eval(code); }
 fn bg(f: impl std::future::Future<Output = ()> + 'static) { dioxus::core::spawn_forever(f); }
 // Native, not a WebView timer: those stall when the app is in the background.
 async fn sleep(ms: u32) { tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await }
-fn open_url(url: &str) { js(&format!("window.android ? android.open({url:?}) : window.open({url:?})")) }
+pub(crate) fn open_url(url: &str) { js(&format!("window.android ? android.open({url:?}) : window.open({url:?})")) }
 fn usd(d: f64) -> String { if d.abs() < 0.01 && d != 0.0 { format!("${d:.4}") } else { format!("${d:.2}") } }
 fn cents(c: i64) -> String { format!("${}.{:02}", c / 100, c % 100) }
 

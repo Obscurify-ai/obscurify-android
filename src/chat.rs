@@ -949,6 +949,60 @@ pub fn ChatView() -> Element {
             Overlay::Models => rsx! { Models {} },
             Overlay::None => rsx! {},
         }
+        PrivateSetup {}
+    }
+}
+
+const PRIVATE_SETUP_LATER: &str = "private-setup-later.json";
+
+/// Signed in on this phone before private sessions existed, so it never got the wallet seed that comes
+/// from the account number: its chats are still tied to the account. The server says whether this
+/// sign-in is that old (`GET /private_setup`); only then the number is asked for, once ("Not now" is
+/// remembered). Entering it signs in with it (only a key derived from it is sent).
+#[component]
+fn PrivateSetup() -> Element {
+    let app = use_context::<App>();
+    let mut shown = use_signal(|| false);
+    use_hook(move || {
+        if api::has_session() && !crate::private::on() && !store::load::<bool>(PRIVATE_SETUP_LATER) {
+            bg(async move {
+                if let Ok(v) = api::get("/private_setup").await && v["ask"] == true { shown.set(true) }
+            });
+        }
+    });
+    let mut number = use_signal(String::new);
+    let mut error = use_signal(|| None::<String>);
+    let mut busy = use_signal(|| false);
+    if !shown() || !api::has_session() || crate::private::on() && !busy() {
+        return rsx! {};
+    }
+    let turn_on = move |_| {
+        let digits: String = number().chars().filter(char::is_ascii_digit).collect();
+        if digits.len() != 16 { error.set(Some("That is not 16 digits.".into())); return }
+        busy.set(true);
+        error.set(None);
+        bg(async move {
+            match api::login(&digits).await {
+                Ok(()) => { shown.set(false); app.say("Private chats are on".to_string()); app.refresh_balance() }
+                Err(_) => { crate::private::forget(); error.set(Some("That number did not sign in. Check it and try again.".into())) }
+            }
+            busy.set(false);
+        });
+    };
+    rsx! {
+        div { class: "veil" }
+        div { class: "sheet private-setup",
+            h2 { "Make your chats private here" }
+            p { class: "muted", "You signed in here before private chats existed. Enter your account number once on this phone, and after that we can't tell which chats are yours. "
+                a { onclick: move |_| crate::open_url(&format!("{}/blog/unlinkable_inference", api::BASE)), "How this works" }
+            }
+            input { class: "field", inputmode: "numeric", placeholder: "Account number", value: "{number}", oninput: move |e| number.set(e.value()) }
+            if let Some(e) = error() { p { class: "err", "{e}" } }
+            div { class: "row end",
+                button { class: "bare", onclick: move |_| { store::save(PRIVATE_SETUP_LATER, &true); shown.set(false) }, "Not now" }
+                button { class: "go", disabled: busy(), onclick: turn_on, if busy() { "Turning on…" } else { "Turn on" } }
+            }
+        }
     }
 }
 
