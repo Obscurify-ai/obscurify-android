@@ -1,0 +1,1 @@
+When a model refuses to answer, the chat now says so instead of showing a blank reply. If Claude refuses you a second time in a day, one button under the reply asks an uncensored model the same question (on Pro; otherwise it opens the plans).

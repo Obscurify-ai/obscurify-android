@@ -995,6 +995,8 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
                 }
                 if s.tool_calls.is_empty() {
                     msg.details = s.details;
+                    // The model's own filter stopped it before it said anything: say so, not a blank reply.
+                    if s.refused && msg.content.trim().is_empty() { msg.content = chat::DECLINED.into() }
                     break vec![];
                 }
                 let mut turn_msg = json!({"role": "assistant", "content": if msg.content.is_empty() { Value::Null } else { json!(msg.content) }, "tool_calls": s.tool_calls});
