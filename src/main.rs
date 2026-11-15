@@ -205,7 +205,9 @@ impl App {
         bg(async move {
             code::load(self).await;
             if let Ok(v) = api::get("/get_user_balance").await {
-                self.balance.set(v["balance"].as_f64())
+                // Plus what this phone holds for private chats: still the customer's money.
+                let held = private::spending().await["prepaid_millicents"].as_i64().unwrap_or(0) as f64 / 100_000.0;
+                self.balance.set(v["balance"].as_f64().map(|b| b + held))
             }
             if let Ok(v) = api::get("/account_tier").await {
                 let tier = v["tier"].as_str().unwrap_or("");
@@ -598,7 +600,7 @@ fn Account() -> Element {
     let mut tiers = use_signal(|| Value::Null);
     let mut referral = use_signal(|| Value::Null);
     let mut tx_rev = use_signal(|| 0u32);
-    // This device's private chats: what they cost, and the prepaid money left.
+    // What this phone's private chats cost (the server can't list them).
     let mut mine = use_signal(|| Value::Null);
     let mut refill = use_signal(|| Value::Null);
     let mut key = use_signal(|| None::<String>);
@@ -649,9 +651,6 @@ fn Account() -> Element {
                     }
                     if w.held_cents() > 0 {
                         p { class: "muted", "{cents(w.held_cents())} in blind vouchers is waiting to be added to your balance." }
-                    }
-                    if mine.read()["prepaid_millicents"].as_i64().unwrap_or(0) > 0 {
-                        p { class: "muted", id: "private-prepaid", "Prepaid for private chats: {usd(mine.read()[\"prepaid_millicents\"].as_i64().unwrap_or(0) as f64 / 100_000.0)}" }
                     }
                 }
                 div { class: "section",
@@ -897,7 +896,6 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
                         onclick: move |_| { view.set(v); offset.set(0); period.set(None); p_offset.set(0) }, "{name}" }
                 }
             }
-            if private_spent(&mine()).is_empty() { } else { p { class: "muted", "Private chats are listed on the device you chatted on." } }
             if let Some(p) = period() {
                 {
                     let mut parts = vec![];
@@ -986,8 +984,8 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
 }
 
 // ---- private chats in the history ----
-// The server can't list them (they're paid from prepaid money it can't tie to
-// the account); this device keeps what each one cost and adds them here.
+// The server can't list them (they're paid from money this phone holds for them,
+// which it can't tie to the account); this phone keeps what each one cost.
 
 fn private_spent(mine: &Value) -> Vec<(i64, f64)> {
     mine["spent"].as_array().map(|a| a.iter().map(|e| (e["at"].as_i64().unwrap_or(0), e["millicents"].as_i64().unwrap_or(0) as f64 / 100_000.0)).collect()).unwrap_or_default()
@@ -1006,7 +1004,6 @@ fn period_detail(p: &Value) -> Vec<String> {
     let reqs = p["requests"].as_i64().unwrap_or(0);
     if reqs > 0 { d.push(plural(reqs, "request")) }
     if num(&p["plan"]) != 0.0 { d.push(format!("plan {}", usd(num(&p["plan"])))) }
-    if num(&p["wallet"]) != 0.0 { d.push(format!("{} prepaid for private chats", usd(num(&p["wallet"])))) }
     d
 }
 

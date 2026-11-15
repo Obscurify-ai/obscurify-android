@@ -1,0 +1,2 @@
+Transactions show only money spent: deposits in, and plan fees, API usage and private chats out.
+Your balance includes the money this phone holds for private chats.

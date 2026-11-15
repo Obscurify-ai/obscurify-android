@@ -1,6 +1,6 @@
 // Transaction history on the Account screen, like the web's: spending per day, week and month,
 // tap a period for its charges, every charge under All, all paged on the server; money moved into
-// the private wallet shows as leaving the balance, labelled, and never as spending.
+// the private wallet isn't listed (it's still the customer's money).
 //   OBSCURIFY_API=http://127.0.0.1:8230 DEVTOOLS=1 ./build.sh x86_64 && adb install -r target/obscurify.apk
 //   adb reverse tcp:8230 tcp:8230; DB=obscurify_unlinkable node e2e/history.mjs
 // Writes ledger rows straight into the dev database; spends nothing.
@@ -39,7 +39,7 @@ ok(await hist.locator('.seg button.on').textContent() === 'Daily', 'opens on Dai
 const days = hist.locator('.row.tap');
 ok(await days.count() === 2, 'one row per active day: ' + await days.count());
 const today = await days.first().textContent();
-ok(/\$1\.00 prepaid for private chats/.test(today) && /plan \$5\.00/.test(today) && /\$5\.00/.test(today), 'today: plan fee spent, $1 to the wallet (not spent): ' + today);
+ok(!/prepaid|wallet/i.test(today) && /plan \$5\.00/.test(today) && /\$5\.00/.test(today), 'today: the plan fee spent, the move to the wallet not shown: ' + today);
 const older = await days.nth(1).textContent();
 ok(/60 requests/.test(older) && /\$0\.09/.test(older) && /\+\$10\.00/.test(older), 'two days ago: 60 requests, $0.09 spent, +$10 added: ' + older);
 ok(await hist.locator('.meter div').count() === 2, 'spend bars drawn');
@@ -49,9 +49,9 @@ shot('history-daily');
 await days.first().click();
 await hist.locator('.history-head').waitFor();
 const charges = await hist.textContent();
-ok(/Prepaid for private chats.*−\$1\.00/.test(charges), "Prepaid for private chats −$1.00");
+ok(!/prepaid|wallet/i.test(charges), 'no move to a wallet among the charges');
 ok(/Plan fee.*−\$5\.00/.test(charges), 'Plan fee −$5.00');
-ok(await hist.locator('.debit').count() === 2, 'debits in red');
+ok(await hist.locator('.debit').count() === 1, 'debits in red');
 shot('history-today');
 await hist.getByRole('button', { name: 'Back' }).click();
 
@@ -68,9 +68,9 @@ shot('history-page2');
 // 5. Weekly and Monthly group them; All lists every charge.
 await hist.getByRole('button', { name: 'Monthly' }).click();
 await page.waitForFunction(() => document.querySelectorAll('.history .row.tap').length >= 1 && /\d{4}/.test(document.querySelector('.history .row.tap').textContent));
-ok(/prepaid for private chats/.test(await days.first().textContent()), "Monthly shows the prepaid money");
+ok(!/prepaid|wallet/i.test(await days.first().textContent()), 'Monthly says nothing about wallets');
 await hist.getByRole('button', { name: 'All' }).click();
-const total = sql(`SELECT COUNT(*) FROM transactions WHERE user_id = '${userId}'`);
+const total = sql(`SELECT COUNT(*) FROM transactions WHERE user_id = '${userId}' AND transaction_type <> 'voucher_withdrawal'`);
 await page.waitForFunction((t) => new RegExp('1–50 of ' + t).test(document.querySelector('.history .pager')?.textContent || ''), total);
 ok(true, `All: every charge, paged (${total})`);
 shot('history-all');

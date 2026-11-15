@@ -149,14 +149,16 @@ try {
   ok(open > 0, 'their sessions are still open');
   const had = walletMillicents() + open;
 
-  // 2b. The Account screen on this phone: the chats show as spent straight away (their sessions
-  // still open), the money left as prepaid, and each chat as a charge.
-  const usd = (mc) => { const d = mc / 100000; return '$' + (d !== 0 && d < 0.01 ? d.toFixed(4) : d.toFixed(2)); };
+  // 2b. The Account screen on this phone: the balance includes the money held for private chats
+  // (still the customer's), each chat shows as spent straight away (its session still open) and is
+  // listed; the move into the wallet is not a charge.
+  const accountBalance = Number(sql(`SELECT balance FROM users WHERE id = '${userId}'`));
   await page.locator('.bar .icon').first().click();
   await page.getByText('Account', { exact: false }).last().click();
-  const prepaid = page.locator('#private-prepaid');
-  await prepaid.waitFor({ timeout: 30000 });
-  ok((await prepaid.textContent()) === 'Prepaid for private chats: ' + usd(had), `${await prepaid.textContent()} (expected ${usd(had)})`);
+  const expect = '$' + (accountBalance + had / 100000).toFixed(2);
+  let shown = '';
+  for (let i = 0; i < 30 && shown !== expect; i++) { await sleep(1000); shown = (await page.locator('.section .big').first().textContent()).trim(); }
+  ok(shown === expect, `the balance includes the money held for private chats: ${shown} (expected ${expect})`);
   const hist = page.locator('.history');
   await hist.scrollIntoViewIfNeeded();
   await hist.locator('.row.tap').first().waitFor({ timeout: 20000 });
@@ -167,11 +169,11 @@ try {
     const h = createHash('sha256').update(x.secret).digest('hex');
     return x.funded_millicents > +sql(`SELECT CEIL(u.balance * 100000)::BIGINT FROM unlinkable_sessions s JOIN users u ON u.id = s.user_id WHERE s.secret_hash = '${h}'`);
   }).length;
-  ok(costly >= 2 && new RegExp(costly + ' private chats').test(today) && /prepaid for private chats/.test(today), `today: ${costly} private chats that cost something, and the prepaid money: ` + today);
+  ok(costly >= 2 && new RegExp(costly + ' private chats').test(today) && !/prepaid|wallet/i.test(today), `today: ${costly} private chats that cost something, nothing about wallets: ` + today);
   await hist.locator('.row.tap').first().click();
   await hist.locator('.history-head').waitFor();
   ok(await hist.getByText('Private chat', { exact: true }).count() === costly, 'each listed as "Private chat"');
-  ok(/Private chat.*−\$/.test(await hist.textContent()), 'with what it cost, as a debit');
+  ok(/Private chat.*−\$/.test(await hist.textContent()) && !/prepaid|wallet/i.test(await hist.textContent()), 'with what it cost, as a debit; no move to a wallet');
   shot('private-history');
 
   // 3. Wipe the app (a new phone), sign in with the number.
