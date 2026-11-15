@@ -1,0 +1,3 @@
+Transactions look like the web's: spending per day, week or month (tap one for its charges), or every charge, paged.
+Money moved into your private wallet shows as "Moved to private wallet", not as spending.
+The API key section says how to make API requests unlinkable (the private-sessions proxy).

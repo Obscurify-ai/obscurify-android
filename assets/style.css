@@ -231,3 +231,15 @@ details.thinking > :not(summary) { margin: 8px 12px; }
 .tool-call .err { margin-top: 6px; }
 .run-img.out { margin: 10px 0; max-width: 100%; }
 .run-media.out { margin: 10px 0; }
+
+/* transaction history */
+.history .seg { margin-bottom: 8px; }
+.history .tap { cursor: pointer; }
+.history .amounts { text-align: right; font-size: 15px; }
+.history .debit { color: var(--e); font-size: 14px; }
+.history .meter { height: 3px; margin-top: 6px; background: var(--l); border-radius: 2px; overflow: hidden; }
+.history .meter div { height: 100%; background: var(--g); }
+.history-head { display: flex; padding: 10px 0; border-bottom: 1px solid var(--l); }
+.pager { display: flex; align-items: center; gap: 6px; padding-top: 10px; }
+.pager .grow { flex: 1; }
+.pager button { padding: 8px 12px; font-size: 14px; }

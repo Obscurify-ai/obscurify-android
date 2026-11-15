@@ -597,12 +597,11 @@ fn Account() -> Element {
     let mut tier = use_signal(|| Value::Null);
     let mut tiers = use_signal(|| Value::Null);
     let mut referral = use_signal(|| Value::Null);
-    let mut txs = use_signal(|| Value::Null);
+    let mut tx_rev = use_signal(|| 0u32);
     let mut refill = use_signal(|| Value::Null);
     let mut key = use_signal(|| None::<String>);
     let mut new_number = use_signal(|| None::<String>);
     let mut confirm = use_signal(|| None::<&'static str>);
-    let mut tx_shown = use_signal(|| 20usize);
     let mut plan_ask = use_signal(|| None::<String>);
     let mut deleting = use_signal(|| false);
 
@@ -612,7 +611,7 @@ fn Account() -> Element {
             if let Ok(v) = api::get("/account_tier").await { tier.set(v) }
             if let Ok(v) = api::public("GET", "/available_tiers", None).await { tiers.set(v) }
             if let Ok(v) = api::get("/referral_info").await { referral.set(v) }
-            if let Ok(v) = api::get("/transactions").await { txs.set(v) }
+            tx_rev += 1;
             if let Ok(v) = api::get("/auto_refill_status").await { refill.set(v) }
         });
     };
@@ -750,7 +749,10 @@ fn Account() -> Element {
                             match api::post("/tokens", json!({})).await { Ok(v) => key.set(v["token"].as_str().map(String::from)), Err(e) => app.say(e) }
                         }), "Show API key" }
                     }
-                    p { class: "muted", style: "margin-top: 8px", "Using the API needs the Pro plan." }
+                    p { class: "muted", style: "margin-top: 8px",
+                        "Requests with this key are tied to your account. To make API and agent requests unlinkable, like the chat, run the private-sessions proxy and point your tools at it. "
+                        a { onclick: move |_| open_url(&format!("{}/tutorials/private_sessions", api::BASE)), "Set it up" }
+                    }
                     if *confirm.read() == Some("key") {
                         div { class: "row",
                             button { class: "danger", onclick: move |_| { confirm.set(None); bg(async move {
@@ -784,29 +786,7 @@ fn Account() -> Element {
                         }
                     }
                 }
-                div { class: "section",
-                    h2 { "Transactions" }
-                    {
-                        let all = txs.read()["transactions"].as_array().cloned().unwrap_or_default();
-                        let n = *tx_shown.read();
-                        rsx! {
-                            if all.is_empty() { p { class: "muted", "None yet" } }
-                            for x in all.iter().take(n) {
-                                div { class: "row",
-                                    div { class: "grow",
-                                        div { {capitalize(&x["transaction_type"].as_str().unwrap_or("").replace('_', " "))} }
-                                        div { class: "muted", {x["created_at"].as_str().unwrap_or("").get(..16).unwrap_or("").replace('T', " ")} }
-                                    }
-                                    {
-                                        let a: f64 = x["amount"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                                        rsx! { span { class: if a > 0.0 { "ok" } else { "" }, "{usd(a)}" } }
-                                    }
-                                }
-                            }
-                            if all.len() > n { button { class: "bare", onclick: move |_| tx_shown.set(n + 20), "More" } }
-                        }
-                    }
-                }
+                History { rev: tx_rev }
                 div { class: "section",
                     if *confirm.read() == Some("out") {
                         p { class: "muted", "Chats on this phone are deleted. Make sure you have your account number." }
@@ -838,6 +818,148 @@ fn Account() -> Element {
                         }
                     } else {
                         button { class: "danger", onclick: move |_| confirm.set(Some("delete")), "Delete account…" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Transaction history, like the web account page: spending per day, week or month (tap one for its
+/// charges), or every charge. Paged on the server: heavy accounts have tens of thousands of charges.
+#[component]
+fn History(rev: ReadSignal<u32>) -> Element {
+    const PAGE: i64 = 50;
+    const PERIODS: i64 = 31;
+    let mut view = use_signal(|| "day");
+    let mut offset = use_signal(|| 0i64);
+    let mut period = use_signal(|| None::<Value>);
+    let mut p_offset = use_signal(|| 0i64);
+    let data = use_resource(move || {
+        let (v, off, per, poff, _) = (view(), offset(), period(), p_offset(), rev());
+        async move {
+            let q = |s: &str| s.replace('+', "%2B");
+            if per.is_some() || v == "all" {
+                let mut url = format!("/transactions?limit={PAGE}&offset={}", if per.is_some() { poff } else { off });
+                if let Some(p) = &per {
+                    url += &format!("&from={}&to={}", q(p["from"].as_str().unwrap_or("")), q(p["to"].as_str().unwrap_or("")));
+                }
+                api::get(&url).await
+            } else {
+                let tz = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into());
+                api::get(&format!("/transactions/summary?period={v}&tz={}&limit={PERIODS}&offset={off}", q(&tz))).await
+            }
+        }
+    });
+    let n = |v: &Value| -> f64 { v.as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0) };
+    let plural = |k: i64, w: &str| format!("{k} {w}{}", if k == 1 { "" } else { "s" });
+    let label = move |ymd: &str| -> String {
+        let Ok(d) = chrono::NaiveDate::parse_from_str(ymd, "%Y-%m-%d") else { return ymd.to_string() };
+        let this_year = d.format("%Y").to_string() == chrono::Local::now().format("%Y").to_string();
+        match view() {
+            "month" => d.format("%B %Y").to_string(),
+            "week" => format!("Week of {}", d.format(if this_year { "%b %-d" } else { "%b %-d, %Y" })),
+            _ => d.format(if this_year { "%a, %b %-d" } else { "%a, %b %-d, %Y" }).to_string(),
+        }
+    };
+    let when = move |at: &str| -> String {
+        let Ok(t) = chrono::DateTime::parse_from_rfc3339(at) else { return at.to_string() };
+        let t = t.with_timezone(&chrono::Local);
+        if period().is_some() && view() == "day" { return t.format("%-I:%M %p").to_string() }
+        let this_year = t.format("%Y").to_string() == chrono::Local::now().format("%Y").to_string();
+        t.format(if this_year { "%b %-d, %-I:%M %p" } else { "%b %-d %Y, %-I:%M %p" }).to_string()
+    };
+    let unit = match view() { "week" => "week", "month" => "month", _ => "day" };
+    let result = data.read().clone();
+    rsx! {
+        div { class: "section history",
+            h2 { "Transactions" }
+            div { class: "seg",
+                for (v, name) in [("day", "Daily"), ("week", "Weekly"), ("month", "Monthly"), ("all", "All")] {
+                    button { class: if view() == v { "on" } else { "" },
+                        onclick: move |_| { view.set(v); offset.set(0); period.set(None); p_offset.set(0) }, "{name}" }
+                }
+            }
+            if let Some(p) = period() {
+                {
+                    let mut parts = vec![];
+                    if n(&p["spent"]) != 0.0 { parts.push(format!("{} spent", usd(n(&p["spent"])))) }
+                    if p["requests"].as_i64().unwrap_or(0) > 0 { parts.push(plural(p["requests"].as_i64().unwrap_or(0), "request")) }
+                    if n(&p["added"]) != 0.0 { parts.push(format!("+{} added", usd(n(&p["added"])))) }
+                    if n(&p["wallet"]) != 0.0 { parts.push(format!("{} to private wallet", usd(n(&p["wallet"])))) }
+                    rsx! { div { class: "history-head",
+                        div { class: "grow", b { {label(p["date"].as_str().unwrap_or(""))} } div { class: "muted", {parts.join(" · ")} } }
+                    } }
+                }
+            }
+            match result {
+                None => rsx! { p { class: "muted", "Loading…" } },
+                Some(Err(e)) => rsx! { p { class: "err", "{e}" } },
+                Some(Ok(d)) if period().is_none() && view() != "all" => {
+                    let periods = d["periods"].as_array().cloned().unwrap_or_default();
+                    let has_more = d["has_more"].as_bool().unwrap_or(false);
+                    let max = periods.iter().map(|p| n(&p["spent"])).fold(0.0, f64::max);
+                    rsx! {
+                        if periods.is_empty() { p { class: "muted", if offset() > 0 { "No older activity" } else { "None yet" } } }
+                        for p in periods {
+                            {
+                                let (spent, added) = (n(&p["spent"]), n(&p["added"]));
+                                let mut detail = vec![];
+                                let reqs = p["requests"].as_i64().unwrap_or(0);
+                                if reqs > 0 { detail.push(plural(reqs, "request")) }
+                                if n(&p["plan"]) != 0.0 { detail.push(format!("plan {}", usd(n(&p["plan"])))) }
+                                if n(&p["wallet"]) != 0.0 { detail.push(format!("{} to private wallet", usd(n(&p["wallet"])))) }
+                                let width = if spent > 0.0 && max > 0.0 { (spent / max * 100.0).round().max(1.0) } else { 0.0 };
+                                let pick = p.clone();
+                                rsx! {
+                                    div { class: "row tap", onclick: move |_| { period.set(Some(pick.clone())); p_offset.set(0) },
+                                        div { class: "grow",
+                                            div { {label(p["date"].as_str().unwrap_or(""))} }
+                                            if !detail.is_empty() { div { class: "muted", {detail.join(" · ")} } }
+                                            if width > 0.0 { div { class: "meter", div { style: "width:{width}%" } } }
+                                        }
+                                        div { class: "amounts",
+                                            div { if spent != 0.0 { "{usd(spent)}" } else { span { class: "muted", "—" } } }
+                                            if added != 0.0 { div { class: "ok", "+{usd(added)}" } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        div { class: "pager",
+                            span { class: "muted grow", "Tap a {unit} to see its charges" }
+                            button { disabled: offset() == 0, onclick: move |_| offset.set((offset() - PERIODS).max(0)), "Newer" }
+                            button { disabled: !has_more, onclick: move |_| offset.set(offset() + PERIODS), "Older" }
+                        }
+                    }
+                }
+                Some(Ok(d)) => {
+                    let rows = d["transactions"].as_array().cloned().unwrap_or_default();
+                    let total = d["total"].as_i64().unwrap_or(0);
+                    let off = if period().is_some() { p_offset() } else { offset() };
+                    let mut page = move |o: i64| if period().is_some() { p_offset.set(o) } else { offset.set(o) };
+                    rsx! {
+                        if rows.is_empty() { p { class: "muted", "None yet" } }
+                        for x in rows.iter() {
+                            {
+                                let a = n(&x["amount"]);
+                                let name = x["label"].as_str().map(str::to_string)
+                                    .unwrap_or_else(|| capitalize(&x["transaction_type"].as_str().unwrap_or("").replace('_', " ")));
+                                rsx! {
+                                    div { class: "row",
+                                        div { class: "grow", div { "{name}" } div { class: "muted", {when(x["created_at"].as_str().unwrap_or(""))} } }
+                                        span { class: if a > 0.0 { "ok" } else if a < 0.0 { "debit" } else { "" },
+                                            {format!("{}{}", if a < 0.0 { "−" } else if a > 0.0 { "+" } else { "" }, usd(a.abs()))} }
+                                    }
+                                }
+                            }
+                        }
+                        div { class: "pager",
+                            span { class: "muted grow", if total > 0 { "{off + 1}–{off + rows.len() as i64} of {total}" } }
+                            if period().is_some() { button { onclick: move |_| period.set(None), "Back" } }
+                            button { disabled: off == 0, onclick: move |_| page((off - PAGE).max(0)), "Newer" }
+                            button { disabled: off + (rows.len() as i64) >= total, onclick: move |_| page(off + PAGE), "Older" }
+                        }
                     }
                 }
             }

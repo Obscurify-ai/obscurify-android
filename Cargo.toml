@@ -1,6 +1,6 @@
 [package]
 name = "obscurify"
-version = "0.8.28"
+version = "0.8.29"
 edition = "2024"
 license = "GPL-3.0-only"
 description = "Obscurify for Android: private AI chat, paid for with unlinkable vouchers"
@@ -8,7 +8,7 @@ repository = "https://github.com/Obscurify-ai/obscurify-android"
 
 # Android versionCode: 1000000 + major*10000 + minor*100 + patch. Bump it with the version.
 [package.metadata.android]
-version-code = 1000828
+version-code = 1000829
 
 [dependencies]
 dioxus = { version = "0.7.10", features = ["mobile"] }
@@ -32,6 +32,9 @@ obscurify-tee-verify = { git = "https://github.com/Obscurify-ai/tee-verify", rev
 bytes = "1"
 # Private sessions: blind-voucher wallet derived from the account number.
 unlinkable-inference = "0.1.0"
+# Transaction history in the phone's time zone.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+iana-time-zone = "0.1"
 
 [profile.release]
 opt-level = "s"

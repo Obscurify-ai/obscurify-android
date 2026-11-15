@@ -70,6 +70,8 @@ await page.getByText('Done').click();
 await page.locator('.bar .icon').first().click(); // back to Account
 await page.waitForFunction(() => { const b = document.querySelector('.big'); return b && parseFloat(b.textContent.slice(1)) > 0; }, null, { timeout: 30000 });
 ok(true, 'balance after the top-up: ' + await page.locator('.big').textContent());
+await page.locator('.history .seg button', { hasText: 'All' }).click();
+await page.locator('.history').getByText('Deposit', { exact: true }).first().waitFor({ timeout: 15000 });
 ok(await page.getByText('Deposit', { exact: true }).count() > 0, 'deposit listed in transactions');
 
 // 6. Blind voucher: a warning that can't be missed, and Continue asks before it pays.

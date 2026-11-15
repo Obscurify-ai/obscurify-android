@@ -60,6 +60,8 @@ ok(parseFloat(balance.slice(1)) > 0, 'balance after redeeming: ' + balance);
 await page.getByText('Show API key').click();
 ok((await page.locator('.mono', { hasText: 'sk-obs1_' }).textContent({ timeout: 15000 })).includes('sk-obs1_'), 'API key shown');
 ok(await page.getByText('Pay as you go', { exact: false }).count() > 0, 'plans listed');
+await page.locator('.history .seg button', { hasText: 'All' }).click();
+await page.locator('.history').getByText('Deposit', { exact: true }).first().waitFor({ timeout: 15000 });
 ok(await page.getByText('Deposit', { exact: true }).count() > 0, 'deposit listed in transactions');
 shot('account');
 await page.locator('.bar .icon').first().click(); // back to chat
