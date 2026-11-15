@@ -1,7 +1,9 @@
 // Private sessions (Unlinkable inference), on by default: the account number is made on the phone and only a
 // key derived from it is sent; chat requests carry a session secret and no cookie and are paid by
 // a throwaway session, not the account; and after the app's data is wiped, signing in with the
-// number brings the wallet and the money left in the open session back to the millicent.
+// number brings the wallet and the money left in the open sessions back to the millicent. A reply
+// the session can't cover (the server holds its worst case first) gets 402: the app tops the
+// session up and asks again, on a chat (a pricey model) and on a tool call (an injected 402).
 //
 // The app talks to a recorder on :8231 that forwards to the dev server on :8230, so the test sees
 // exactly what left the phone:
@@ -16,13 +18,36 @@ const UPSTREAM = { host: '127.0.0.1', port: +(process.env.UPSTREAM_PORT || 8230)
 const DB = process.env.DB || 'obscurify_unlinkable';
 const sql = (q) => execFileSync('docker', ['exec', '-i', 'obscurify-postgres-dev', 'psql', '-U', 'obscurify', '-d', DB, '-tAX', '-c', q]).toString().trim();
 const seen = [];
+let inject402 = false;
+const bearer = (r) => (r.headers.authorization || '').replace('Bearer ', '');
+// A 402 on `path` for a session, then a top-up of that session, then a 2xx on `path` with it.
+const toppedUp = (path, from) => {
+  const later = seen.slice(from);
+  const i = later.findIndex((r) => r.path.startsWith(path) && r.status === 402 && bearer(r).startsWith('sk-unl1_'));
+  if (i < 0) return null;
+  const secret = bearer(later[i]);
+  const t = later.findIndex((r, j) => j > i && r.path === '/u/sessions/topup' && bearer(r) === secret && r.status === 200);
+  const done = later.findIndex((r, j) => j > t && r.path.startsWith(path) && bearer(r) === secret && r.status >= 200 && r.status < 300);
+  return t > 0 && done > 0 ? { secret, injected: !!later[i].injected } : null;
+};
 const recorder = http.createServer((req, res) => {
   const chunks = [];
   req.on('data', (c) => chunks.push(c));
   req.on('end', () => {
     const body = Buffer.concat(chunks);
-    seen.push({ method: req.method, path: req.url, headers: req.headers, body: body.toString() });
+    const entry = { method: req.method, path: req.url, headers: req.headers, body: body.toString() };
+    seen.push(entry);
+    // The first tool call on a private session is answered 402, as a hold the session can't cover
+    // would be: the app has to top the session up and ask again.
+    if (inject402 && req.url.startsWith('/web/tools/') && /^Bearer sk-unl1_/.test(req.headers.authorization || '')) {
+      inject402 = false;
+      entry.status = 402;
+      entry.injected = true;
+      res.writeHead(402, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ error: { message: 'Insufficient funds' } }));
+    }
     const up = http.request({ ...UPSTREAM, method: req.method, path: req.url, headers: { ...req.headers, host: `${UPSTREAM.host}:${UPSTREAM.port}` } }, (r) => {
+      entry.status = r.statusCode;
       res.writeHead(r.statusCode, r.headers);
       r.pipe(res);
     });
@@ -76,11 +101,52 @@ try {
   const chat = seen.filter((r) => r.path === '/web/chat/completions').pop();
   ok(chat && /^Bearer sk-unl1_/.test(chat.headers.authorization || ''), 'sent with a session secret');
   ok(chat && !chat.headers.cookie, 'sent with no cookie');
+  const newChat = async () => { await page.locator('.bar .icon', { hasText: '＋' }).click(); await sleep(500); };
+  const pick = async (search, name) => {
+    await page.locator('.title.model').click();
+    await page.locator('input.search').fill(search);
+    await page.locator('.pick', { hasText: name }).filter({ hasNotText: 'Thinking' }).first().locator('.grow').click();
+  };
+  const ask = async (text, timeout = 240000) => {
+    const before = await page.locator('.msg.assistant, .msg.err').count();
+    await page.locator('#composer').fill(text);
+    await sleep(300);
+    await page.locator('.send').click();
+    await page.waitForFunction((n) => document.querySelectorAll('.msg.assistant, .msg.err').length > n && !document.querySelector('.send.stop'), before, { timeout });
+    return (await page.locator('.msg.assistant, .msg.err').last().textContent()).trim();
+  };
+
+  // 2b. A pricey model: the server holds the reply's worst case (about $1 of output), more than a
+  // new session starts with, so it answers 402 until the app has topped the session up.
+  await newChat();
+  await pick('Claude 4.1 Opus', 'Anthropic: Claude 4.1 Opus');
+  let from = seen.length;
+  const mango = await ask('Reply with exactly the word: mango');
+  ok(/mango/i.test(mango), 'pricey model answered: ' + mango.slice(0, 40));
+  const held = toppedUp('/web/chat/completions', from);
+  ok(held && !held.injected, 'a real 402 hold on the chat was topped up and asked again');
+  shot('private-pricey');
+
+  // 2c. Tools (web_post): the first tool call gets a 402, the app tops up and asks again.
+  await newChat();
+  await pick('DeepSeek V4 Flash', 'DeepSeek: DeepSeek V4 Flash');
+  await agentSwitches(page, true);
+  from = seen.length;
+  inject402 = true;
+  const looked = await ask('Search the web: what is the current population of Reykjavik? One sentence.');
+  ok(!inject402, 'a tool call went out on a private session');
+  const tool = toppedUp('/web/tools/', from);
+  ok(tool && tool.injected, 'a 402 on a tool call was topped up and asked again');
+  ok(!/insufficient|kept failing/i.test(looked) && looked.length > 10, 'the lookup answered: ' + looked.slice(0, 60));
+  shot('private-tools');
+
   const usage = sql(`SELECT COUNT(*) FROM transactions WHERE user_id = '${userId}' AND transaction_type NOT IN ('deposit', 'voucher_withdrawal', 'starter_credit')`);
-  ok(usage === '0', 'the account was not charged for the chat');
-  const secretHash = createHash('sha256').update(chat.headers.authorization.replace('Bearer ', '')).digest('hex');
-  const open = +sql(`SELECT COALESCE(SUM(CEIL(u.balance * 100000)), 0)::BIGINT FROM unlinkable_sessions s JOIN users u ON u.id = s.user_id WHERE s.closed_at IS NULL AND s.secret_hash = '${secretHash}'`);
-  ok(open > 0, 'its session is still open');
+  ok(usage === '0', 'the account was not charged for the chats');
+  const secrets = [...new Set(seen.map(bearer).filter((b) => b.startsWith('sk-unl1_')))];
+  const hashes = secrets.map((s) => `'${createHash('sha256').update(s).digest('hex')}'`).join(',');
+  const open = +sql(`SELECT COALESCE(SUM(CEIL(u.balance * 100000)), 0)::BIGINT FROM unlinkable_sessions s JOIN users u ON u.id = s.user_id WHERE s.closed_at IS NULL AND s.secret_hash IN (${hashes})`);
+  ok(secrets.length === 3, `each chat had its own session (${secrets.length} for 3 chats)`);
+  ok(open > 0, 'their sessions are still open');
   const had = walletMillicents() + open;
 
   // 3. Wipe the app (a new phone), sign in with the number.
@@ -93,7 +159,7 @@ try {
   let got = -1;
   for (let i = 0; i < 90 && got !== had; i++) { await sleep(1000); got = walletMillicents(); }
   ok(got === had, `every millicent came back (${got} of ${had})`);
-  ok(sql(`SELECT COUNT(*) FROM unlinkable_sessions WHERE closed_at IS NULL AND secret_hash = '${secretHash}'`) === '0', 'the stranded session was closed');
+  ok(sql(`SELECT COUNT(*) FROM unlinkable_sessions WHERE closed_at IS NULL AND secret_hash IN (${hashes})`) === '0', 'the stranded sessions were closed');
   shot('private-restored');
   console.log('all private-session checks passed');
 } finally {

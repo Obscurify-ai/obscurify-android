@@ -666,18 +666,28 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
         Some(id) => crate::private::secret(Some(id)).await,
         None => crate::private::secret(None).await,
     };
-    if let Some(secret) = private {
-        let r = client().post(format!("{BASE}{path}")).timeout(Duration::from_secs(timeout)).bearer_auth(&secret).json(body).send().await.map_err(|_| offline())?;
-        let status = r.status().as_u16();
-        let text = r.text().await.map_err(|_| offline())?;
-        let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-        if (200..300).contains(&status) {
-            return Ok(v);
+    if let Some(mut secret) = private {
+        // The server holds a reply's (or paid tool's) worst case first: a 402 tops this chat's
+        // session up, more each time, and asks again, as post_private does.
+        for attempt in 0..4 {
+            let r = client().post(format!("{BASE}{path}")).timeout(Duration::from_secs(timeout)).bearer_auth(&secret).json(body).send().await.map_err(|_| offline())?;
+            let status = r.status().as_u16();
+            let text = r.text().await.map_err(|_| offline())?;
+            let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+            if (200..300).contains(&status) {
+                return Ok(v);
+            }
+            match status {
+                402 if reply.is_none() && attempt < 3 => crate::private::ran_out(&secret, attempt).await,
+                401 if reply.is_none() && attempt < 3 => crate::private::expired(&secret).await,
+                _ => return Err(format!("{status}\u{1}{}", error_text(status, &v, &text))),
+            }
+            match crate::private::secret(None).await {
+                Some(s) => secret = s,
+                None => break,
+            }
         }
-        if status == 402 && reply.is_none() {
-            crate::private::ran_out(&secret, 0).await;
-        }
-        return Err(format!("{status}\u{1}{}", error_text(status, &v, &text)));
+        return Err(format!("402\u{1}{}", error_text(402, &Value::Null, "")));
     }
     for attempt in 0..2 {
         let token = csrf().await.map_err(|e| if e == OFFLINE { offline() } else { e })?;

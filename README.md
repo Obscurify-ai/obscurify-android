@@ -105,7 +105,7 @@ node categories.mjs                  # specialist categories (Writing, Security,
 node flaky-proxy.mjs & ACCOUNT=… node background.mjs  # background answers: a dropped connection, a killed app (plain and Code Mode), Stop
 node flaky-proxy.mjs & adb root; ACCOUNT=… node encrypted.mjs   # Encrypted (no request ever asks for tee_verify): e2ee models only, a marker word never leaves the phone, Encrypted chip after eight checks, history recalled, a swapped key sends nothing, a changed byte fails, a killed app reads the rest, kept after a restart
 TARGET=<dev server> node flaky-proxy.mjs & ACCOUNT=<Pro> node refusal.mjs  # Claude refusals (server's fake upstream): "declined" in italics, no button the first time, then "Ask <model> instead" bottom right that switches and asks again, plain and Code Mode; "Uncensored models need Pro" opens Account; the suggestion isn't kept
-adb root; DB=… node private.mjs      # private sessions: number made on the phone, only a key sent; chat with a session secret and no cookie, not charged to the account; wiped app signs in and gets every millicent back (test APK with OBSCURIFY_API=http://127.0.0.1:8231: the test records what leaves the phone)
+adb root; DB=… node private.mjs      # private sessions: number made on the phone, only a key sent; chat with a session secret and no cookie, not charged to the account, each chat on its own session; a 402 (a pricey model's hold, and one injected on a tool call) tops the session up and asks again; wiped app signs in and gets every millicent back (test APK with OBSCURIFY_API=http://127.0.0.1:8231: the test records what leaves the phone)
 ```
 
 ## License

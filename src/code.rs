@@ -826,6 +826,8 @@ pub fn turn(app: App, from: Option<Msg>) { turn_following(app, from, None) }
 /// `turn`, whose first step is `follow`: the background reply the server kept writing for it while
 /// the app was closed.
 pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
+    // This chat's own private session (run_with sets it for plain chat).
+    crate::private::set_chat(&app.conv.peek().id);
     let model = app.settings.peek().model.clone();
     let cfg = app.code.peek().clone();
     let setup = Setup::new(&app, &cfg);
