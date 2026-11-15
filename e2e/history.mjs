@@ -27,7 +27,9 @@ sql(`INSERT INTO transactions (user_id, amount, transaction_type, created_at) VA
   ('${userId}', 1, 'voucher_withdrawal', NOW()),
   ('${userId}', 5, 'subscription', NOW());
   INSERT INTO transactions (user_id, amount, transaction_type, created_at)
-  SELECT '${userId}', 0.0015, 'withdrawal', NOW() - INTERVAL '2 days' + (g || ' seconds')::interval FROM generate_series(1, 60) g;`);
+  SELECT '${userId}', 0.0015, 'withdrawal', NOW() - INTERVAL '2 days' + (g || ' seconds')::interval FROM generate_series(1, 60) g;
+  INSERT INTO transaction_logs (transaction_id, previous_balance, new_balance, notes)
+  SELECT id, 0, 10, 'Deposit: +10.00 (card top-up)' FROM transactions WHERE user_id = '${userId}' AND transaction_type = 'deposit';`);
 
 // 2. Account: Daily first, newest day on top.
 await page.locator('.bar .icon').first().click();
@@ -63,6 +65,10 @@ ok(await hist.getByText('Usage', { exact: true }).count() === 50, 'first page: 5
 await hist.getByRole('button', { name: 'Older' }).click();
 await page.waitForFunction(() => /51–61 of 61/.test(document.querySelector('.history .pager').textContent));
 ok(await hist.getByText('Deposit', { exact: true }).count() === 1, 'second page ends with the deposit');
+const dep = hist.locator('.row', { hasText: 'Deposit' });
+ok(await dep.locator('.detail').count() === 0, 'its payment details stay folded');
+await dep.click();
+ok(/Paid with card/.test(await dep.locator('.detail').textContent()), 'tapped: Paid with card');
 shot('history-page2');
 
 // 5. Weekly and Monthly group them; All lists every charge.

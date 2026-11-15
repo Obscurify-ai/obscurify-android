@@ -840,6 +840,7 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
     let mut offset = use_signal(|| 0i64);
     let mut period = use_signal(|| None::<Value>);
     let mut p_offset = use_signal(|| 0i64);
+    let mut opened = use_signal(String::new); // the charge whose details show
     let data = use_resource(move || {
         let (v, off, per, poff, _, mine) = (view(), offset(), period(), p_offset(), rev(), mine());
         async move {
@@ -958,9 +959,16 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
                                 let a = n(&x["amount"]);
                                 let name = x["label"].as_str().map(str::to_string)
                                     .unwrap_or_else(|| capitalize(&x["transaction_type"].as_str().unwrap_or("").replace('_', " ")));
+                                // A deposit's payment method shows when it's tapped.
+                                let paid = x["detail"].as_str().map(|d| format!("Paid with {}", match d { "Card" => "card", "Blind voucher" => "a blind voucher", o => o }));
+                                let id = x["id"].as_str().unwrap_or("").to_string();
+                                let open_this = paid.is_some() && opened() == id;
                                 rsx! {
-                                    div { class: "row",
-                                        div { class: "grow", div { "{name}" } div { class: "muted", {when(x["created_at"].as_str().unwrap_or(""))} } }
+                                    div { class: if paid.is_some() { "row tap" } else { "row" },
+                                        onclick: move |_| if paid.is_some() { opened.set(if opened() == id { String::new() } else { id.clone() }) },
+                                        div { class: "grow", div { "{name}" } div { class: "muted", {when(x["created_at"].as_str().unwrap_or(""))} }
+                                            if open_this { div { class: "muted detail", {x["detail"].as_str().map(|d| format!("Paid with {}", match d { "Card" => "card", "Blind voucher" => "a blind voucher", o => o })).unwrap_or_default()} } }
+                                        }
                                         span { class: if a > 0.0 { "ok" } else if a < 0.0 { "debit" } else { "" },
                                             {format!("{}{}", if a < 0.0 { "−" } else if a > 0.0 { "+" } else { "" }, usd(a.abs()))} }
                                     }
@@ -1278,13 +1286,16 @@ fn Funds() -> Element {
                     }
                 }
                 {
+                    // Only payments still waiting; finished ones are deposits in the
+                    // Account screen's transactions (tap one for how it was paid).
                     let orders: Vec<_> = w.orders.iter().rev().filter(|o| !o.done && !o.to_account).cloned().collect();
+                    let waiting: Vec<_> = top_ups.iter().filter(|t| t.open && (t.credited_cents == 0 || t.amount_cents.is_some_and(|a| t.credited_cents < a))).cloned().collect();
                     let showing = order.as_ref().map(|o| o.id.clone());
                     rsx! {
-                        if !orders.is_empty() || !top_ups.is_empty() {
+                        if !orders.is_empty() || !waiting.is_empty() {
                             div { class: "section payments",
-                                h2 { "Payments" }
-                                for t in top_ups.clone() {
+                                h2 { "In progress" }
+                                for t in waiting {
                                     div { class: "row",
                                         div { class: "grow",
                                             div { {method_name(&t.payment_method)} " · " {t.amount_cents.map(cents).unwrap_or("any amount".into())} }

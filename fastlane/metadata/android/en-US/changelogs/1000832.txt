@@ -1,0 +1,1 @@
+Add funds only lists payments still in progress. Finished ones are deposits in your transactions: tap one to see how it was paid.

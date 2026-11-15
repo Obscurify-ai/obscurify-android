@@ -4,7 +4,8 @@
 //   node e2e/top-ups.mjs   (BTC_RPC_PASSWORD, default devpassword; BTC_CONTAINER, default obscurify-bitcoind-dev)
 // Steps: sign up, Add funds starts with Blind voucher off, a BTC top-up with no amount shows its
 // address, the app is force-stopped, the regtest wallet pays and mines a block, the relaunched app
-// lists it as Added and the balance is above 0. Then Blind voucher on: the warning, and Continue asks first.
+// credits it (the balance is above 0), drops it from In progress, and lists it as a deposit that says
+// how it was paid when tapped. Then Blind voucher on: the warning, and Continue asks first.
 import { execFileSync } from 'node:child_process';
 import { launch, ok, shot, device, adb, PKG } from './lib.mjs';
 
@@ -45,7 +46,7 @@ ok(await page.locator('.qr svg').count() === 1, 'QR code drawn');
 ok(await page.getByText('Send any amount of BTC').count() === 1, 'any amount');
 ok(await page.getByText('You can close the app', { exact: false }).count() >= 1, 'says the app can be closed');
 await page.locator('.payments', { hasText: 'Waiting for payment' }).waitFor({ timeout: 30000 });
-ok(true, 'listed under Payments as waiting (from GET /top_ups)');
+ok(true, 'listed under In progress as waiting (from GET /top_ups)');
 shot('topup-address');
 
 // 4. The app is killed, then the payment is sent and confirmed.
@@ -59,20 +60,18 @@ ok(true, 'paid 0.001 BTC with the app closed, one block mined');
 await page.waitForSelector('#composer', { timeout: 20000 });
 await toFunds(page);
 const t0 = Date.now();
-await page.locator('.payments .ok', { hasText: /^Added \$\d+\.\d\d to your balance$/ }).waitFor({ timeout: 300000 });
-const added = await page.locator('.payments .ok').first().textContent();
-ok(true, `Payments list says "${added}" after ${Math.round((Date.now() - t0) / 1000)} s`);
-await page.getByRole('button', { name: 'Show address' }).first().click();
-await page.locator('p.ok', { hasText: 'Added' }).waitFor({ timeout: 15000 });
-ok((await page.locator('p.mono').first().textContent()).trim() === addr, 'Show address shows the same address, now Added');
+await page.waitForFunction(() => !document.querySelector('.payments'), null, { timeout: 300000 });
+ok(true, `paid: no longer listed under In progress after ${Math.round((Date.now() - t0) / 1000)} s`);
 shot('topup-added');
-await page.getByText('Done').click();
 await page.locator('.bar .icon').first().click(); // back to Account
 await page.waitForFunction(() => { const b = document.querySelector('.big'); return b && parseFloat(b.textContent.slice(1)) > 0; }, null, { timeout: 30000 });
 ok(true, 'balance after the top-up: ' + await page.locator('.big').textContent());
 await page.locator('.history .seg button', { hasText: 'All' }).click();
-await page.locator('.history').getByText('Deposit', { exact: true }).first().waitFor({ timeout: 15000 });
-ok(await page.getByText('Deposit', { exact: true }).count() > 0, 'deposit listed in transactions');
+const dep = page.locator('.history .row', { hasText: 'Deposit' }).first();
+await dep.waitFor({ timeout: 15000 });
+await dep.click();
+await dep.locator('.detail').waitFor({ timeout: 5000 });
+ok(/Paid with Bitcoin/.test(await dep.textContent()), 'the deposit, tapped: ' + await dep.locator('.detail').textContent());
 
 // 6. Blind voucher: a warning that can't be missed, and Continue asks before it pays.
 await page.getByText('Add funds').click();
