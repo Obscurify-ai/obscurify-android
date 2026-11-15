@@ -1,0 +1,3 @@
+Transactions show what your private chats cost: each day's spending includes them, and each one is listed as "Private chat".
+The balance shows the money prepaid for private chats that's still yours.
+Money moved to private chats reads "Prepaid for private chats" and isn't counted as spending.

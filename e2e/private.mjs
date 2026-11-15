@@ -149,6 +149,31 @@ try {
   ok(open > 0, 'their sessions are still open');
   const had = walletMillicents() + open;
 
+  // 2b. The Account screen on this phone: the chats show as spent straight away (their sessions
+  // still open), the money left as prepaid, and each chat as a charge.
+  const usd = (mc) => { const d = mc / 100000; return '$' + (d !== 0 && d < 0.01 ? d.toFixed(4) : d.toFixed(2)); };
+  await page.locator('.bar .icon').first().click();
+  await page.getByText('Account', { exact: false }).last().click();
+  const prepaid = page.locator('#private-prepaid');
+  await prepaid.waitFor({ timeout: 30000 });
+  ok((await prepaid.textContent()) === 'Prepaid for private chats: ' + usd(had), `${await prepaid.textContent()} (expected ${usd(had)})`);
+  const hist = page.locator('.history');
+  await hist.scrollIntoViewIfNeeded();
+  await hist.locator('.row.tap').first().waitFor({ timeout: 20000 });
+  const today = await hist.locator('.row.tap').first().textContent();
+  // A chat that cost under 0.001¢ costs nothing (sessions round in the customer's favour) and isn't listed.
+  const state = JSON.parse(execFileSync('adb', ['shell', 'cat', `${files}/unlinkable-state.json`], { encoding: 'utf8' })).wallet.sessions;
+  const costly = state.filter((x) => {
+    const h = createHash('sha256').update(x.secret).digest('hex');
+    return x.funded_millicents > +sql(`SELECT CEIL(u.balance * 100000)::BIGINT FROM unlinkable_sessions s JOIN users u ON u.id = s.user_id WHERE s.secret_hash = '${h}'`);
+  }).length;
+  ok(costly >= 2 && new RegExp(costly + ' private chats').test(today) && /prepaid for private chats/.test(today), `today: ${costly} private chats that cost something, and the prepaid money: ` + today);
+  await hist.locator('.row.tap').first().click();
+  await hist.locator('.history-head').waitFor();
+  ok(await hist.getByText('Private chat', { exact: true }).count() === costly, 'each listed as "Private chat"');
+  ok(/Private chat.*−\$/.test(await hist.textContent()), 'with what it cost, as a debit');
+  shot('private-history');
+
   // 3. Wipe the app (a new phone), sign in with the number.
   ({ page } = await launch(true));
   await page.locator('.login input').fill(number);

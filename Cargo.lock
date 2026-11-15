@@ -3946,7 +3946,7 @@ dependencies = [
 
 [[package]]
 name = "obscurify"
-version = "0.8.29"
+version = "0.8.30"
 dependencies = [
  "base64 0.22.1",
  "blind-rsa-signatures",
@@ -6424,9 +6424,9 @@ dependencies = [
 
 [[package]]
 name = "unlinkable-inference"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9281f750e82b76e82eaf332427132fb154d16eb89f0c1e0f1a4ad3c80ee3f9fb"
+checksum = "e17061e21f531377b033fb9e2767a1158bffd81f5d57835a7dec6f288b60b9b8"
 dependencies = [
  "anyhow",
  "argon2",

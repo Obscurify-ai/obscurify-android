@@ -8,7 +8,7 @@
 //! Encrypted mode, the account page and buying vouchers still use the signed-in session.
 
 use crate::{api, store};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::{Mutex as StdMutex, OnceLock};
 use unlinkable_inference::manager::Manager;
 use unlinkable_inference::seed::{account_keys, Seed};
@@ -60,10 +60,14 @@ fn save(m: &Manager) {
     }
 }
 
-async fn start() -> Result<Manager, String> {
-    let hex: String = store::load::<Option<String>>(SEED_FILE).ok_or("no seed")?;
+fn seed() -> Option<[u8; 32]> {
+    let hex: String = store::load::<Option<String>>(SEED_FILE)?;
     let seed: Vec<u8> = (0..hex.len()).step_by(2).filter_map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok()).collect();
-    let seed: [u8; 32] = seed.try_into().map_err(|_| "bad seed")?;
+    seed.try_into().ok()
+}
+
+async fn start() -> Result<Manager, String> {
+    let seed = seed().ok_or("no seed")?;
     let saved = store::load::<Option<serde_json::Value>>(STATE_FILE).map(|v| v.to_string());
     let mut m = Manager::connect(api::BASE, Seed(seed), saved.as_deref()).await.map_err(|e| format!("{e:#}"))?;
     m.api_key = api::post("/tokens", json!({})).await.ok().and_then(|v| v["token"].as_str().map(str::to_string));
@@ -142,4 +146,27 @@ pub async fn tick() {
         m.tick().await;
         save(m);
     }
+}
+
+/// What this device's private chats cost, for the account's history, as JSON:
+/// `{spent: [{at, millicents}], prepaid_millicents}`. `Null` when private sessions are off.
+/// Read-only: uses the running manager if there is one, else reads the saved state without
+/// starting anything (no restore, no top-up from the account).
+pub async fn spending() -> Value {
+    if !on() || !api::has_session() {
+        return Value::Null;
+    }
+    let g = state().lock().await;
+    let s = match g.as_ref() {
+        Some(m) => m.spending().await,
+        None => {
+            let Some(saved) = store::load::<Option<Value>>(STATE_FILE) else { return Value::Null };
+            let Some(seed) = seed() else { return Value::Null };
+            match Manager::connect(api::BASE, Seed(seed), Some(&saved.to_string())).await {
+                Ok(m) => m.spending().await,
+                Err(_) => return Value::Null,
+            }
+        }
+    };
+    serde_json::to_value(s).unwrap_or(Value::Null)
 }

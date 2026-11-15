@@ -39,7 +39,7 @@ ok(await hist.locator('.seg button.on').textContent() === 'Daily', 'opens on Dai
 const days = hist.locator('.row.tap');
 ok(await days.count() === 2, 'one row per active day: ' + await days.count());
 const today = await days.first().textContent();
-ok(/\$1\.00 to private wallet/.test(today) && /plan \$5\.00/.test(today) && /\$5\.00/.test(today), 'today: plan fee spent, $1 to the wallet (not spent): ' + today);
+ok(/\$1\.00 prepaid for private chats/.test(today) && /plan \$5\.00/.test(today) && /\$5\.00/.test(today), 'today: plan fee spent, $1 to the wallet (not spent): ' + today);
 const older = await days.nth(1).textContent();
 ok(/60 requests/.test(older) && /\$0\.09/.test(older) && /\+\$10\.00/.test(older), 'two days ago: 60 requests, $0.09 spent, +$10 added: ' + older);
 ok(await hist.locator('.meter div').count() === 2, 'spend bars drawn');
@@ -49,7 +49,7 @@ shot('history-daily');
 await days.first().click();
 await hist.locator('.history-head').waitFor();
 const charges = await hist.textContent();
-ok(/Moved to private wallet.*−\$1\.00/.test(charges), 'Moved to private wallet −$1.00');
+ok(/Prepaid for private chats.*−\$1\.00/.test(charges), "Prepaid for private chats −$1.00");
 ok(/Plan fee.*−\$5\.00/.test(charges), 'Plan fee −$5.00');
 ok(await hist.locator('.debit').count() === 2, 'debits in red');
 shot('history-today');
@@ -68,7 +68,7 @@ shot('history-page2');
 // 5. Weekly and Monthly group them; All lists every charge.
 await hist.getByRole('button', { name: 'Monthly' }).click();
 await page.waitForFunction(() => document.querySelectorAll('.history .row.tap').length >= 1 && /\d{4}/.test(document.querySelector('.history .row.tap').textContent));
-ok(/to private wallet/.test(await days.first().textContent()), 'Monthly shows the wallet move');
+ok(/prepaid for private chats/.test(await days.first().textContent()), "Monthly shows the prepaid money");
 await hist.getByRole('button', { name: 'All' }).click();
 const total = sql(`SELECT COUNT(*) FROM transactions WHERE user_id = '${userId}'`);
 await page.waitForFunction((t) => new RegExp('1–50 of ' + t).test(document.querySelector('.history .pager')?.textContent || ''), total);
