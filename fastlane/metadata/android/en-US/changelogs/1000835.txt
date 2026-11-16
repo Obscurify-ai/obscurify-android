@@ -1,0 +1,1 @@
+Favorites keep the order you starred them in, and ↑ moves one up. No more stray Web search button on a new chat: web search follows the Tools switch.
