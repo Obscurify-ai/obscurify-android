@@ -1,0 +1,1 @@
+Add funds with crypto tokens: USDT on Tron, USDC or USDT on BNB Chain, and ETH, USDC or USDT on Ethereum, Base, Arbitrum or Optimism. Tap USDT/ETH, pick the token and network, and send to the address shown. It goes on your balance once the payment confirms, even if you close the app.
