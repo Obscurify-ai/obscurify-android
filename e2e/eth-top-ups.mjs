@@ -36,14 +36,14 @@ await page.waitForSelector('#composer');
 ok(true, 'signed up');
 
 await toFunds(page);
-await page.getByRole('button', { name: 'Ethereum' }).first().click();
+await page.getByRole('button', { name: 'USDT / ETH' }).first().click();
 const tokens = await page.locator('.evm-tokens .chip').allTextContents();
 ok(tokens.join(' ') === 'ETH USDC USDT', 'tokens: ' + tokens.join(' '));
 let networks = await page.locator('.evm-networks .chip').allTextContents();
-ok(networks.join(' ') === 'Ethereum Base Arbitrum Optimism', 'networks for ETH: ' + networks.join(' '));
+ok(networks.join(' ') === 'Ethereum Base Arbitrum Optimism', 'networks for ETH (none on BNB Chain or Tron): ' + networks.join(' '));
 await page.locator('.evm-tokens .chip', { hasText: 'USDT' }).click();
 networks = await page.locator('.evm-networks .chip').allTextContents();
-ok(!networks.includes('Base'), 'USDT hides Base: ' + networks.join(' '));
+ok(networks.join(' ') === 'Ethereum Arbitrum Optimism BNB Chain Tron', 'USDT: no Base, adds BNB Chain and Tron: ' + networks.join(' '));
 shot('eth-choose');
 
 await page.locator('.evm-tokens .chip', { hasText: 'USDC' }).click();

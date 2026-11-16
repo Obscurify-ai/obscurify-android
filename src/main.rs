@@ -1091,15 +1091,19 @@ fn tier_name(t: &str) -> &'static str {
 
 // ---- add funds ----
 
-// "EVM" opens the token and network choice below: ETH, USDC or USDT on one address.
-const METHODS: [(&str, &str); 5] = [("card", "Card"), ("BTC", "Bitcoin"), ("Lightning", "Lightning"), ("XMR", "Monero"), ("EVM", "Ethereum")];
+// "EVM" opens the token and network choice below: ETH, USDC or USDT on one address
+// (USDT on Tron gets a Tron address).
+const METHODS: [(&str, &str); 5] = [("card", "Card"), ("BTC", "Bitcoin"), ("Lightning", "Lightning"), ("XMR", "Monero"), ("EVM", "USDT / ETH")];
 const EVM_TOKENS: [&str; 3] = ["ETH", "USDC", "USDT"];
-/// Mainnet networks and their tokens (no USDT on Base); the server has the final say.
-const EVM_NETWORKS: [(&str, &str, &[&str]); 4] = [
+/// Mainnet networks and their tokens (no USDT on Base, no ETH on BNB Chain,
+/// only USDT on Tron); the server has the final say.
+const EVM_NETWORKS: [(&str, &str, &[&str]); 6] = [
     ("ethereum", "Ethereum", &["ETH", "USDC", "USDT"]),
     ("base", "Base", &["ETH", "USDC"]),
     ("arbitrum", "Arbitrum", &["ETH", "USDC", "USDT"]),
     ("optimism", "Optimism", &["ETH", "USDC", "USDT"]),
+    ("bsc", "BNB Chain", &["USDC", "USDT"]),
+    ("tron", "Tron", &["USDT"]),
 ];
 
 /// "Base, Arbitrum and Optimism"
@@ -1231,6 +1235,8 @@ fn Funds() -> Element {
                                     let evm = wallet::is_evm(&coin);
                                     let on = if evm { o.network_label().map(|l| format!(" on {l}")).unwrap_or_default() } else { String::new() };
                                     let also = if evm { o.also_on(&coin) } else { vec![] };
+                                    // No common payment link for Tron: copy the address instead.
+                                    let tron = o.network.as_deref() == Some("tron");
                                     let uri = match (coin.as_str(), &amt) {
                                         // The recipient only: a wallet picks the token, so no wallet can
                                         // mistake a token contract for where to send.
@@ -1256,7 +1262,9 @@ fn Funds() -> Element {
                                             p { class: "muted network-note", style: "margin: -4px 0 12px", {format!("Same address works on {}.", join_names(&also))} }
                                         }
                                         div { class: "row",
-                                            button { class: "go", onclick: { let u = uri.clone(); move |_| open_url(&u) }, "Open wallet" }
+                                            if !tron {
+                                                button { class: "go", onclick: { let u = uri.clone(); move |_| open_url(&u) }, "Open wallet" }
+                                            }
                                             button { onclick: { let a = addr.clone(); move |_| app.copy(&a, "Address") }, "Copy" }
                                         }
                                     }
@@ -1291,7 +1299,8 @@ fn Funds() -> Element {
                                     button { class: if *token.read() == t { "chip on" } else { "chip" },
                                         onclick: move |_| {
                                             token.set(t);
-                                            // USDT isn't on Base: move to a network that has it.
+                                            // USDT isn't on Base, ETH isn't on BNB Chain or Tron:
+                                            // move to a network that has it.
                                             let has = |k: &str| EVM_NETWORKS.iter().any(|n| n.0 == k && n.2.contains(&t));
                                             if !has(*network.peek()) { network.set("ethereum") }
                                         },
