@@ -92,6 +92,7 @@ OBSCURIFY_API=https://<dev server> DEVTOOLS=1 ./build.sh x86_64 && adb install -
 cd e2e && npm i playwright
 BTC_RPC_PASSWORD=… node app.mjs   # sign-up, BTC blind voucher, chat, web search, models, restart, new number, sign in
 BTC_RPC_PASSWORD=… node top-ups.mjs  # BTC top-up paid while the app is closed, added on relaunch; the Blind voucher warning and confirm
+adb reverse tcp:8097 tcp:8097 && node eth-top-ups.mjs  # against obscurify tests/e2e/eth-stack.sh: Ethereum → ETH/USDC/USDT and networks (no USDT on Base), USDC on Base paid with the app closed, added on relaunch
 node card.mjs                     # image picker and a vision model; Stripe test-card blind voucher
 ACCOUNT=… PLAN=casual node plans.mjs  # models the plan can use first, the rest under "Upgrade to use"
 ACCOUNT=… node agent.mjs             # Long runs, compaction, errors back to the model, background work (scripted replies, through flaky-proxy.mjs)

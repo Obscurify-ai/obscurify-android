@@ -1,6 +1,6 @@
 //! Adding funds, the way the web's account page does it.
 //!
-//! By default a payment is a top-up (`POST /top_ups`, card, BTC, Lightning or XMR): it's tied to the
+//! By default a payment is a top-up (`POST /top_ups`, card, BTC, Lightning, XMR, ETH, USDC or USDT): it's tied to the
 //! signed-in account, and the server puts every confirmed payment on the balance by itself, so the
 //! app can close and any device lists it (`GET /top_ups`). Nothing about it is kept on the phone.
 //!
@@ -60,6 +60,44 @@ pub struct Order {
     /// `tick`/`collect` skip it if it ever is.
     #[serde(default)]
     pub to_account: bool,
+    /// ETH, USDC and USDT: the network picked ("base")
+    #[serde(default)]
+    pub network: Option<String>,
+    /// ETH, USDC and USDT: every network and token the address takes
+    #[serde(default)]
+    pub accepts: Vec<Accepted>,
+}
+
+/// An EVM network an address takes payments on.
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct Accepted {
+    pub key: String,
+    pub label: String,
+    #[serde(default)]
+    pub chain_id: u64,
+    #[serde(default)]
+    pub tokens: Vec<String>,
+}
+
+/// ETH, USDC and USDT share one address on every network.
+pub fn is_evm(method: &str) -> bool { matches!(method, "ETH" | "USDC" | "USDT") }
+
+impl Order {
+    /// "Base", for the network this order was opened for.
+    pub fn network_label(&self) -> Option<String> {
+        let key = self.network.as_ref()?;
+        Some(self.accepts.iter().find(|n| &n.key == key).map(|n| n.label.clone()).unwrap_or_else(|| key.clone()))
+    }
+    pub fn chain_id(&self) -> Option<u64> {
+        let key = self.network.as_ref()?;
+        self.accepts.iter().find(|n| &n.key == key).map(|n| n.chain_id)
+    }
+    /// The other networks that take `coin` at this address.
+    pub fn also_on(&self, coin: &str) -> Vec<String> {
+        self.accepts.iter()
+            .filter(|n| Some(&n.key) != self.network.as_ref() && n.tokens.iter().any(|t| t == coin))
+            .map(|n| n.label.clone()).collect()
+    }
 }
 
 /// One of the account's top-ups from `GET /top_ups` (last 7 days, newest first).
@@ -77,6 +115,10 @@ pub struct TopUp {
     pub amounts: Value,
     #[serde(default)]
     pub open: bool,
+    #[serde(default)]
+    pub network: Option<String>,
+    #[serde(default)]
+    pub accepts: Vec<Accepted>,
 }
 
 impl TopUp {
@@ -90,6 +132,8 @@ impl TopUp {
             addresses: strings(&self.addresses),
             amounts: strings(&self.amounts),
             to_account: true,
+            network: self.network.clone(),
+            accepts: self.accepts.clone(),
             ..Default::default()
         }
     }
@@ -137,14 +181,14 @@ impl Wallet {
 }
 
 /// A blind voucher order: sent with no cookie or key.
-pub async fn create_order(method: &str, amount_cents: Option<i64>) -> Result<Order, String> {
-    let v = api::public("POST", "/vouchers/orders", Some(order_body(method, amount_cents))).await.map_err(api::msg)?;
+pub async fn create_order(method: &str, amount_cents: Option<i64>, network: Option<&str>) -> Result<Order, String> {
+    let v = api::public("POST", "/vouchers/orders", Some(order_body(method, amount_cents, network))).await.map_err(api::msg)?;
     parse_order(&v, method, amount_cents, false)
 }
 
 /// A top-up of the signed-in account.
-pub async fn create_top_up(method: &str, amount_cents: Option<i64>) -> Result<Order, String> {
-    let v = api::post("/top_ups", order_body(method, amount_cents)).await?;
+pub async fn create_top_up(method: &str, amount_cents: Option<i64>, network: Option<&str>) -> Result<Order, String> {
+    let v = api::post("/top_ups", order_body(method, amount_cents, network)).await?;
     parse_order(&v, method, amount_cents, true)
 }
 
@@ -153,10 +197,13 @@ pub async fn top_ups() -> Result<Vec<TopUp>, String> {
     serde_json::from_value(v["top_ups"].clone()).map_err(|e| e.to_string())
 }
 
-fn order_body(method: &str, amount_cents: Option<i64>) -> Value {
+fn order_body(method: &str, amount_cents: Option<i64>, network: Option<&str>) -> Value {
     let mut body = json!({"payment_method": method});
     if let Some(c) = amount_cents {
         body["amount_cents"] = json!(c);
+    }
+    if let (true, Some(n)) = (is_evm(method), network) {
+        body["network"] = json!(n);
     }
     body
 }
@@ -179,6 +226,8 @@ fn parse_order(v: &Value, method: &str, amount_cents: Option<i64>, to_account: b
         publishable_key: v["publishable_key"].as_str().map(String::from),
         status: "waiting".into(),
         to_account,
+        network: v["network"].as_str().map(String::from),
+        accepts: serde_json::from_value(v["accepts"].clone()).unwrap_or_default(),
         ..Default::default()
     })
 }

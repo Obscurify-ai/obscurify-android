@@ -1091,14 +1091,37 @@ fn tier_name(t: &str) -> &'static str {
 
 // ---- add funds ----
 
-const METHODS: [(&str, &str); 4] = [("card", "Card"), ("BTC", "Bitcoin"), ("Lightning", "Lightning"), ("XMR", "Monero")];
+// "EVM" opens the token and network choice below: ETH, USDC or USDT on one address.
+const METHODS: [(&str, &str); 5] = [("card", "Card"), ("BTC", "Bitcoin"), ("Lightning", "Lightning"), ("XMR", "Monero"), ("EVM", "Ethereum")];
+const EVM_TOKENS: [&str; 3] = ["ETH", "USDC", "USDT"];
+/// Mainnet networks and their tokens (no USDT on Base); the server has the final say.
+const EVM_NETWORKS: [(&str, &str, &[&str]); 4] = [
+    ("ethereum", "Ethereum", &["ETH", "USDC", "USDT"]),
+    ("base", "Base", &["ETH", "USDC"]),
+    ("arbitrum", "Arbitrum", &["ETH", "USDC", "USDT"]),
+    ("optimism", "Optimism", &["ETH", "USDC", "USDT"]),
+];
 
-fn method_name(m: &str) -> &'static str { METHODS.iter().find(|x| x.0 == m).map(|x| x.1).unwrap_or("") }
+/// "Base, Arbitrum and Optimism"
+fn join_names(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+fn method_name(m: &str) -> String {
+    if wallet::is_evm(m) { return m.to_string() }
+    METHODS.iter().find(|x| x.0 == m).map(|x| x.1).unwrap_or("").to_string()
+}
 
 #[component]
 fn Funds() -> Element {
     let app = use_context::<App>();
     let mut method = use_signal(|| "card");
+    let mut token = use_signal(|| "ETH");
+    let mut network = use_signal(|| "ethereum");
     let mut amount = use_signal(|| "20".to_string());
     // Top-up unless this is on. Not remembered: every visit starts with a top-up.
     let mut blind = use_signal(|| false);
@@ -1112,7 +1135,8 @@ fn Funds() -> Element {
     use_hook(move || app.refresh_top_ups());
 
     let pay = move |_| {
-        let m = *method.peek();
+        let m = if *method.peek() == "EVM" { *token.peek() } else { *method.peek() };
+        let net = wallet::is_evm(m).then(|| *network.peek());
         let dollars: Option<f64> = amount.peek().trim().trim_start_matches('$').parse().ok();
         let c = dollars.map(|d| (d * 100.0).round() as i64);
         if (m == "card" || m == "Lightning") && !matches!(c, Some(50..=1_000_000)) {
@@ -1129,7 +1153,7 @@ fn Funds() -> Element {
         error.set(None);
         bg(async move {
             let c = c.filter(|c| *c > 0);
-            let r = if is_blind { wallet::create_order(m, c).await } else { wallet::create_top_up(m, c).await };
+            let r = if is_blind { wallet::create_order(m, c, net).await } else { wallet::create_top_up(m, c, net).await };
             match r {
                 Ok(o) => {
                     if o.to_account {
@@ -1204,7 +1228,13 @@ fn Funds() -> Element {
                                 {
                                     // "0.00006075000" -> "0.00006075"
                                     let amt = o.amounts.get(&coin).map(|a| if a.contains('.') { a.trim_end_matches('0').trim_end_matches('.').to_string() } else { a.clone() });
+                                    let evm = wallet::is_evm(&coin);
+                                    let on = if evm { o.network_label().map(|l| format!(" on {l}")).unwrap_or_default() } else { String::new() };
+                                    let also = if evm { o.also_on(&coin) } else { vec![] };
                                     let uri = match (coin.as_str(), &amt) {
+                                        // The recipient only: a wallet picks the token, so no wallet can
+                                        // mistake a token contract for where to send.
+                                        _ if evm => match o.chain_id() { Some(id) => format!("ethereum:{addr}@{id}"), None => format!("ethereum:{addr}") },
                                         ("Lightning", _) => format!("lightning:{addr}"),
                                         ("XMR", Some(a)) => format!("monero:{addr}?tx_amount={a}"),
                                         ("XMR", None) => format!("monero:{addr}"),
@@ -1213,15 +1243,18 @@ fn Funds() -> Element {
                                     };
                                     let unit = if coin == "Lightning" { "BTC" } else { coin.as_str() };
                                     let heading = match (o.amount_cents, &amt) {
-                                        (Some(c), Some(a)) => format!("Send {a} {unit} (about {})", cents(c)),
-                                        (Some(c), None) => format!("Send {} in {coin}", cents(c)),
-                                        (None, _) => format!("Send any amount of {coin}"),
+                                        (Some(c), Some(a)) => format!("Send {a} {unit}{on} (about {})", cents(c)),
+                                        (Some(c), None) => format!("Send {} in {coin}{on}", cents(c)),
+                                        (None, _) => format!("Send any amount of {coin}{on}"),
                                     };
-                                    let qr = qrcode::QrCode::new(&uri).map(|q| q.render::<qrcode::render::svg::Color>().quiet_zone(false).build()).unwrap_or_default();
+                                    let qr = qrcode::QrCode::new(if evm { addr.as_str() } else { uri.as_str() }).map(|q| q.render::<qrcode::render::svg::Color>().quiet_zone(false).build()).unwrap_or_default();
                                     rsx! {
                                         p { class: "lead", "{heading}" }
                                         div { class: "qr", dangerous_inner_html: "{qr}" }
                                         p { class: "mono", style: "font-size: 13px; margin: 12px 0", "{addr}" }
+                                        if !also.is_empty() {
+                                            p { class: "muted network-note", style: "margin: -4px 0 12px", {format!("Same address works on {}.", join_names(&also))} }
+                                        }
                                         div { class: "row",
                                             button { class: "go", onclick: { let u = uri.clone(); move |_| open_url(&u) }, "Open wallet" }
                                             button { onclick: { let a = addr.clone(); move |_| app.copy(&a, "Address") }, "Copy" }
@@ -1252,12 +1285,33 @@ fn Funds() -> Element {
                                 button { class: if m == id { "on" } else { "" }, onclick: move |_| method.set(id), "{label}" }
                             }
                         }
+                        if m == "EVM" {
+                            div { class: "toggles evm-tokens",
+                                for t in EVM_TOKENS {
+                                    button { class: if *token.read() == t { "chip on" } else { "chip" },
+                                        onclick: move |_| {
+                                            token.set(t);
+                                            // USDT isn't on Base: move to a network that has it.
+                                            let has = |k: &str| EVM_NETWORKS.iter().any(|n| n.0 == k && n.2.contains(&t));
+                                            if !has(*network.peek()) { network.set("ethereum") }
+                                        },
+                                        "{t}" }
+                                }
+                            }
+                            div { class: "toggles evm-networks",
+                                for (key, label, tokens) in EVM_NETWORKS {
+                                    if tokens.contains(&*token.read()) {
+                                        button { class: if *network.read() == key { "chip on" } else { "chip" }, onclick: move |_| network.set(key), "{label}" }
+                                    }
+                                }
+                            }
+                        }
                         div { class: "toggles",
                             for v in ["5", "10", "20", "50", "100"] {
                                 button { class: if *amount.read() == v { "chip on" } else { "chip" }, onclick: move |_| amount.set(v.to_string()), "${v}" }
                             }
                         }
-                        input { class: "field", inputmode: "decimal", value: "{amount}", placeholder: if m == "BTC" || m == "XMR" { "Any amount (USD, optional)" } else { "Amount (USD)" },
+                        input { class: "field", inputmode: "decimal", value: "{amount}", placeholder: if m == "BTC" || m == "XMR" || m == "EVM" { "Any amount (USD, optional)" } else { "Amount (USD)" },
                             oninput: move |e| amount.set(e.value()) }
                         label { class: "check blind-toggle",
                             input { r#type: "checkbox", checked: is_blind, onchange: move |e| { blind.set(e.checked()); asking.set(false) } }
@@ -1298,7 +1352,7 @@ fn Funds() -> Element {
                                 for t in waiting {
                                     div { class: "row",
                                         div { class: "grow",
-                                            div { {method_name(&t.payment_method)} " · " {t.amount_cents.map(cents).unwrap_or("any amount".into())} }
+                                            div { {method_name(&t.payment_method)} {t.order().network_label().map(|l| format!(" on {l}")).unwrap_or_default()} " · " {t.amount_cents.map(cents).unwrap_or("any amount".into())} }
                                             div { class: if t.credited_cents > 0 { "ok" } else { "muted" },
                                                 {if t.credited_cents > 0 { format!("Added {} to your balance", cents(t.credited_cents)) }
                                                  else if t.open { "Waiting for payment. You can close the app.".to_string() }
@@ -1313,7 +1367,7 @@ fn Funds() -> Element {
                                 for o in orders {
                                     div { class: "row",
                                         div { class: "grow",
-                                            div { "Blind voucher · " {method_name(&o.method)} " · " {o.amount_cents.map(cents).unwrap_or("any amount".into())} }
+                                            div { "Blind voucher · " {method_name(&o.method)} {o.network_label().map(|l| format!(" on {l}")).unwrap_or_default()} " · " {o.amount_cents.map(cents).unwrap_or("any amount".into())} }
                                             div { class: "muted", {if o.funded_cents > 0 { format!("{} received. Keep the app open.", cents(o.funded_cents)) } else { "Waiting for payment. Open the app again after paying.".to_string() }} }
                                         }
                                         if o.crypto() && showing.as_deref() != Some(&o.id) {
