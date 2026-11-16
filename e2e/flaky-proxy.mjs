@@ -8,6 +8,8 @@
 //   GET /__set?toolfail=N                            tool requests answer 503 with an error N times (-1: always)
 //   GET /__set?sandboxdown=1                         the Code Mode sandbox page answers 500
 //   GET /__set?context=N                             /models lists every model with an N-token context
+//   GET /__set?codemodedelay=MS                      /code_mode answers MS late (the app's first moments
+//     before it knows Code Mode's settings)
 //   GET /__set?swapkey=1                             attestation reports name a key of the proxy's instead of the
 //     enclave's encryption key (Encrypted mode must refuse to send)
 //   GET /__grep?q=WORD                               every request (path) whose URL or body contained WORD so far
@@ -75,6 +77,7 @@ let paths = [];
 // Every request as it went upstream, for tests that look for a word that must never leave the phone.
 let wire = [];
 let swapkey = 0;
+let codemodedelay = 0;
 // The secp256k1 generator point: a valid key that isn't the enclave's.
 const KEY_G = '0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8';
 
@@ -119,6 +122,7 @@ http.createServer((req, res) => {
     silent = +url.searchParams.get('silent') || 0;
     teeflip = +url.searchParams.get('teeflip') || 0;
     swapkey = +url.searchParams.get('swapkey') || 0;
+    codemodedelay = +url.searchParams.get('codemodedelay') || 0;
     toolScript = [];
     log = [];
     paths = [];
@@ -154,6 +158,7 @@ http.createServer((req, res) => {
   req.on('end', () => {
     const body = Buffer.concat(chunks);
     wire.push(req.method + ' ' + req.url + '\n' + JSON.stringify(req.headers) + '\n' + body.toString());
+    if (codemodedelay && url.pathname === '/code_mode') return setTimeout(() => forward(req, res, body), codemodedelay);
     if (swapkey && url.pathname === '/web/tee/attestation') {
       return forward(req, res, body, null, null, (json) => {
         for (const k of json.attestation?.workload_keyset?.e2ee_public_keys || []) if (k.algo.startsWith('secp256k1')) k.public_key = KEY_G;
