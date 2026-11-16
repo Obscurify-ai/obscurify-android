@@ -2,7 +2,8 @@
 import { _android } from 'playwright';
 import { execFileSync } from 'node:child_process';
 
-export const PKG = 'ai.obscurify.android';
+// PKG=ai.obscurify.play drives the Play build.
+export const PKG = process.env.PKG || 'ai.obscurify.android';
 export const adb = (...a) => execFileSync('adb', a, { encoding: 'utf8' }).trim();
 export const sleep = ms => new Promise(r => setTimeout(r, ms));
 export const ok = (cond, what) => { if (!cond) throw new Error('FAILED: ' + what); console.log('ok -', what); };

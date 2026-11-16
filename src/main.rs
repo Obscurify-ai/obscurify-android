@@ -21,6 +21,11 @@ use wallet::Wallet;
 
 const CSS: &str = include_str!("../assets/style.css");
 pub const FREE_MODEL: &str = "meta-llama/llama-3.3-70b-instruct";
+/// The Google Play build (`--features play`). Play's rules mean no payments in the app (funds and
+/// plans are handled on the website), no uncensored or roleplay models (`chat::offered`), and a
+/// content guard on every completion (`api::play_guard`). Gated where it can't be got around: the
+/// Funds screen never renders and the model list is filtered where it loads.
+pub const PLAY: bool = cfg!(feature = "play");
 
 // ---- JS bridge: links, Back, visibility, picked images, the chat pinned to the bottom ----
 
@@ -143,7 +148,7 @@ impl Default for Settings {
     fn default() -> Self { Settings { model: FREE_MODEL.into(), favorites: vec![], tools: true, code: true, encrypted: false } }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Default)]
 struct Model { id: String, name: String, prompt: f64, completion: f64, tools: bool, context: u64, categories: Vec<String>, e2ee: bool, created: i64 }
 
 /// What the account's plan lets it chat with, from `/account_tier`.
@@ -242,7 +247,7 @@ impl App {
     /// when one has gone up since the last look, and refreshes the balance.
     fn refresh_top_ups(mut self) {
         static BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if !api::has_session() || BUSY.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        if PLAY || !api::has_session() || BUSY.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
         }
         bg(async move {
@@ -381,6 +386,7 @@ fn Root() -> Element {
                 created: m["created"].as_i64().unwrap_or(0),
             }).collect();
             models.sort_by_key(|m| (std::cmp::Reverse(m.created), m.name.to_lowercase()));
+            models.retain(|m| chat::offered(m, &[]));
             app.models.set(models);
         }
         // An answer the app was writing when it closed: the server finished it; show it.
@@ -390,7 +396,11 @@ fn Root() -> Element {
         }
         let list = |v: &Value, k: &str| v[k].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(String::from)).collect::<Vec<_>>();
         if let Ok(v) = api::public("GET", "/frontier_models", None).await { app.frontier.set(list(&v, "frontier_models")) }
-        if let Ok(v) = api::public("GET", "/uncensored_models", None).await { app.uncensored.set(list(&v, "uncensored_models")) }
+        if let Ok(v) = api::public("GET", "/uncensored_models", None).await {
+            let uncensored = list(&v, "uncensored_models");
+            if PLAY { app.models.write().retain(|m| chat::offered(m, &uncensored)) }
+            app.uncensored.set(uncensored)
+        }
     });
 
     // A session the server has ended sends you back to sign in, as on the web.
@@ -471,7 +481,9 @@ fn Root() -> Element {
             Screen::Signup => rsx! { Signup {} },
             Screen::Chat => rsx! { chat::ChatView {} },
             Screen::Account => rsx! { Account {} },
-            Screen::Funds => rsx! { Funds {} },
+            // The Play build never shows a way to pay (Play Billing rules): Funds is Account there.
+            Screen::Funds if !PLAY => rsx! { Funds {} },
+            Screen::Funds => rsx! { Account {} },
         }
         if let Some(t) = app.toast.read().clone() { div { class: "toast", "{t}" } }
     }
@@ -579,7 +591,7 @@ fn Signup() -> Element {
                 "I'm 18 or older and agree to the "
                 a { href: "{api::BASE}/terms", "Terms of Service" }
             }
-            input { class: "field", autocomplete: "off", placeholder: "Referral code (optional)", oninput: move |e| referral.set(e.value()) }
+            if !PLAY { input { class: "field", autocomplete: "off", placeholder: "Referral code (optional)", oninput: move |e| referral.set(e.value()) } }
             button { class: "go", disabled: *busy.read(), onclick: create, "Generate Account Number" }
             if let Some(e) = error.read().clone() { p { class: "err", "{e}" } }
             p { class: "muted center", style: "margin-top: 16px",
@@ -612,8 +624,10 @@ fn Account() -> Element {
         app.refresh_balance();
         bg(async move {
             if let Ok(v) = api::get("/account_tier").await { tier.set(v) }
-            if let Ok(v) = api::public("GET", "/available_tiers", None).await { tiers.set(v) }
-            if let Ok(v) = api::get("/referral_info").await { referral.set(v) }
+            if !PLAY {
+                if let Ok(v) = api::public("GET", "/available_tiers", None).await { tiers.set(v) }
+                if let Ok(v) = api::get("/referral_info").await { referral.set(v) }
+            }
             mine.set(private::spending().await);
             tx_rev += 1;
             if let Ok(v) = api::get("/auto_refill_status").await { refill.set(v) }
@@ -646,11 +660,13 @@ fn Account() -> Element {
                     h2 { "Balance" }
                     div { class: "row",
                         div { class: "grow big", {(*app.balance.read()).map(usd).unwrap_or("…".into())} }
-                        button { class: "go", onclick: move |_| { let mut s = app.screen; s.set(Screen::Funds) }, "Add funds" }
+                        if !PLAY { button { class: "go", onclick: move |_| { let mut s = app.screen; s.set(Screen::Funds) }, "Add funds" } }
                     }
-                    if w.held_cents() > 0 {
+                    if w.held_cents() > 0 && !PLAY {
                         p { class: "muted", "{cents(w.held_cents())} in blind vouchers is waiting to be added to your balance." }
                     }
+                    // Play allows saying where to pay, as plain text: no link, no button.
+                    if PLAY { p { class: "muted", "Add funds and change plans on the website, obscurify.ai." } }
                 }
                 div { class: "section",
                     h2 { "Plan" }
@@ -662,7 +678,7 @@ fn Account() -> Element {
                         if let Some(d) = t["next_charge_date"].as_str() { p { class: "muted", "Renews {d.get(..10).unwrap_or(d)} from your balance" } }
                         p { class: "muted", "Tokens this period: {t[\"input_tokens_used\"]} in, {t[\"output_tokens_used\"]} out" }
                     }
-                    for x in tiers.read()["tiers"].as_array().cloned().unwrap_or_default() {
+                    for x in if PLAY { vec![] } else { tiers.read()["tiers"].as_array().cloned().unwrap_or_default() } {
                         {
                             let id = x["tier"].as_str().unwrap_or("").to_string();
                             let on = id == current;
@@ -704,7 +720,7 @@ fn Account() -> Element {
                             }
                         }
                     }
-                    p { class: "muted", style: "margin-top: 8px", "Plans are paid from your balance and renew monthly while it covers them." }
+                    if !PLAY { p { class: "muted", style: "margin-top: 8px", "Plans are paid from your balance and renew monthly while it covers them." } }
                 }
                 div { class: "section",
                     h2 { "Account number" }
@@ -768,7 +784,7 @@ fn Account() -> Element {
                         button { class: "bare", style: "padding-left: 0", onclick: move |_| confirm.set(Some("key")), "Replace key…" }
                     }
                 }
-                if let Some(link) = referral.read()["referral_link"].as_str().map(String::from) {
+                if let Some(link) = referral.read()["referral_link"].as_str().filter(|_| !PLAY).map(String::from) {
                     div { class: "section",
                         h2 { "Referrals" }
                         div { class: "row",

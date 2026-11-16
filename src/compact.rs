@@ -112,7 +112,8 @@ fn chunks(lines: &[String], max: usize) -> Vec<String> {
 /// One summary request. A burst of them meets the chat's per-minute limit, so a 429 is waited
 /// out (for up to about two minutes) and a lost connection or 502/503/504 tried again.
 async fn request(model: &str, prompt: &str, stop: &impl Fn() -> bool) -> Result<String, String> {
-    let body = json!({"model": model, "stream": false, "max_tokens": SUMMARY_MAX_TOKENS, "messages": [{"role": "user", "content": prompt}]});
+    let mut body = json!({"model": model, "stream": false, "max_tokens": SUMMARY_MAX_TOKENS, "messages": [{"role": "user", "content": prompt}]});
+    api::play_guard(&mut body);
     let started = crate::store::now();
     let mut attempt = 0u32;
     loop {

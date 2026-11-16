@@ -45,6 +45,8 @@ a { color: var(--g); text-decoration: none; }
 .msg.user { margin-left: 15%; padding: 10px 12px; border: 1px solid var(--l); border-radius: 12px; white-space: pre-wrap; }
 .msg.assistant { border-left: 2px solid var(--g); padding-left: 12px; }
 .msg.err { border-left: 2px solid var(--e); padding-left: 12px; }
+.report { margin-top: 8px; padding: 12px; border: 1px solid var(--l); border-radius: 12px; }
+.report p { margin: 0; }
 .msg img { max-width: 100%; border-radius: 8px; display: block; margin: 6px 0; }
 .msg p, .msg ul, .msg ol, .msg pre, .msg blockquote, .msg table { margin: 0 0 10px; }
 .msg ul, .msg ol { padding-left: 22px; }
