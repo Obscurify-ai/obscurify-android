@@ -1092,7 +1092,7 @@ fn tier_name(t: &str) -> &'static str {
 
 // "EVM" opens the token and network choice below: ETH, USDC or USDT on one address
 // (USDT on Tron gets a Tron address).
-const METHODS: [(&str, &str); 5] = [("card", "Card"), ("BTC", "Bitcoin"), ("Lightning", "Lightning"), ("XMR", "Monero"), ("EVM", "USDT / ETH")];
+const METHODS: [(&str, &str); 5] = [("card", "Card"), ("BTC", "Bitcoin"), ("Lightning", "Lightning"), ("XMR", "Monero"), ("EVM", "USDT/ETH")];
 const EVM_TOKENS: [&str; 3] = ["ETH", "USDC", "USDT"];
 /// Mainnet networks and their tokens (no USDT on Base, no ETH on BNB Chain,
 /// only USDT on Tron); the server has the final say.

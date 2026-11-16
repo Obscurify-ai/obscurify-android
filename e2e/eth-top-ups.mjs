@@ -36,7 +36,7 @@ await page.waitForSelector('#composer');
 ok(true, 'signed up');
 
 await toFunds(page);
-await page.getByRole('button', { name: 'USDT / ETH' }).first().click();
+await page.getByRole('button', { name: 'USDT/ETH' }).first().click();
 const tokens = await page.locator('.evm-tokens .chip').allTextContents();
 ok(tokens.join(' ') === 'ETH USDC USDT', 'tokens: ' + tokens.join(' '));
 let networks = await page.locator('.evm-networks .chip').allTextContents();
