@@ -539,9 +539,9 @@ fn run_with(mut app: App, follow: Option<String>) {
     if crate::code::active(&app, &model) {
         return crate::code::turn(app, None);
     }
-    // With the Tools switch off there's no web search either, as on the web. None when encrypted.
+    // Web search follows the Tools switch, as on the web: no switch of its own. None when encrypted.
     let encrypted = api::has_session() && app.settings.peek().encrypted;
-    let web_search = api::has_session() && app.settings.peek().web_search && !crate::code::capable(&app, &model) && !encrypted;
+    let web_search = api::has_session() && app.settings.peek().tools && !encrypted;
     // A reply picked up again is read with the key kept for it.
     let follow_sealed = follow.as_ref().and_then(|id| {
         let p: Pending = store::load(PENDING);
@@ -859,12 +859,6 @@ pub fn ChatView() -> Element {
                 div { class: "waiting", "Waiting for Obscurify. This picks up by itself." }
             }
             div { class: "composer",
-                if !capable && !encrypted && api::has_session() {
-                    div { class: "toggles",
-                        button { class: if app.settings.read().web_search { "chip on" } else { "chip" },
-                            onclick: move |_| { let v = !app.settings.peek().web_search; app.settings.write().web_search = v; app.save_settings() }, "Web search" }
-                    }
-                }
                 if !app.docs.read().is_empty() {
                     div { class: "docs",
                         for (i, d) in app.docs.read().iter().enumerate() {
@@ -1386,7 +1380,8 @@ fn Drawer() -> Element {
                 } else {
                     button { class: "account", onclick: move |_| { app.overlay.set(Overlay::None); app.screen.set(Screen::Login) }, span { "Sign in" } }
                 }
-                // As on the web: the rest folds under More info, the legal line stays.
+                // As on the web: one quiet line says there's an API, the rest folds under More info.
+                a { class: "api", href: "{api::BASE}/api-docs", span { "</>" } " API for developers" }
                 details { class: "more",
                     summary { "More info" }
                     div { class: "links",
@@ -1480,10 +1475,14 @@ fn Models() -> Element {
     providers.sort_by_key(|p| p.to_lowercase());
     providers.dedup();
     let chosen = prov.read().clone().filter(|p| providers.contains(p));
-    let (usable, locked): (Vec<Model>, Vec<Model>) = shown.into_iter()
+    let (mut usable, locked): (Vec<Model>, Vec<Model>) = shown.into_iter()
         .filter(|m| chosen.as_ref().is_none_or(|p| &provider(m) == p))
         .cloned()
         .partition(|m| needs(&m.id).is_none());
+    // Favorites keep the order they were starred in, and each after the first can move up a place.
+    let reorder = c == "Favorites" && query.is_empty();
+    if reorder { usable.sort_by_key(|m| favs.iter().position(|f| f == &m.id)) }
+    let above: Vec<Option<String>> = (0..usable.len()).map(|i| (reorder && i > 0).then(|| usable[i - 1].id.clone())).collect();
     let locked: Vec<(Model, &'static str)> = locked.into_iter().map(|m| { let n = needs(&m.id).unwrap_or(""); (m, n) }).collect();
 
     rsx! {
@@ -1506,19 +1505,20 @@ fn Models() -> Element {
                 }
             }
             div { class: "scroll", style: "padding: 0",
-                if usable.is_empty() && locked.is_empty() { p { class: "muted", style: "padding: 16px", if c == "Favorites" { "Star models to keep them here. The first one is used for new chats." } else { "No models" } } }
-                for m in usable { ModelRow { key: "{m.id}", m: m.clone(), needs: None } }
+                if usable.is_empty() && locked.is_empty() { p { class: "muted", style: "padding: 16px", if c == "Favorites" { "Star models to keep them here." } else { "No models" } } }
+                for (m, up) in usable.into_iter().zip(above) { ModelRow { key: "{m.id}", m: m.clone(), needs: None, above: up } }
                 if !locked.is_empty() { h2 { class: "group", "Upgrade to use" } }
-                for (m, n) in locked { ModelRow { key: "{m.id}", m: m.clone(), needs: Some(n) } }
+                for (m, n) in locked { ModelRow { key: "{m.id}", m: m.clone(), needs: Some(n), above: None } }
             }
         }
     }
 }
 
 /// A model in the picker. One the plan doesn't include (`needs` names the plan it needs) opens
-/// Account, where the plan can be changed, instead of being chosen.
+/// Account, where the plan can be changed, instead of being chosen. `above`: in the Favorites list,
+/// the favorite listed above this one; ↑ moves this one in front of it.
 #[component]
-fn ModelRow(m: Model, needs: Option<&'static str>) -> Element {
+fn ModelRow(m: Model, needs: Option<&'static str>, above: Option<String>) -> Element {
     let mut app = use_context::<App>();
     let current = app.settings.read().model.clone();
     let fav = app.settings.read().favorites.contains(&m.id);
@@ -1541,7 +1541,20 @@ fn ModelRow(m: Model, needs: Option<&'static str>) -> Element {
                     for b in privacy_badges(&m) { span { class: "badge", "{b}" } }
                 }
             }
-            button { class: "bare", style: if fav { "color: var(--g)" } else { "" },
+            if let Some(above) = above {
+                button { class: "bare up", aria_label: "Move {m.name} up",
+                    onclick: { let id = m.id.clone(); move |_| {
+                        let mut s = app.settings.write();
+                        if let Some(i) = s.favorites.iter().position(|f| f == &id) {
+                            s.favorites.remove(i);
+                            let at = s.favorites.iter().position(|f| f == &above).unwrap_or(0);
+                            s.favorites.insert(at, id.clone());
+                        }
+                        drop(s);
+                        app.save_settings();
+                    } }, "↑" }
+            }
+            button { class: "bare star", style: if fav { "color: var(--g)" } else { "" },
                 onclick: { let id = m.id.clone(); move |_| {
                     let mut s = app.settings.write();
                     if let Some(i) = s.favorites.iter().position(|f| f == &id) { s.favorites.remove(i); } else if s.favorites.len() < 20 { s.favorites.push(id.clone()) }

@@ -123,7 +123,6 @@ enum Overlay { None, Drawer, Models }
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 struct Settings {
     model: String,
-    web_search: bool,
     favorites: Vec<String>,
     /// Code Mode's tools, on unless switched off (settings saved before this have no such field).
     /// With a server that has separate switches, the tools the model calls directly.
@@ -141,7 +140,7 @@ struct Settings {
 fn yes() -> bool { true }
 
 impl Default for Settings {
-    fn default() -> Self { Settings { model: FREE_MODEL.into(), web_search: true, favorites: vec![], tools: true, code: true, encrypted: false } }
+    fn default() -> Self { Settings { model: FREE_MODEL.into(), favorites: vec![], tools: true, code: true, encrypted: false } }
 }
 
 #[derive(Clone, PartialEq)]
