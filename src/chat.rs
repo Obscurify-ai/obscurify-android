@@ -1386,7 +1386,8 @@ fn Drawer() -> Element {
                 } else {
                     button { class: "account", onclick: move |_| { app.overlay.set(Overlay::None); app.screen.set(Screen::Login) }, span { "Sign in" } }
                 }
-                // As on the web: the rest folds under More info, the legal line stays.
+                // As on the web: one quiet line says there's an API, the rest folds under More info.
+                a { class: "api", href: "{api::BASE}/api-docs", span { "</>" } " API for developers" }
                 details { class: "more",
                     summary { "More info" }
                     div { class: "links",

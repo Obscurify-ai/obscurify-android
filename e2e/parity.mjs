@@ -28,6 +28,7 @@ ok(await page.locator('#composer').count() === 1, 'a guest stays in the chat (no
 await page.locator('.bar .icon').first().click();
 ok(await page.locator('.foot button', { hasText: 'Sign in' }).count() === 1, 'the drawer offers Sign in');
 ok(!(await page.locator('.foot .more .links').isVisible()) && await page.locator('.foot .legal a', { hasText: 'Privacy' }).isVisible(), 'More info starts folded; the legal line shows');
+ok(await page.locator('.foot a.api', { hasText: 'API' }).isVisible() && (await page.locator('.foot a.api').getAttribute('href')).endsWith('/api-docs'), 'the API docs link shows with More info folded');
 await page.locator('.foot .more summary').click();
 ok(await page.locator('.foot .more .links a', { hasText: 'All tools' }).isVisible(), 'More info opens');
 {
