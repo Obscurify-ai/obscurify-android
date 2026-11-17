@@ -230,11 +230,11 @@ fn thread_body(body: &Value) -> (Value, Vec<String>) {
     let sent: Vec<String> = messages.iter().map(|m| m.to_string()).collect();
     let mut out = body.clone();
     out["thread"] = json!({});
-    if let Some((rev, held)) = THREAD.lock().unwrap().as_ref() {
-        if held.len() <= sent.len() && held[..] == sent[..held.len()] {
-            out["messages"] = Value::Array(messages[held.len()..].to_vec());
-            out["thread"] = json!({"rev": rev});
-        }
+    if let Some((rev, held)) = THREAD.lock().unwrap().as_ref()
+        && held.len() <= sent.len() && held[..] == sent[..held.len()]
+    {
+        out["messages"] = Value::Array(messages[held.len()..].to_vec());
+        out["thread"] = json!({"rev": rev});
     }
     (out, sent)
 }

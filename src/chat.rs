@@ -1005,7 +1005,7 @@ fn PrivateSetup() -> Element {
 #[component]
 fn CipherTail() -> Element {
     let group = || format!("{:04x}", rand::random::<u16>());
-    let mut text = use_signal(move || String::new());
+    let mut text = use_signal(String::new);
     use_future(move || async move {
         loop {
             text.set(format!("{} {} {} ", group(), group(), group()));
