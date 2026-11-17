@@ -239,10 +239,23 @@ fn thread_body(body: &Value) -> (Value, Vec<String>) {
     (out, sent)
 }
 
+/// Sent first in every completion from the Play build: Play requires AI apps to prevent this content.
+pub const PLAY_GUARD: &str = "Never write sexually explicit content, content that sexualizes minors, or instructions that would help someone seriously hurt people.";
+
+/// The Play build: puts `PLAY_GUARD` first in a completion's messages (once). Every completion the
+/// app sends goes through here (chat, encrypted, Code Mode, summaries).
+pub fn play_guard(body: &mut Value) {
+    if !crate::PLAY { return }
+    let Some(m) = body["messages"].as_array_mut() else { return };
+    if m.first().is_some_and(|f| f["content"] == PLAY_GUARD) { return }
+    m.insert(0, json!({"role": "system", "content": PLAY_GUARD}));
+}
+
 /// Starts a streamed chat completion (`/web/chat/completions`, every plan). Returns the open
 /// response; the caller reads its SSE body. Sends only what the server doesn't already hold.
 pub async fn chat(body: &Value) -> Result<ReplyStream, String> {
     let mut body = body.clone();
+    play_guard(&mut body);
     // Signed in, the server finishes the answer whatever happens to the app (closed, killed, offline)
     // and holds it for an hour: `follow` picks it up again.
     if has_session() {
@@ -304,6 +317,7 @@ pub async fn chat_encrypted(body: &Value) -> Result<ReplyStream, String> {
         return Err("Not encrypted: the enclave's attestation didn't verify, so nothing was sent.".into());
     };
     let mut out = body.clone();
+    play_guard(&mut out);
     if let Some(o) = out.as_object_mut() {
         for k in ["web_search", "thread", "tee_verify", "tools", "tool_choice"] { o.remove(k); }
     }

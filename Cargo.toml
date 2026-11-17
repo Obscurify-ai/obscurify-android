@@ -10,6 +10,11 @@ repository = "https://github.com/Obscurify-ai/obscurify-android"
 [package.metadata.android]
 version-code = 1000836
 
+[features]
+# The Google Play build (`./build.sh play`): its own app, ai.obscurify.play, with no payments in the
+# app and no uncensored or roleplay models. Off by default: the sideload and F-Droid builds leave it out.
+play = []
+
 [dependencies]
 dioxus = { version = "0.7.10", features = ["mobile"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

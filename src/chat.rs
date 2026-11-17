@@ -2,7 +2,7 @@
 //! picker. Chats live only on the phone (`chats.json` lists them, `chat-<id>.json` holds each), the
 //! same as the web, which keeps them in the browser.
 
-use crate::{Access, App, Model, Overlay, Screen, api, bg, code, js, store, usd};
+use crate::{Access, App, Model, Overlay, PLAY, Screen, api, bg, code, js, store, usd};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -535,6 +535,7 @@ fn run_with(mut app: App, follow: Option<String>) {
     if !api::has_session() {
         app.settings.write().model = crate::FREE_MODEL.into();
     }
+    keep_offered(app);
     let model = app.settings.peek().model.clone();
     if crate::code::active(&app, &model) {
         return crate::code::turn(app, None);
@@ -1018,6 +1019,7 @@ fn CipherTail() -> Element {
 fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Element {
     let mut app = use_context::<App>();
     let mut raw = use_signal(|| false);
+    let mut reporting = use_signal(|| false);
     if m.role == "user" {
         return rsx! {
             div { class: "msg user",
@@ -1083,6 +1085,7 @@ fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Elemen
                     if !m.error {
                         button { class: "bare", onclick: { let t = answer.to_string(); move |_| app.copy(&t, "Answer") }, "Copy" }
                         button { class: "bare", onclick: move |_| { let r = !*raw.peek(); raw.set(r) }, if *raw.read() { "Rendered" } else { "Raw" } }
+                        if PLAY { button { class: "bare report-btn", onclick: move |_| { let r = !*reporting.peek(); reporting.set(r) }, "Report" } }
                     }
                     // An answer with tool work continues from it: paid calls aren't made again.
                     // Retry only shows on a failed answer.
@@ -1106,8 +1109,10 @@ fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Elemen
                     if !m.model.is_empty() { span { " · {app.model_name(&m.model)}" } }
                 }
             }
-            // Refused again today: one button, to ask the suggested model or to see the plans.
-            if !live && let Some(s) = m.suggest.clone() {
+            if *reporting.read() { Report { i, done: move |_| reporting.set(false) } }
+            // Refused again today: one button, to ask the suggested model or to see the plans. Not in
+            // the Play build: it suggests uncensored models.
+            if !live && !PLAY && let Some(s) = m.suggest.clone() {
                 div { class: "refusal-suggestion",
                     if s.locked {
                         button { class: "go", onclick: move |_| app.screen.set(Screen::Account), "Uncensored models need Pro" }
@@ -1334,11 +1339,11 @@ fn Drawer() -> Element {
                         rect { x: "5", y: "11", width: "14", height: "10", rx: "2" } path { d: "M8 11V7a4 4 0 0 1 8 0v4" } }
                     span { "Encrypted" }
                 }
-                a { class: "q", id: "tor", href: "{ONION}",
+                if !PLAY { a { class: "q", id: "tor", href: "{ONION}",
                     svg { view_box: "0 0 24 24", width: "20", height: "20", fill: "none", stroke: "currentColor", stroke_width: "2",
                         circle { cx: "12", cy: "13", r: "8" } circle { cx: "12", cy: "13", r: "5" } circle { cx: "12", cy: "13", r: "2" } }
                     span { "Tor" }
-                }
+                } }
                 button { class: "q danger", id: "wipe", onclick: move |_| wiping.set(true),
                     svg { view_box: "0 0 24 24", width: "20", height: "20", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round",
                         path { d: "M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" } }
@@ -1381,8 +1386,9 @@ fn Drawer() -> Element {
                     button { class: "account", onclick: move |_| { app.overlay.set(Overlay::None); app.screen.set(Screen::Login) }, span { "Sign in" } }
                 }
                 // As on the web: one quiet line says there's an API, the rest folds under More info.
-                a { class: "api", href: "{api::BASE}/api-docs", span { "</>" } " API for developers" }
-                details { class: "more",
+                // Not in the Play build: those pages sell plans and list uncensored models.
+                if !PLAY { a { class: "api", href: "{api::BASE}/api-docs", span { "</>" } " API for developers" } }
+                if !PLAY { details { class: "more",
                     summary { "More info" }
                     div { class: "links",
                         a { href: "{api::BASE}/tools", "All tools" }
@@ -1391,7 +1397,7 @@ fn Drawer() -> Element {
                         a { href: "{api::BASE}/faq", "FAQ" }
                         a { href: "{api::BASE}/guides", "Guides" }
                     }
-                }
+                } }
                 div { class: "legal",
                     a { href: "{api::BASE}/privacy", "Privacy" }
                     a { href: "{api::BASE}/terms", "Terms" }
@@ -1404,6 +1410,97 @@ fn Drawer() -> Element {
 }
 
 const REASONING: [&str; 5] = ["*thinking*", "*reasoning*", "*deepseek-r1*", "*-r1-*", "*magistral*"];
+
+/// Matched as well as the server's uncensored list, in case it hasn't loaded yet.
+const UNCENSORED: [&str; 3] = ["*abliterated*", "*uncensored*", "*venice*"];
+/// Roleplay and creative fine-tunes the Play build leaves out too: they write sexual content readily,
+/// which Play doesn't allow. (The server's Roleplay tag is checked as well.)
+const PLAY_LEFT_OUT: [&str; 34] = ["*mythomax*", "*remm-slerp*", "*rocinante*", "*magnum*", "*hanami*", "*euryale*", "*lunaris*",
+    "*weaver*", "*lumimaid*", "*cydonia*", "*magidonia*", "*storybreaker*", "*tenyxchat*", "*aion-rp*", "*airoboros*",
+    "thedrummer/*", "sao10k/*", "anthracite-org/*", "neversleep/*", "nothingiisreal/*", "undi95/*", "gryphe/*",
+    "marinaraspaghetti/*", "galrionsoftworks/*", "inflatebot/*", "readyart/*", "*-rp", "*-rp-*", "*heretic*",
+    "*luminous*", "*nsfw*", "*erotic*", "*lewd*", "*roleplay*"];
+
+/// Whether this build offers the model: always, except that the Play build leaves out uncensored and
+/// roleplay models, which Google Play's AI content rules don't allow. `uncensored`: the server's list.
+pub fn offered(m: &Model, uncensored: &[String]) -> bool {
+    !PLAY || !(UNCENSORED.iter().chain(&PLAY_LEFT_OUT).any(|p| glob(&m.id, p))
+        || uncensored.iter().any(|p| glob(&m.id, p))
+        || m.categories.iter().any(|c| c == "Roleplay" || c == "Uncensored"))
+}
+
+/// The Play build: a chosen model that isn't offered (or isn't listed once the list has loaded)
+/// is swapped for the free model before anything is sent.
+pub fn keep_offered(mut app: App) {
+    if !PLAY { return }
+    let model = app.settings.peek().model.clone();
+    let ok = {
+        let ms = app.models.peek();
+        let un = app.uncensored.peek();
+        let probe = Model { id: model.clone(), ..Default::default() };
+        offered(&probe, &un) && (ms.is_empty() || ms.iter().any(|m| m.id == model))
+    };
+    if !ok {
+        app.settings.write().model = crate::FREE_MODEL.into();
+        app.save_settings();
+    }
+}
+
+const REASONS: [&str; 6] = ["Sexual", "Hateful", "Violent or dangerous", "Self-harm", "Illegal", "Other"];
+
+/// `s` cut to at most `max` bytes, on a character boundary.
+fn cut(s: &str, max: usize) -> &str {
+    let mut end = s.len().min(max);
+    while !s.is_char_boundary(end) { end -= 1 }
+    &s[..end]
+}
+
+/// The Play build: reports an answer to Obscurify through the contact form (Play requires AI apps to
+/// let people flag output in the app). Chats are only on the phone, so the report carries the answer
+/// and the question it answered; nothing goes out unless it's sent.
+#[component]
+fn Report(i: usize, done: EventHandler) -> Element {
+    let app = use_context::<App>();
+    let mut reason = use_signal(|| None::<&'static str>);
+    let mut note = use_signal(String::new);
+    let mut busy = use_signal(|| false);
+    let send = move |_| {
+        let Some(why) = *reason.peek() else { return app.say("Pick a reason") };
+        let (question, answer, model) = {
+            let c = app.conv.peek();
+            let Some(a) = c.messages.get(i) else { return };
+            let q = c.messages[..i].iter().rev().find(|m| m.role == "user").map(|m| m.content.clone()).unwrap_or_default();
+            (q, a.content.clone(), a.model.clone())
+        };
+        let head = format!("Content report from the Android app (Google Play, {})\nReason: {why}\nModel: {model}\nNote: {}\n\n--- Question ---\n{}\n\n--- Answer ---\n",
+            env!("CARGO_PKG_VERSION"), cut(note.peek().trim(), 500), cut(&question, 1200));
+        // The contact form takes 5000 bytes.
+        let message = format!("{head}{}", cut(&answer, 4900usize.saturating_sub(head.len())));
+        busy.set(true);
+        bg(async move {
+            match api::public("POST", "/contact", Some(json!({"name": "Content report", "message": message}))).await {
+                Ok(_) => { app.say("Reported. Thank you."); done.call(()) }
+                Err(e) => app.say(api::msg(e)),
+            }
+            busy.set(false);
+        });
+    };
+    rsx! {
+        div { class: "report stack",
+            p { class: "muted", "Report this answer to Obscurify. The answer and your question are sent with the report; nothing else from your chats is." }
+            div { class: "toggles",
+                for r in REASONS {
+                    button { class: if *reason.read() == Some(r) { "chip on" } else { "chip" }, onclick: move |_| reason.set(Some(r)), "{r}" }
+                }
+            }
+            textarea { class: "field", rows: 2, placeholder: "Anything to add (optional)", oninput: move |e| note.set(e.value()) }
+            div { class: "row", style: "border: 0; justify-content: flex-end",
+                button { class: "bare", onclick: move |_| done.call(()), "Cancel" }
+                button { class: "go", disabled: *busy.read(), onclick: send, if *busy.read() { "Sending…" } else { "Send report" } }
+            }
+        }
+    }
+}
 /// Roleplay and everything after Frontier (privacy, then use cases) come from the `categories` the
 /// server tags models with.
 const CATEGORIES: [&str; 17] = ["Favorites", "All", "Free", "Cheap", "Reasoning", "Uncensored", "Roleplay", "Frontier",
@@ -1457,7 +1554,7 @@ fn Models() -> Element {
     };
     // Categories with models the plan can use come first and ones it can't use any of last;
     // empty ones are hidden (Favorites stays, to say how to fill it).
-    let mut chips: Vec<(&'static str, bool)> = CATEGORIES.iter().filter_map(|&k| {
+    let mut chips: Vec<(&'static str, bool)> = CATEGORIES.iter().filter(|&&k| !PLAY || !matches!(k, "Uncensored" | "Roleplay")).filter_map(|&k| {
         let mut ms = models.iter().filter(|m| (!encrypted || m.e2ee) && in_cat(m, k)).peekable();
         if ms.peek().is_none() { return (k == "Favorites" || k == "All").then_some((k, false)) }
         Some((k, ms.all(|m| needs(&m.id).is_some())))
@@ -1507,7 +1604,7 @@ fn Models() -> Element {
             div { class: "scroll", style: "padding: 0",
                 if usable.is_empty() && locked.is_empty() { p { class: "muted", style: "padding: 16px", if c == "Favorites" { "Star models to keep them here." } else { "No models" } } }
                 for (m, up) in usable.into_iter().zip(above) { ModelRow { key: "{m.id}", m: m.clone(), needs: None, above: up } }
-                if !locked.is_empty() { h2 { class: "group", "Upgrade to use" } }
+                if !locked.is_empty() { h2 { class: "group", if PLAY { "Not on your plan" } else { "Upgrade to use" } } }
                 for (m, n) in locked { ModelRow { key: "{m.id}", m: m.clone(), needs: Some(n), above: None } }
             }
         }
@@ -1527,6 +1624,7 @@ fn ModelRow(m: Model, needs: Option<&'static str>, above: Option<String>) -> Ele
         div { class, style: "padding: 10px 16px",
             div { class: "grow", onclick: { let m = m.clone(); move |_| {
                     if let Some(plan) = needs {
+                        if PLAY { return app.say(format!("{} needs the {plan} plan", m.name)) }
                         app.say(format!("{} needs the {plan} plan", m.name));
                         app.overlay.set(Overlay::None);
                         app.screen.set(Screen::Account);

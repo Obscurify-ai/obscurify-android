@@ -30,6 +30,7 @@ import android.os.Bundle
 import android.os.IBinder
 import android.os.PowerManager
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
@@ -44,6 +45,8 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 
@@ -110,6 +113,16 @@ class MainActivity : WryActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Targeting Android 15+ (the Play build) draws the app edge to edge: keep the page clear of the
+        // bars and the keyboard. Older targets get this from the system.
+        if (applicationInfo.targetSdkVersion >= 35) {
+            ViewCompat.setOnApplyWindowInsetsListener(findViewById<View>(android.R.id.content)) { v, insets ->
+                val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+                val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+                v.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime.bottom))
+                WindowInsetsCompat.CONSUMED
+            }
+        }
         getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) { web?.post { web?.evaluateJavascript("window.obsOnline && obsOnline()", null) } }
         })

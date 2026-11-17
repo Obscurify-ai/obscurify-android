@@ -1,0 +1,10 @@
+Obscurify is private AI chat with hundreds of models behind one anonymous account. There's no email, username or password, only a 16-digit account number.
+
+• Chat with leading and open models, with streamed answers, web search and image attachments
+• Your chats are stored only on your phone, never on our servers
+• Search models, browse them by category and keep favorites
+• Free models to start
+• Report any answer from inside the app
+• Delete your account from the app at any time
+
+The app is a small, fast native client. You must be 18 or older to use Obscurify.

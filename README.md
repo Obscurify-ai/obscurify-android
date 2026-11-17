@@ -51,6 +51,7 @@ Requirements:
 ```sh
 ./build.sh          # arm64 phone: target/obscurify.apk, or obscurify-unsigned.apk without a keystore
 ./build.sh x86_64   # emulator
+./build.sh play     # the Google Play app (ai.obscurify.play): see play/README.md
 ```
 
 The versionCode is `version-code` in `Cargo.toml` (1000000 + major·10000 + minor·100 + patch); bump it with the version.
@@ -65,11 +66,17 @@ Every release carries exactly one APK, `obscurify.apk` (the tag holds the versio
 obscurify.ai/android links through `releases/latest/download/obscurify.apk`. Never add a second
 APK: Obtainium then asks which one to install.
 
+Releases are automatic: pushing a new `version` (and `version-code`) in `Cargo.toml` to main makes
+the release machine build and sign both apps from that commit, publish `obscurify.apk` on a GitHub
+release `v<version>` with `fastlane/metadata/android/en-US/changelogs/<version-code>.txt` as its
+notes, and send the Play bundle to Google Play's production track (Google reviews each update).
+Write the changelog file in the same commit.
+
 ## Code
 
 | File | What |
 |---|---|
-| `src/main.rs` | App state, the JS bridge (links, Back, image picker, pinned scrolling), sign-in, sign-up, Account, Add funds and top-ups |
+| `src/main.rs` | `PLAY` (the Google Play build), app state, the JS bridge (links, Back, image picker, pinned scrolling), sign-in, sign-up, Account, Add funds and top-ups |
 | `src/chat.rs` | Chat, streaming, chats on the phone, model picker, safe markdown |
 | `src/files.rs` | Reading attached files into text: PDF, spreadsheets, Word, PowerPoint, OpenDocument, text |
 | `src/code.rs` | Code Mode: the agent loop, the sandbox bridge, tools the model calls directly, budgets, runs on the message |
