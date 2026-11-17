@@ -16,6 +16,8 @@
 # Signing: if a release keystore exists (OBSCURIFY_KEYSTORE, default ~/.config/obscurify-android/
 # release.keystore, password in OBSCURIFY_KEYSTORE_PASS or keystore-pass next to it) the APK is signed
 # with it, so it installs over earlier releases. Without one you get target/obscurify-unsigned.apk.
+# The sideload app has in-app Tor (src/tor.rs) with bridges: tools/lyrebird.sh builds the bridge transport
+# (needs Go). The Play app is built without Tor.
 # Test builds only: OBSCURIFY_API=https://... points the app at another server; DEVTOOLS=1 lets the
 # e2e scripts drive the WebView. Never ship either.
 set -euo pipefail
@@ -44,12 +46,21 @@ abi() { [ $1 = x86_64 ] && echo x86_64 || echo arm64-v8a; }
 archs=${arch:-aarch64}; [ -n "$play" ] && [ -z "$arch" ] && archs="x86_64 aarch64"
 libs=$(mktemp -d); trap 'rm -rf $libs' EXIT
 for a in $archs; do
-  dx build --platform android --release --target $a-linux-android ${play:+--features play}
+  dx build --platform android --release --target $a-linux-android ${play:+--no-default-features --features play}
   mkdir -p $libs/$(abi $a) && cp $gen/app/src/main/jniLibs/$(abi $a)/libmain.so $libs/$(abi $a)/
+  # Tor bridges (src/tor.rs): lyrebird beside libmain.so. Not in the Play app, which has no Tor.
+  if [ -z "$play" ]; then
+    tools/lyrebird.sh $a
+    [ -f target/lyrebird/$(abi $a)/liblyrebird.so ] && cp target/lyrebird/$(abi $a)/liblyrebird.so $libs/$(abi $a)/
+  fi
 done
 mkdir -p target && echo $flavour > target/.flavour
 rm -rf $gen/app/src/main/jniLibs && cp -r $libs $gen/app/src/main/jniLibs
 sed -i "s/versionCode = [0-9]*$/versionCode = $code/" $gen/app/build.gradle.kts
+# lyrebird runs as a program, so native libraries are unpacked on install (they stay in the APK otherwise).
+if [ -z "$play" ] && ! grep -q useLegacyPackaging $gen/app/build.gradle.kts; then
+  printf '\nandroid { packaging { jniLibs { useLegacyPackaging = true } } }\n' >> $gen/app/build.gradle.kts
+fi
 if [ -n "$play" ]; then
   # Play only takes native code that works with 16 KB memory pages (Android 15+).
   for so in $libs/*/libmain.so; do

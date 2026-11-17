@@ -1,5 +1,5 @@
 // The drawer's quick controls, as on the web sidebar: Temp (a chat never written to the phone),
-// Tor (the onion link) and Wipe (chats and settings deleted; session and wallet kept).
+// Tor (in-app Tor; e2e/tor.mjs tests it) and Wipe (chats and settings deleted; session and wallet kept).
 //   ACCOUNT=<funded number> node e2e/quick.mjs      (test APK built with DEVTOOLS=1)
 import { launch, ok, sleep, adb, PKG } from './lib.mjs';
 
@@ -28,7 +28,7 @@ const drawer = async () => { await page.locator('.icon', { hasText: '☰' }).cli
 // The row
 await drawer();
 ok(await page.locator('.drawer .quick .q').count() === 4 && await page.locator('#encrypted').count() === 1, 'the drawer has Temp, Encrypted, Tor and Wipe');
-ok(/\.onion/.test(await page.locator('#tor').getAttribute('href')), 'Tor links the onion site');
+ok(await page.locator('#tor').getAttribute('aria-pressed') === 'false' && await page.locator('#tor-always').count() === 0, 'Tor is off, and the drawer has no Tor settings until it is used');
 
 // Temp
 await page.locator('#temp').click();

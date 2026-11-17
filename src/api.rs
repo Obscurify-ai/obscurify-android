@@ -14,9 +14,151 @@ pub const BASE: &str = match option_env!("OBSCURIFY_API") {
     None => "https://obscurify.ai",
 };
 
-fn client() -> &'static reqwest::Client {
-    static C: OnceLock<reqwest::Client> = OnceLock::new();
-    C.get_or_init(|| reqwest::Client::builder()
+/// Where requests go: Obscurify's onion address while Tor is on, else a mirror this run moved to
+/// (Pro, after obscurify.ai couldn't be reached), else obscurify.ai.
+pub fn base() -> String {
+    if crate::tor::wanted() || crate::tor::always() {
+        return crate::tor::ONION.to_string();
+    }
+    ACTIVE.lock().unwrap().clone().unwrap_or_else(|| BASE.to_string())
+}
+
+// ---- mirrors ------------------------------------------------------------------------------------
+
+/// A paid Pro plan's mirrors: other addresses of the same server, for networks that block
+/// obscurify.ai. They come only from the server (`GET /api/mirrors`) and are kept on the phone.
+const MIRRORS_FILE: &str = "mirrors.json";
+
+/// The mirror this run moved to after obscurify.ai couldn't be reached. The next run tries
+/// obscurify.ai first again.
+static ACTIVE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Asks the server for this account's mirrors (none unless the plan is Pro) and keeps them.
+pub async fn refresh_mirrors() {
+    if !has_session() {
+        return;
+    }
+    let req = with_session(client().get(url("/api/mirrors"))).timeout(Duration::from_secs(20));
+    let Ok(r) = req.send().await else { return };
+    match r.status().as_u16() {
+        200 => {
+            let v: Value = r.json().await.unwrap_or(Value::Null);
+            let list: Vec<String> = v["mirrors"].as_array().into_iter().flatten()
+                .filter_map(|m| m.as_str())
+                .filter(|m| is_origin(m))
+                .take(5)
+                .map(|m| m.trim_end_matches('/').to_string())
+                .collect();
+            store::save(MIRRORS_FILE, &list)
+        }
+        // Not Pro, or a server without mirrors.
+        403 | 404 => store::remove(MIRRORS_FILE),
+        _ => {}
+    }
+}
+
+/// `https://host[:port]`, nothing else (a test build against a local server also takes
+/// `http://127.0.0.1:port`).
+fn is_origin(m: &str) -> bool {
+    let local = BASE.starts_with("http://127.0.0.1:") && m.starts_with("http://127.0.0.1:");
+    let Some(host) = m.strip_prefix("https://").or(local.then(|| &m[7..])).map(|h| h.trim_end_matches('/')) else { return false };
+    !host.is_empty() && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'))
+}
+
+/// Moves this run to a mirror that answers, after a request to `failed` couldn't connect (DNS,
+/// connection or TLS). Never over Tor, and at most one try a minute: a phone that is simply offline
+/// shouldn't wait on every mirror for every request.
+async fn failover(failed: &str) -> bool {
+    static BUSY: tokio::sync::Mutex<Option<Instant>> = tokio::sync::Mutex::const_new(None);
+    if crate::tor::wanted() || crate::tor::always() || !has_session() {
+        return false;
+    }
+    let mut last = BUSY.lock().await;
+    if base() != failed {
+        return true; // another request moved already
+    }
+    if last.is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
+        return false;
+    }
+    *last = Some(Instant::now());
+    let list: Vec<String> = store::load(MIRRORS_FILE);
+    for m in list.into_iter().filter(|m| m != failed) {
+        let probe = with_session(direct().get(format!("{m}/api/mirrors"))).timeout(Duration::from_secs(10));
+        if probe.send().await.is_ok_and(|r| r.status().is_success()) {
+            *ACTIVE.lock().unwrap() = Some(m);
+            crate::private::reset();
+            return true;
+        }
+    }
+    false
+}
+
+/// Sends a request; one that couldn't connect is sent again on a mirror, if the account has one
+/// that answers. A server that answers with an error is never a reason to move.
+trait Go {
+    fn go(self) -> impl std::future::Future<Output = reqwest::Result<reqwest::Response>>;
+}
+
+impl Go for reqwest::RequestBuilder {
+    async fn go(self) -> reqwest::Result<reqwest::Response> {
+        let (c, request) = self.build_split();
+        let request = request?;
+        let from = request.url().origin().ascii_serialization();
+        let again = request.try_clone();
+        match c.execute(request).await {
+            Err(e) if e.is_connect() => match again {
+                Some(mut r) if failover(&from).await => {
+                    rebase(&mut r);
+                    client().execute(r).await
+                }
+                _ => Err(e),
+            },
+            other => other,
+        }
+    }
+}
+
+fn rebase(r: &mut reqwest::Request) {
+    let b = base();
+    let Ok(to) = reqwest::Url::parse(&b) else { return };
+    let u = r.url_mut();
+    let _ = u.set_scheme(to.scheme());
+    let _ = u.set_host(to.host_str());
+    let _ = u.set_port(to.port());
+    if r.headers().contains_key("origin") && let Ok(v) = reqwest::header::HeaderValue::from_str(&b) {
+        r.headers_mut().insert("origin", v);
+    }
+}
+
+fn url(path: &str) -> String { format!("{}{path}", base()) }
+
+/// The HTTP client: through Tor while Tor is on (never around it), else direct.
+fn client() -> reqwest::Client {
+    if let Some(c) = crate::tor::client() {
+        return c;
+    }
+    // "Always connect through Tor" with Tor not running: nothing goes out.
+    if crate::tor::always() {
+        return dead();
+    }
+    direct()
+}
+
+/// A client whose every request fails: Always-Tor with Tor stopped.
+fn dead() -> reqwest::Client {
+    static D: OnceLock<reqwest::Client> = OnceLock::new();
+    D.get_or_init(|| reqwest::Client::builder().proxy(reqwest::Proxy::all("socks5h://127.0.0.1:9").unwrap()).build().unwrap()).clone()
+}
+
+static DIRECT: Mutex<Option<reqwest::Client>> = Mutex::new(None);
+
+/// Closes the direct client's idle connections (Tor just started): it is made again when needed.
+pub fn drop_direct() { *DIRECT.lock().unwrap() = None }
+
+fn direct() -> reqwest::Client {
+    DIRECT.lock().unwrap().get_or_insert_with(|| reqwest::Client::builder()
+        // Never a proxy from the environment: that is Tor's, and this client is for when Tor is off.
+        .no_proxy()
         .connect_timeout(Duration::from_secs(10))
         // Phones change networks and VPNs drop: don't reuse a connection that may be dead by now,
         // and notice a dead one in the middle of a read.
@@ -25,7 +167,7 @@ fn client() -> &'static reqwest::Client {
         .read_timeout(Duration::from_secs(180))
         .user_agent("Obscurify-Android")
         .build()
-        .unwrap())
+        .unwrap()).clone()
 }
 
 /// What a request that never got an answer says.
@@ -65,7 +207,11 @@ fn set_session(token: Option<String>) {
 pub fn has_session() -> bool { SESSION.lock().unwrap().is_some() }
 
 /// Ends the session on this phone.
-pub fn forget() { set_session(None) }
+pub fn forget() {
+    set_session(None);
+    store::remove(MIRRORS_FILE);
+    *ACTIVE.lock().unwrap() = None;
+}
 
 fn with_session(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
     match SESSION.lock().unwrap().as_deref() {
@@ -101,14 +247,14 @@ fn error_text(status: u16, v: &Value, body: &str) -> String {
 /// One request. `signed_in` adds the session cookie; it also returns any session the response sets.
 async fn send(signed_in: bool, method: &str, path: &str, body: Option<&Value>, timeout: u64) -> Result<(u16, Value, Option<String>), String> {
     let m = reqwest::Method::from_bytes(method.as_bytes()).unwrap();
-    let mut req = client().request(m, format!("{BASE}{path}")).timeout(Duration::from_secs(timeout));
+    let mut req = client().request(m, url(path)).timeout(Duration::from_secs(timeout));
     if signed_in {
         req = with_session(req)
     }
     if let Some(b) = body {
         req = req.json(b)
     }
-    let r = req.send().await.map_err(|_| error_text(0, &Value::Null, ""))?;
+    let r = req.go().await.map_err(|_| error_text(0, &Value::Null, ""))?;
     let status = r.status().as_u16();
     let session = session_cookie(&r);
     let text = r.text().await.map_err(|e| e.to_string())?;
@@ -211,7 +357,7 @@ async fn csrf() -> Result<String, String> {
 /// A guest's tool call. Guests have no session to tie a CSRF token to, so the server checks that
 /// the request says it's from Obscurify; its guest limits apply as they do on the website.
 pub async fn guest_post(path: &str, body: &Value, timeout: u64) -> Result<Value, String> {
-    let r = client().post(format!("{BASE}{path}")).timeout(Duration::from_secs(timeout)).header("Origin", BASE).json(body).send().await.map_err(|_| offline())?;
+    let r = client().post(url(path)).timeout(Duration::from_secs(timeout)).header("Origin", base()).json(body).go().await.map_err(|_| offline())?;
     let status = r.status().as_u16();
     let text = r.text().await.map_err(|_| offline())?;
     let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
@@ -295,7 +441,7 @@ pub struct Sealed {
 }
 
 fn verifier_options() -> obscurify_tee_verify::Options {
-    obscurify_tee_verify::Options { pccs_url: format!("{BASE}/tee/pccs"), ..Default::default() }
+    obscurify_tee_verify::Options { pccs_url: format!("{}/tee/pccs", base()), ..Default::default() }
 }
 
 /// Starts an end-to-end encrypted chat completion: the TEE gateway's attestation is fetched with a
@@ -354,13 +500,13 @@ async fn post_raw_chat(body: String, headers: &[(&str, String)]) -> Result<reqwe
     let mut tries = 0;
     loop {
         let token = csrf().await?;
-        let mut req = with_session(client().post(format!("{BASE}/web/chat/completions")))
+        let mut req = with_session(client().post(url("/web/chat/completions")))
             .header("X-CSRF-Token", token)
             .header("Content-Type", "application/json");
         for (k, v) in headers {
             req = req.header(*k, v);
         }
-        let r = req.body(body.clone()).send().await.map_err(|_| error_text(0, &Value::Null, ""))?;
+        let r = req.body(body.clone()).go().await.map_err(|_| error_text(0, &Value::Null, ""))?;
         let status = r.status().as_u16();
         if (200..300).contains(&status) {
             return Ok(r);
@@ -541,13 +687,13 @@ const STALL: Duration = Duration::from_secs(45);
 const LOST_FOR: Duration = Duration::from_secs(15 * 60);
 
 async fn follow_from(id: &str, after: usize) -> Result<reqwest::Response, String> {
-    let req = client().get(format!("{BASE}/web/replies/{id}?after={after}"));
+    let req = client().get(url(&format!("/web/replies/{id}?after={after}")));
     let req = match crate::private::secret(Some(id)).await {
         Some(secret) => req.bearer_auth(secret),
         None => with_session(req),
     };
     let r = req
-        .send()
+        .go()
         .await
         .map_err(|_| offline())?;
     let status = r.status().as_u16();
@@ -587,11 +733,11 @@ pub fn cancel_current() {
 
 /// A signed-in GET to a web endpoint that answers JSON, with its status: TEE receipts and reports.
 pub async fn web_get(path: &str, headers: &[(&str, String)], timeout: u64) -> Result<(u16, String), String> {
-    let mut req = with_session(client().get(format!("{BASE}{path}"))).timeout(Duration::from_secs(timeout));
+    let mut req = with_session(client().get(url(path))).timeout(Duration::from_secs(timeout));
     for (k, v) in headers {
         req = req.header(*k, v);
     }
-    let r = req.send().await.map_err(|_| offline())?;
+    let r = req.go().await.map_err(|_| offline())?;
     let status = r.status().as_u16();
     let text = r.text().await.map_err(|_| offline())?;
     Ok((status, text))
@@ -607,7 +753,7 @@ fn chat_error(status: u16, text: &str) -> String {
 
 async fn post_chat(body: &Value) -> Result<reqwest::Response, String> {
     if !has_session() {
-        let r = client().post(format!("{BASE}/anon/chat/completions")).json(body).send().await.map_err(|_| error_text(0, &Value::Null, ""))?;
+        let r = client().post(url("/anon/chat/completions")).json(body).go().await.map_err(|_| error_text(0, &Value::Null, ""))?;
         let status = r.status().as_u16();
         if (200..300).contains(&status) {
             return Ok(r);
@@ -621,10 +767,10 @@ async fn post_chat(body: &Value) -> Result<reqwest::Response, String> {
     let mut tries = 0;
     loop {
         let token = csrf().await?;
-        let r = with_session(client().post(format!("{BASE}/web/chat/completions")))
+        let r = with_session(client().post(url("/web/chat/completions")))
             .header("X-CSRF-Token", token)
             .json(body)
-            .send()
+            .go()
             .await
             .map_err(|_| error_text(0, &Value::Null, ""))?;
         let status = r.status().as_u16();
@@ -651,7 +797,7 @@ async fn post_chat(body: &Value) -> Result<reqwest::Response, String> {
 async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>> {
     for attempt in 0..4 {
         let secret = crate::private::secret(None).await?;
-        let r = match client().post(format!("{BASE}/web/chat/completions")).bearer_auth(&secret).json(body).send().await {
+        let r = match client().post(url("/web/chat/completions")).bearer_auth(&secret).json(body).go().await {
             Ok(r) => r,
             Err(_) => return Some(Err(error_text(0, &Value::Null, ""))),
         };
@@ -684,7 +830,7 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
         // The server holds a reply's (or paid tool's) worst case first: a 402 tops this chat's
         // session up, more each time, and asks again, as post_private does.
         for attempt in 0..4 {
-            let r = client().post(format!("{BASE}{path}")).timeout(Duration::from_secs(timeout)).bearer_auth(&secret).json(body).send().await.map_err(|_| offline())?;
+            let r = client().post(url(path)).timeout(Duration::from_secs(timeout)).bearer_auth(&secret).json(body).go().await.map_err(|_| offline())?;
             let status = r.status().as_u16();
             let text = r.text().await.map_err(|_| offline())?;
             let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
@@ -705,11 +851,11 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
     }
     for attempt in 0..2 {
         let token = csrf().await.map_err(|e| if e == OFFLINE { offline() } else { e })?;
-        let r = with_session(client().post(format!("{BASE}{path}")))
+        let r = with_session(client().post(url(path)))
             .timeout(Duration::from_secs(timeout))
             .header("X-CSRF-Token", token)
             .json(body)
-            .send()
+            .go()
             .await
             .map_err(|_| offline())?;
         let status = r.status().as_u16();

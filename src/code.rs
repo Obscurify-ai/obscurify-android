@@ -120,14 +120,22 @@ pub fn tools_on(app: &App) -> bool {
     app.settings.peek().tools && (!cfg.separate || !cfg.direct_tools.is_empty())
 }
 
+/// Code can't run while Tor is on: the code runs in a WebView with the phone's own connection
+/// (it may fetch from the internet), which Tor can't carry.
+pub fn code_blocked() -> bool { crate::tor::wanted() || crate::tor::always() }
+
+pub const TOR_NO_CODE: &str = "Code is off while you're connected through Tor: it would use your own connection.";
+
 /// The Code switch is on: the model can run code.
 pub fn code_on(app: &App) -> bool {
+    if code_blocked() { return false }
     if app.code.peek().separate { app.settings.peek().code } else { app.settings.peek().tools }
 }
 
 /// The agent loop runs for this model: it can call tools, and Code or Tools is on.
 pub fn active(app: &App, model: &str) -> bool {
-    capable(app, model) && (code_on(app) || tools_on(app))
+    // A server without separate switches always offers code with tools.
+    capable(app, model) && (code_on(app) || tools_on(app)) && (app.code.peek().separate || !code_blocked())
 }
 
 // ---- what a run looks like, kept on the message ----
@@ -254,6 +262,9 @@ async fn next(rx: &mut UnboundedReceiver<Value>, ms: u32) -> Option<Value> {
 
 /// Starts the sandbox if it isn't running and waits for it to be ready.
 async fn ensure(rx: &mut UnboundedReceiver<Value>, base: &str, mut app: App, stop: &impl Fn() -> bool) -> Result<(), String> {
+    if code_blocked() {
+        return Err(TOR_NO_CODE.into());
+    }
     if READY.load(Ordering::SeqCst) {
         return Ok(());
     }
@@ -1109,6 +1120,9 @@ pub fn html_blocks(answer: &str, shown: &[&str]) -> Vec<String> {
 
 /// Shows a page full screen, in a sandbox WebView of its own.
 pub fn open_page(app: &App, title: &str, html: &str) {
+    if code_blocked() {
+        return app.say(TOR_NO_CODE);
+    }
     let base = app.code.peek().base.clone();
     let q = |s: &str| serde_json::to_string(s).unwrap_or_default();
     js(&format!("window.android && android.openPage && android.openPage({}, {}, {})", q(&base), q(title), q(html)));

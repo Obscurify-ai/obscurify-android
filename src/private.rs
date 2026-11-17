@@ -43,6 +43,16 @@ pub async fn keys(number: &str) -> Result<String, String> {
 /// A new 16-digit account number, made on the phone (the server never learns it).
 pub fn new_number() -> String { unlinkable_inference::seed::new_account_number() }
 
+/// Where requests go changed (Tor on or off, a mirror): the manager connects again on its next
+/// use, to the new address and with a client made for it (its state is saved after every call).
+pub fn reset() {
+    if let Ok(mut s) = state().try_lock() {
+        *s = None;
+    } else {
+        dioxus::core::spawn_forever(async { *state().lock().await = None; });
+    }
+}
+
 /// Signing out: the seed and wallet go (they come back from the number at the next sign-in).
 pub fn forget() {
     store::remove(SEED_FILE);
@@ -69,7 +79,7 @@ fn seed() -> Option<[u8; 32]> {
 async fn start() -> Result<Manager, String> {
     let seed = seed().ok_or("no seed")?;
     let saved = store::load::<Option<serde_json::Value>>(STATE_FILE).map(|v| v.to_string());
-    let mut m = Manager::connect(api::BASE, Seed(seed), saved.as_deref()).await.map_err(|e| format!("{e:#}"))?;
+    let mut m = Manager::connect(&api::base(), Seed(seed), saved.as_deref()).await.map_err(|e| format!("{e:#}"))?;
     m.api_key = api::post("/tokens", json!({})).await.ok().and_then(|v| v["token"].as_str().map(str::to_string));
     if let Err(e) = m.start().await {
         eprintln!("private: restore: {e:#}");
@@ -162,7 +172,7 @@ pub async fn spending() -> Value {
         None => {
             let Some(saved) = store::load::<Option<Value>>(STATE_FILE) else { return Value::Null };
             let Some(seed) = seed() else { return Value::Null };
-            match Manager::connect(api::BASE, Seed(seed), Some(&saved.to_string())).await {
+            match Manager::connect(&api::base(), Seed(seed), Some(&saved.to_string())).await {
                 Ok(m) => m.spending().await,
                 Err(_) => return Value::Null,
             }

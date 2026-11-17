@@ -100,7 +100,7 @@ async fn run(model: &str, receipt: &str, route: Option<String>, raw: Vec<u8>, se
         nonce: sealed.nonce,
         request: Some(sealed.plain.into_bytes()),
     };
-    let options = obscurify_tee_verify::Options { pccs_url: format!("{}/tee/pccs", api::BASE), ..Default::default() };
+    let options = obscurify_tee_verify::Options { pccs_url: format!("{}/tee/pccs", api::base()), ..Default::default() };
     let report = obscurify_tee_verify::verify(&evidence, &options).await;
     Step { receipt: receipt.to_string(), report: serde_json::to_value(&report).ok(), error: String::new(), encrypted: true }
 }

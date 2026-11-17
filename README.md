@@ -17,7 +17,9 @@ are stored only on the phone.
 - **Nothing paid is thrown away.** A failed step retries by itself, then the answer stops, keeps its runs and tool results, and offers Continue; a new message carries them too, and they survive the app closing.
 - **Answers keep going when the app closes.** A signed-in answer is written on the server whatever happens to the phone, and held there for up to an hour. A dropped connection picks it up from where it was, and one that died quietly while the phone slept is replaced the moment the app is back on screen or online; an app that was closed or killed finishes it into its chat when it opens again, and Code Mode carries on its run. Stop ends it on the server too.
 - **Encrypted.** End-to-end encrypted chat with TEE models (confidential-computing enclaves), using [obscurify-tee-verify](https://github.com/Obscurify-ai/tee-verify). Before anything is sent, the phone checks the enclave gateway's attestation for a nonce of its own (a genuine Intel TDX machine running an approved gateway release) and encrypts every message to the key that attestation vouches for. Obscurify's server passes the request to the enclave without being able to read it, and each piece of the answer comes back encrypted to the phone's key. Then the receipt is checked: the reply's bytes are the ones the gateway signed, the enclave received exactly the conversation the phone encrypted, and the gateway verified the model host. Each answer gets a chip with the checks: "Encrypted" when every one passes, "Check failed" when one doesn't. If the attestation doesn't check out, the phone says "Not encrypted" and sends nothing. Chats from the old Verify mode keep their "Verified" or "Not verified" chips, since they weren't encrypted. While Encrypted is on, the picker lists only the models that take encrypted requests, and tools, web search and summarizing long chats are off (they would need the text).
-- **Temp, Encrypted, Tor and Wipe** at the top of the chat list. Temp starts a chat that is never written to the phone. Tor opens the onion site. Wipe deletes every chat and setting on the phone but keeps the sign-in and the wallet, since unspent vouchers are money.
+- **Temp, Encrypted, Tor and Wipe** at the top of the chat list. Temp starts a chat that is never written to the phone. Tor connects through Tor inside the app (below). Wipe deletes every chat and setting on the phone but keeps the sign-in and the wallet, since unspent vouchers are money.
+- **Tor, in the app.** Tap Tor and the app connects through Tor ([Arti](https://gitlab.torproject.org/tpo/core/arti)) and talks only to Obscurify's onion address. Until then Tor isn't started at all. "Always connect through Tor" (shown under the buttons once Tor is used) starts Tor with the app, and nothing goes around it: if Tor can't connect, requests fail. Where Tor itself is blocked, the app falls back to Tor's built-in bridges (obfs4 and Snowflake, through [lyrebird](https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird)) and starts with them next time. Through Tor, Code is off (the code runs with the phone's own connection) and media from tools shows as a button instead of loading. The Play app has no Tor.
+- **Mirrors (Pro).** If obscurify.ai can't be reached at all (no DNS, no connection, a TLS reset), a Pro account's requests move to one of its mirrors, other addresses of the same server that the server gives the signed-in account. An error from the server never moves them. The next launch tries obscurify.ai first again.
 - **Account number sign-in.**
   - Sign-up shows the number once.
   - The app keeps only the session, never the number.
@@ -47,6 +49,7 @@ Requirements:
 - The Android SDK with the NDK and build tools
 - Java 17 or newer
 - `dioxus-cli`: `cargo install dioxus-cli --version 0.7.10 --locked`
+- Go, for the Tor bridges' transport (`tools/lyrebird.sh`, run by `build.sh`); without it the app is built without bridges
 
 ```sh
 ./build.sh          # arm64 phone: target/obscurify.apk, or obscurify-unsigned.apk without a keystore
@@ -87,6 +90,7 @@ when the notes are about something the Play app doesn't have (payments, uncensor
 | `src/wallet.rs` | Top-ups (`/top_ups`), and blind voucher orders: blind, sign, unblind, redeem |
 | `src/private.rs` | Private sessions (default once signed in): chat requests carry a session secret and no cookie, paid from a blind-voucher wallet derived from the account number (the open-source [unlinkable-inference](https://github.com/Obscurify-ai/unlinkable-inference) crate); a wiped phone gets it back at sign-in. Sign-up makes the number on the phone and sends only a key derived from it |
 | `src/store.rs` | JSON files in the app's private storage |
+| `src/tor.rs` | In-app Tor: Arti on its own thread behind a SOCKS5 proxy on 127.0.0.1 (random port and password per run), built-in bridges through lyrebird (`tools/lyrebird.sh` builds it; `src/tor_off.rs` for the Play app) |
 | `MainActivity.kt` | The only Kotlin: Back asks the page first; opening links and wallet URIs; copy; Code Mode's sandbox WebView and full-screen pages |
 | `assets/style.css` | OLED black, green trim |
 
@@ -114,6 +118,8 @@ node categories.mjs                  # specialist categories (Writing, Security,
 node flaky-proxy.mjs & ACCOUNT=… node background.mjs  # background answers: a dropped connection, a killed app (plain and Code Mode), Stop
 node flaky-proxy.mjs & adb root; ACCOUNT=… node encrypted.mjs   # Encrypted (no request ever asks for tee_verify): e2ee models only, a marker word never leaves the phone, Encrypted chip after eight checks, history recalled, a swapped key sends nothing, a changed byte fails, a killed app reads the rest, kept after a restart
 TARGET=<dev server> node flaky-proxy.mjs & ACCOUNT=<Pro> node refusal.mjs  # Claude refusals (server's fake upstream): "declined" in italics, no button the first time, then "Ask <model> instead" bottom right that switches and asks again, plain and Code Mode; "Uncensored models need Pro" opens Account; the suggestion isn't kept
+node tor.mjs                         # in-app Tor (rooted emulator): off by default and not started, the button connects and chat goes to the onion address (the app's sockets never reach obscurify.ai's address), Code off, "Always" starts Tor with the app and can't be bypassed, off again goes direct
+node mirror-proxy.mjs & ACCOUNT=… node mirror.mjs  # mirrors: the list kept at sign-in, an unreachable server moves requests to a mirror and they stay there, the next launch goes back (test APK with OBSCURIFY_API=http://127.0.0.1:8094, adb reverse tcp:8094 and tcp:8095)
 adb root; DB=… node private.mjs      # private sessions: number made on the phone, only a key sent; chat with a session secret and no cookie, not charged to the account, each chat on its own session; a 402 (a pricey model's hold, and one injected on a tool call) tops the session up and asks again; wiped app signs in and gets every millicent back (test APK with OBSCURIFY_API=http://127.0.0.1:8231: the test records what leaves the phone)
 ```
 

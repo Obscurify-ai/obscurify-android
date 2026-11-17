@@ -838,6 +838,8 @@ pub fn ChatView() -> Element {
     let separate = app.code.read().separate;
     let tools_on = crate::code::tools_on(&app);
     let code_on = crate::code::code_on(&app);
+    let _ = TOR.read();
+    let tor_on = crate::code::code_blocked();
     let n = c.messages.len();
 
     let mut do_send = move || {
@@ -934,10 +936,11 @@ pub fn ChatView() -> Element {
                                     span { class: "switch" }
                                 }
                                 if separate {
-                                    button { class: if !capable { "item code-switch na" } else if code_on { "item code-switch on" } else { "item code-switch" },
-                                        role: "switch", aria_checked: "{capable && code_on}", aria_disabled: "{!capable}",
+                                    button { class: if !capable || tor_on { "item code-switch na" } else if code_on { "item code-switch on" } else { "item code-switch" },
+                                        role: "switch", aria_checked: "{capable && code_on}", aria_disabled: "{!capable || tor_on}",
                                         onclick: move |_| {
                                             if !capable { app.say(if encrypted { "Encrypted chats can't run code" } else { "This model can't run code" }); return }
+                                            if tor_on { app.say(crate::code::TOR_NO_CODE); return }
                                             let v = !app.settings.peek().code; app.settings.write().code = v; app.save_settings()
                                         },
                                         svg { view_box: "0 0 24 24", width: "20", height: "20",
@@ -1298,7 +1301,9 @@ fn RunOutputs(r: crate::code::Run) -> Element {
         for (i, img) in r.images.iter().enumerate() { img { key: "img-{i}", class: "run-img out", src: "{img}" } }
         for (i, url) in r.media.iter().enumerate() {
             div { key: "media-{i}", class: "run-media out",
-                if code::is_video(url) {
+                // Through Tor, nothing loads from a third party by itself: the button opens it.
+                if crate::tor::wanted() || crate::tor::always() {
+                } else if code::is_video(url) {
                     video { class: "run-video", controls: true, playsinline: true, preload: "metadata", src: "{url}" }
                 } else if code::is_audio(url) {
                     audio { class: "run-audio", controls: true, preload: "metadata", src: "{url}" }
@@ -1321,8 +1326,55 @@ fn RunOutputs(r: crate::code::Run) -> Element {
     }
 }
 
-/// Obscurify's onion site, opened in a Tor browser.
-const ONION: &str = "http://obscurizgk4wr5bg5fatq5tedqszcjrbgkot6qw7tnip74bakp6oztid.onion/";
+/// Tor's status for the screen. tor.rs works on its own thread; `watch_tor` follows it while it runs.
+pub static TOR: GlobalSignal<crate::tor::Status> = Signal::global(crate::tor::status);
+
+/// Follows Tor's status into `TOR` until Tor is off, saying when it connects or fails.
+pub fn watch_tor(app: App) {
+    use crate::tor::Status;
+    static WATCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if WATCHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    bg(async move {
+        loop {
+            let s = crate::tor::status();
+            if *TOR.peek() != s {
+                match &s {
+                    Status::On => app.say("Connected through Tor"),
+                    Status::Failed(_) => app.say("Tor couldn't connect. Tap Tor to try again."),
+                    _ => {}
+                }
+                *TOR.write() = s.clone();
+            }
+            if s == Status::Off {
+                break;
+            }
+            crate::sleep(700).await;
+        }
+        WATCHING.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
+}
+
+/// The Tor button: connect through Tor, or go back to connecting directly. A failed Tor tries again.
+fn toggle_tor(app: App) {
+    use crate::tor::{self, Status};
+    if !tor::wanted() {
+        tor::start();
+        watch_tor(app);
+        app.say("Connecting through Tor…");
+    } else if matches!(tor::status(), Status::Failed(_)) {
+        tor::stop();
+        tor::start();
+        watch_tor(app);
+    } else if tor::always() {
+        app.say("\u{201c}Always connect through Tor\u{201d} is on");
+    } else {
+        tor::stop();
+        *TOR.write() = Status::Off;
+        app.say("Tor is off");
+    }
+}
 
 /// "3h ago", beside a chat in the list.
 fn ago(ms: i64) -> String {
@@ -1343,6 +1395,9 @@ fn Drawer() -> Element {
     let current = app.conv.read().id.clone();
     let temp = app.conv.read().temp;
     let encrypted = app.settings.read().encrypted && api::has_session();
+    use crate::tor::Status;
+    let tor = TOR.read().clone();
+    let mut always = use_signal(crate::tor::always);
     rsx! {
         div { class: "veil", "data-back": "1", onclick: move |_| app.overlay.set(Overlay::None) }
         div { class: "drawer",
@@ -1364,15 +1419,29 @@ fn Drawer() -> Element {
                         rect { x: "5", y: "11", width: "14", height: "10", rx: "2" } path { d: "M8 11V7a4 4 0 0 1 8 0v4" } }
                     span { "Encrypted" }
                 }
-                if !PLAY { a { class: "q", id: "tor", href: "{ONION}",
+                if !PLAY { button { class: match &tor { Status::On => "q on", Status::Connecting => "q busy", Status::Failed(_) => "q fail", Status::Off => "q" },
+                    id: "tor", aria_pressed: "{tor != Status::Off}",
+                    onclick: move |_| toggle_tor(app),
                     svg { view_box: "0 0 24 24", width: "20", height: "20", fill: "none", stroke: "currentColor", stroke_width: "2",
                         circle { cx: "12", cy: "13", r: "8" } circle { cx: "12", cy: "13", r: "5" } circle { cx: "12", cy: "13", r: "2" } }
-                    span { "Tor" }
+                    span { {match &tor { Status::Connecting => "Tor…", _ => "Tor" }} }
                 } }
                 button { class: "q danger", id: "wipe", onclick: move |_| wiping.set(true),
                     svg { view_box: "0 0 24 24", width: "20", height: "20", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round",
                         path { d: "M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" } }
                     span { "Wipe" }
+                }
+            }
+            if !PLAY && (tor != Status::Off || always()) {
+                label { class: "tor-always",
+                    input { r#type: "checkbox", id: "tor-always", checked: always(),
+                        onchange: move |e| {
+                            let on = e.checked();
+                            crate::tor::set_always(on);
+                            always.set(on);
+                            if on && !crate::tor::wanted() { crate::tor::start(); watch_tor(app) }
+                        } }
+                    "Always connect through Tor"
                 }
             }
             if wiping() {

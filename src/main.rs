@@ -11,6 +11,11 @@ mod private;
 mod files;
 mod store;
 mod tee;
+#[cfg(feature = "tor")]
+mod tor;
+#[cfg(not(feature = "tor"))]
+#[path = "tor_off.rs"]
+mod tor;
 mod wallet;
 
 use chat::{Conv, Meta, Msg};
@@ -208,6 +213,7 @@ impl App {
         if !api::has_session() { return }
         bg(async move {
             code::load(self).await;
+            api::refresh_mirrors().await;
             if let Ok(v) = api::get("/get_user_balance").await {
                 // Plus what this phone holds for private chats: still the customer's money.
                 let held = private::spending().await["prepaid_millicents"].as_i64().unwrap_or(0) as f64 / 100_000.0;
@@ -295,7 +301,13 @@ impl App {
     }
 }
 
-fn main() { dioxus::launch(Root) }
+fn main() {
+    // "Always connect through Tor": Tor starts before anything can make a request.
+    if tor::always() {
+        tor::start()
+    }
+    dioxus::launch(Root)
+}
 
 /// Reads a picked file off the UI thread (a long PDF takes a while) and adds it to the next message.
 fn read_doc(app: App, name: String, b64: String) {
@@ -362,6 +374,7 @@ fn Root() -> Element {
         }
     });
 
+    use_hook(move || if tor::wanted() { chat::watch_tor(app) });
     use_future(move || async move {
         let mut app = app;
         if *app.screen.peek() == Screen::Chat {
