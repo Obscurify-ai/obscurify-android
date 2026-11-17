@@ -159,10 +159,23 @@ async function playToken() {
 
 async function play(token, method, path, body, upload) {
   const base = upload ? 'https://androidpublisher.googleapis.com/upload/androidpublisher/v3' : 'https://androidpublisher.googleapis.com/androidpublisher/v3';
-  const r = await fetch(`${base}/applications/${PLAY_PACKAGE}${path}`, {
-    method, headers: { authorization: `Bearer ${token}`, ...(upload ? { 'content-type': 'application/octet-stream' } : body ? { 'content-type': 'application/json' } : {}) },
-    body: upload ?? (body ? JSON.stringify(body) : undefined),
-  });
+  // A dropped connection is tried again (three times, a little later each time), with its cause logged.
+  let r;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      r = await fetch(`${base}/applications/${PLAY_PACKAGE}${path}`, {
+        method, headers: { authorization: `Bearer ${token}`, ...(upload ? { 'content-type': 'application/octet-stream' } : body ? { 'content-type': 'application/json' } : {}) },
+        body: upload ?? (body ? JSON.stringify(body) : undefined),
+        signal: AbortSignal.timeout(upload ? 600_000 : 60_000),
+      });
+      break;
+    } catch (e) {
+      const why = `${e.message}${e.cause ? ': ' + (e.cause.code || e.cause.message) : ''}`;
+      log(`Play ${method} ${path.split('?')[0]}: ${why} (try ${attempt})`);
+      if (attempt >= 3) throw new Error(`Play ${method} ${path.split('?')[0]}: ${why}`);
+      await new Promise((ok) => setTimeout(ok, attempt * 15_000));
+    }
+  }
   const text = await r.text();
   if (!r.ok) throw new Error(`Play ${method} ${path.split('?')[0]}: ${r.status} ${text.slice(0, 500)}`);
   return text ? JSON.parse(text) : {};
