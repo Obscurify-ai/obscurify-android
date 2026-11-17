@@ -371,7 +371,8 @@ fn Root() -> Element {
             code::load(app).await
         }
         if let Ok(v) = api::public("GET", "/models", None).await {
-            let mut models: Vec<Model> = v["data"].as_array().into_iter().flatten().map(|m| Model {
+            // Decision models answer typed questions through the API; they can't chat.
+            let mut models: Vec<Model> = v["data"].as_array().into_iter().flatten().filter(|m| m["decisions"] != true).map(|m| Model {
                 id: m["id"].as_str().unwrap_or("").into(),
                 name: m["name"].as_str().or(m["id"].as_str()).unwrap_or("").into(),
                 prompt: m["pricing"]["prompt"].as_f64().unwrap_or(0.0),

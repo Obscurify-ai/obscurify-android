@@ -1,0 +1,1 @@
+Decision models (typed answers for the API) stay out of the model picker, since they can't chat.
