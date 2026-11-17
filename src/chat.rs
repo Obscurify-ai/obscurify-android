@@ -218,14 +218,39 @@ fn after_answer(app: App, then: impl FnOnce(App) + 'static) {
     });
 }
 
-/// A fresh chat on the same model, like the web.
+/// A fresh chat, on the first favorite the account can use (as on the web); without one, on the
+/// same model.
 fn new_chat(app: App) {
     after_answer(app, start_new_chat);
+}
+
+/// The model new chats start on: the first favorite that is listed, offered on this build, not
+/// locked for the plan, and takes encrypted requests while Encrypted is on. A favorite that can't
+/// be used is skipped for the next one down. Guests chat with the guest model, so none.
+fn first_usable_favorite(app: &App) -> Option<String> {
+    if !api::has_session() {
+        return None;
+    }
+    let settings = app.settings.peek();
+    let models = app.models.peek();
+    let frontier = app.frontier.peek();
+    let uncensored = app.uncensored.peek();
+    let access = *app.access.peek();
+    settings.favorites.iter().find(|id| {
+        models.iter().any(|m| &m.id == *id && offered(m, &uncensored) && (!settings.encrypted || m.e2ee))
+            && needs_plan(id, access, &frontier, &uncensored).is_none()
+    }).cloned()
 }
 
 fn start_new_chat(mut app: App) {
     if app.live.peek().is_some() {
         return;
+    }
+    if let Some(id) = first_usable_favorite(&app)
+        && app.settings.peek().model != id
+    {
+        app.settings.write().model = id;
+        app.save_settings();
     }
     // A new chat stays temporary while Temp is on, as on the web.
     let temp = app.conv.peek().temp;

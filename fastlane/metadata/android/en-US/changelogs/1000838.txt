@@ -1,0 +1,1 @@
+New chats start on your first favorite model instead of the last chat's model. A favorite you can't use right now is skipped for the next one.

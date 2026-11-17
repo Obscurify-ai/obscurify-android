@@ -1,5 +1,5 @@
-// Favorites keep the order they were starred in and move up with ↑ (as on the web), and a new chat
-// never shows a Web search chip, even in the first moments before the app has Code Mode's settings:
+// Favorites keep the order they were starred in and move up with ↑ (as on the web), a new chat
+// starts on the first favorite, and a new chat never shows a Web search chip, even in the first moments before the app has Code Mode's settings:
 // web search follows the Tools switch, as on the web.
 //   OBSCURIFY_API=http://127.0.0.1:8093 DEVTOOLS=1 ./build.sh x86_64 && adb install -r <apk>
 //   node e2e/flaky-proxy.mjs &  adb reverse tcp:8093 tcp:8093
@@ -63,5 +63,17 @@ ok(await page.locator('.toggles:not(.providers) .chip.on', { hasText: /^Favorite
 await page.locator('.toggles:not(.providers) .chip', { hasText: /^All$/ }).click();
 ok(await page.locator('.drawer .up').count() === 0, 'no ↑ outside Favorites');
 await page.locator('.bar .icon', { hasText: '←' }).click();
+
+// 3. New chats start on the first favorite (a), even after another model was picked.
+const short = (n) => n.replace(/^[^:]*:\s*/, '');
+const title = async () => (await page.locator('.title.model').innerText()).replace(' ▾', '').trim();
+await page.locator('.title.model').click();
+await page.locator('.toggles:not(.providers) .chip', { hasText: /^Favorites$/ }).click();
+await page.locator('.drawer .pick', { hasText: b }).first().locator('.grow').click();
+await sleep(400);
+ok(short(b).includes(short(await title())) || (await title()).includes(short(b)), 'picked another favorite: ' + await title());
+await page.locator('.bar .icon', { hasText: '＋' }).click();
+await sleep(400);
+ok(short(a).includes(short(await title())) || (await title()).includes(short(a)), 'a new chat starts on the first favorite: ' + await title());
 console.log('PASS favorites');
 process.exit(0);
