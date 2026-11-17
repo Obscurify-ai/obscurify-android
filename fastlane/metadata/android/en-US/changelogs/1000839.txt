@@ -1,0 +1,2 @@
+Tor is built into the app. Tap Tor to connect, no Tor Browser needed, and tap again to turn it off. If your network blocks Tor, the app falls back to Tor's built-in bridges. Settings has "Always connect through Tor", which never lets the app connect any other way.
+Pro accounts: if obscurify.ai can't be reached, the app moves to one of your backup addresses on its own.
