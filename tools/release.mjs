@@ -3,7 +3,9 @@
 // signing keys never leave it). For the `version` in Cargo.toml on origin/main:
 //   1. GitHub: `./build.sh` (arm64, release key) -> checks -> release v<version> with obscurify.apk as
 //      its only file and fastlane/metadata/android/en-US/changelogs/<version-code>.txt as the notes.
-//   2. Play: `./build.sh play` (upload key) -> checks -> Google Play production track, same notes.
+//   2. Play: `./build.sh play` (upload key) -> checks -> Google Play production track, with
+//      play/changelogs/<version-code>.txt as the notes if there is one (the Play app has no payments,
+//      so a release about them needs other notes there), else the same notes.
 // Each step is done once per version (state.json), checked against GitHub/Play before building, so
 // a retry never redoes a step that went through. A failure is retried on the next run and Signals
 // Tony once per version, step and error.
@@ -64,7 +66,10 @@ function checkout() {
   const code = cargo.match(/^version-code = (\d+)/m)[1];
   const notesFile = join(REPO, `fastlane/metadata/android/en-US/changelogs/${code}.txt`);
   if (!existsSync(notesFile)) throw new Error(`no changelog for ${version}: fastlane/metadata/android/en-US/changelogs/${code}.txt`);
-  return { version, code, sha: git('rev-parse', 'HEAD'), notes: readFileSync(notesFile, 'utf8').trim(), notesFile };
+  const notes = readFileSync(notesFile, 'utf8').trim();
+  const playNotesFile = join(REPO, `play/changelogs/${code}.txt`);
+  const playNotes = existsSync(playNotesFile) ? readFileSync(playNotesFile, 'utf8').trim() : notes;
+  return { version, code, sha: git('rev-parse', 'HEAD'), notes, playNotes, notesFile };
 }
 
 function build(args) {
@@ -204,7 +209,7 @@ async function releasePlay(r) {
   if (String(up.versionCode) !== r.code) throw new Error(`Play read versionCode ${up.versionCode}, expected ${r.code}`);
   await play(token, 'PUT', `/edits/${edit.id}/tracks/production`, {
     track: 'production',
-    releases: [{ name: r.version, versionCodes: [r.code], status: 'completed', releaseNotes: [{ language: 'en-US', text: r.notes.slice(0, 500) }] }],
+    releases: [{ name: r.version, versionCodes: [r.code], status: 'completed', releaseNotes: [{ language: 'en-US', text: r.playNotes.slice(0, 500) }] }],
   });
   await play(token, 'POST', `/edits/${edit.id}:commit`);
   log(`sent ${r.version} (${r.code}) to Play production review`);

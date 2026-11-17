@@ -70,7 +70,8 @@ Releases are automatic: pushing a new `version` (and `version-code`) in `Cargo.t
 the release machine build and sign both apps from that commit, publish `obscurify.apk` on a GitHub
 release `v<version>` with `fastlane/metadata/android/en-US/changelogs/<version-code>.txt` as its
 notes, and send the Play bundle to Google Play's production track (Google reviews each update).
-Write the changelog file in the same commit.
+Write the changelog file in the same commit. The Play app shows the same notes unless `play/changelogs/<version-code>.txt` exists: write one
+when the notes are about something the Play app doesn't have (payments, uncensored models).
 
 ## Code
 
