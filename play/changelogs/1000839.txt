@@ -1,0 +1,1 @@
+Pro accounts: if obscurify.ai can't be reached from your network, the app moves to one of your backup addresses on its own.
