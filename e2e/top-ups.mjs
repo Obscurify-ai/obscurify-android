@@ -23,8 +23,8 @@ let { page } = await launch(true);
 // 1. A new account.
 await page.getByText('Create one').click();
 await page.locator('.check input').check();
-await page.getByRole('button', { name: 'Generate Account Number' }).click();
-await page.locator('.number').waitFor({ timeout: 20000 });
+await page.getByRole('button', { name: 'Make My Account Words' }).click();
+await page.locator('.words').waitFor({ timeout: 20000 });
 await page.locator('.check input').check();
 await page.getByRole('button', { name: 'Start Chatting' }).click();
 await page.waitForSelector('#composer');

@@ -50,3 +50,9 @@ export async function agentSwitches(page, on) {
     if (await sw.count() && (await sw.getAttribute('aria-checked') === 'true') !== on) await flip(page, sel);
   }
 }
+
+// The 12 account words shown in a grid (sign-up, Account): "1. word" per cell.
+export async function wordsOn(page, sel = '.words', timeout = 30000) {
+  await page.locator(sel).first().waitFor({ timeout });
+  return (await page.locator(`${sel} span`).allTextContents()).map((t) => t.replace(/^\d+\.\s*/, '').trim()).join(' ');
+}

@@ -5,7 +5,7 @@
 //   OBSCURIFY_API=http://127.0.0.1:8231 DEVTOOLS=1 ./build.sh x86_64 && adb install -r target/obscurify.apk
 //   adb root; adb reverse tcp:8231 tcp:8230; DB=obscurify_unlinkable node e2e/private-setup.mjs
 import { execFileSync } from 'node:child_process';
-import { launch, adb, ok, shot, sleep, PKG } from './lib.mjs';
+import { launch, adb, ok, shot, sleep, PKG, wordsOn } from './lib.mjs';
 
 const DB = process.env.DB || 'obscurify_unlinkable';
 const sql = (q) => execFileSync('docker', ['exec', '-i', 'obscurify-postgres-dev', 'psql', '-U', 'obscurify', '-d', DB, '-tAX', '-c', q]).toString().trim();
@@ -18,8 +18,8 @@ const sheet = (page) => page.locator('.sheet.private-setup');
 let { page } = await launch(true);
 await page.getByText('Create one').click();
 await page.locator('.check input').check();
-await page.getByRole('button', { name: 'Generate Account Number' }).click();
-const number = (await page.locator('.number').textContent({ timeout: 30000 })).trim();
+await page.getByRole('button', { name: 'Make My Account Words' }).click();
+const number = await wordsOn(page, '.words', 30000);
 await page.locator('.check input').check();
 await page.getByRole('button', { name: 'Start Chatting' }).click();
 await page.waitForSelector('#composer');

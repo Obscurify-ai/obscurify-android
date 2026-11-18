@@ -12,7 +12,7 @@
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { launch, adb, ok, shot, sleep, agentSwitches, PKG } from './lib.mjs';
+import { launch, adb, ok, shot, sleep, agentSwitches, PKG, wordsOn } from './lib.mjs';
 
 const UPSTREAM = { host: '127.0.0.1', port: +(process.env.UPSTREAM_PORT || 8230) };
 const DB = process.env.DB || 'obscurify_unlinkable';
@@ -70,10 +70,10 @@ try {
   let { page } = await launch(true);
   await page.getByText('Create one').click();
   await page.locator('.check input').check();
-  await page.getByRole('button', { name: 'Generate Account Number' }).click();
-  const number = (await page.locator('.number').textContent({ timeout: 30000 })).trim();
-  ok(/^\d{4} \d{4} \d{4} \d{4}$/.test(number), 'the phone made a number');
-  const digits = number.replace(/\D/g, '');
+  await page.getByRole('button', { name: 'Make My Account Words' }).click();
+  const number = await wordsOn(page, '.words', 30000);
+  ok(/^([a-z]+ ){11}[a-z]+$/.test(number), 'the phone made 12 account words');
+  const digits = number;
   const signup = seen.find((r) => r.path === '/create_account');
   ok(signup && /"account_key":"[0-9a-f]{64}"/.test(signup.body) && !signup.body.includes(digits), 'the server got only a key');
   await page.locator('.check input').check();
@@ -82,7 +82,7 @@ try {
   shot('private-signed-up');
 
   // Fund the account ($5, as a deposit: there is no payment on dev). It is found by its key hash.
-  const key = execFileSync(process.env.SESSIONS_BIN || `${process.env.HOME}/Work/unlinkable-inference/target/release/unlinkable-inference`, ['login-key'], { input: digits }).toString().trim();
+  const key = execFileSync(process.env.SESSIONS_BIN || `${process.env.HOME}/Work/unlinkable-inference-words/target/release/unlinkable-inference`, ['login-key'], { input: digits }).toString().trim();
   const secretFile = process.env.SECRET_FILE || `${process.env.HOME}/Work/obscurify-unlinkable/local/anon_keys/account_secret`;
   const hash = execFileSync('python3', ['-c', 'import hmac,hashlib,sys; print(hmac.new(bytes.fromhex(open(sys.argv[1]).read().strip()), b"obscurify-login-key-v1:"+sys.argv[2].encode(), hashlib.sha256).hexdigest())', secretFile, key]).toString().trim();
   const userId = sql(`SELECT id FROM users WHERE account_number_hash = '${hash}'`);

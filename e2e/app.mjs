@@ -6,7 +6,7 @@
 // Steps: create an account, fund it with a BTC blind voucher (regtest), chat with streaming and web
 // search, model picker and favorites, chats drawer, account page, restart, sign out and back in.
 import { execFileSync } from 'node:child_process';
-import { launch, ok, shot, device, agentSwitches } from './lib.mjs';
+import { launch, ok, shot, device, agentSwitches, wordsOn } from './lib.mjs';
 
 const btc = (...a) => execFileSync('docker', ['exec', process.env.BTC_CONTAINER || 'obscurify-bitcoind-dev', 'bitcoin-cli', '-regtest', '-rpcuser=btcrpc',
   `-rpcpassword=${process.env.BTC_RPC_PASSWORD}`, '-rpcwallet=payer', ...a], { encoding: 'utf8' }).trim();
@@ -15,13 +15,13 @@ let { browser, page } = await launch(true);
 
 // 1. A new account, the web's way: Terms checkbox, the number shown once, "I have saved it", then chat.
 await page.getByText('Create one').click();
-await page.getByRole('button', { name: 'Generate Account Number' }).click();
+await page.getByRole('button', { name: 'Make My Account Words' }).click();
 ok(await page.locator('.err', { hasText: 'Terms of Service' }).count() === 1, 'Terms must be accepted first');
 await page.locator('.check input').check();
-await page.getByRole('button', { name: 'Generate Account Number' }).click();
-let number = (await page.locator('.number').textContent({ timeout: 20000 })).trim();
-ok(/^\d{4} \d{4} \d{4} \d{4}$/.test(number), `account created: ${number.slice(0, 4)} …`);
-ok(await page.getByRole('button', { name: 'Start Chatting' }).isDisabled(), 'Start Chatting waits for "I have saved my account number"');
+await page.getByRole('button', { name: 'Make My Account Words' }).click();
+let number = await wordsOn(page, '.words', 20000);
+ok(/^([a-z]+ ){11}[a-z]+$/.test(number), `account created: ${number.split(' ')[0]} …`);
+ok(await page.getByRole('button', { name: 'Start Chatting' }).isDisabled(), 'Start Chatting waits for "I have saved my 12 words"');
 shot('number');
 await page.locator('.check input').check();
 await page.getByRole('button', { name: 'Start Chatting' }).click();
@@ -128,13 +128,15 @@ await page.locator('.veil').click({ position: { x: 380, y: 300 } });
 // 8. A new number replaces the old one; it's shown once and never again.
 await page.locator('.bar .icon').first().click();
 await page.locator('.drawer .foot button').click();
-ok(await page.getByText('Hidden. We only store a scrambled copy', { exact: false }).count() === 1, 'account number is hidden');
-await page.getByRole('button', { name: 'Get a New Number' }).click();
-await page.getByRole('button', { name: 'Get a New Number' }).last().click();
-const fresh = (await page.locator('.number').textContent({ timeout: 20000 })).trim();
-ok(/^\d{4} \d{4} \d{4} \d{4}$/.test(fresh) && fresh !== number, 'new account number shown once');
+ok(await page.getByText('Hidden. We only store a scrambled copy', { exact: false }).count() === 1, 'account words are hidden');
+await page.locator('#rotate-words').click();
+const fresh = await wordsOn(page, '#new-words .words', 20000);
+await page.locator('#words-saved input').check();
+await page.locator('#switch-words').click();
+await page.locator('#new-words', { hasText: 'Done' }).waitFor({ timeout: 60000 });
+ok(/^([a-z]+ ){11}[a-z]+$/.test(fresh) && fresh !== number, 'new account words shown once');
 await page.getByRole('button', { name: "I've Saved It" }).click();
-ok(await page.locator('.number').count() === 0, 'and hidden again');
+ok(await page.locator('#new-words').count() === 0, 'and hidden again');
 
 // 9. Sign out; the old number fails, the new one signs in.
 await page.getByRole('button', { name: 'Sign out' }).click();
@@ -143,13 +145,13 @@ await page.waitForSelector('.login input');
 await page.locator('.login input').fill(number);
 await page.getByRole('button', { name: 'Sign In' }).click();
 await page.waitForSelector('.login .err', { timeout: 20000 });
-ok(true, 'old number refused: ' + await page.locator('.login .err').textContent());
+ok(true, 'old words refused: ' + await page.locator('.login .err').textContent());
 await page.locator('.login input').fill(fresh);
 await page.getByRole('button', { name: 'Sign In' }).click();
 await page.waitForSelector('#composer', { timeout: 20000 });
 await page.locator('.bar .icon').first().click();
 await page.waitForFunction(() => /\$\d/.test(document.querySelector('.drawer .foot')?.textContent || ''), null, { timeout: 20000 });
-ok(true, 'signed back in with the account number: ' + await page.locator('.drawer .foot').textContent());
+ok(true, 'signed back in with the new account words: ' + await page.locator('.drawer .foot').textContent());
 
 console.log('all passed');
 await device.close();

@@ -77,6 +77,13 @@ try {
   const typoSent = seen.slice(before).some((r) => r.path === '/login');
   // A different last word passes the checksum 1 time in 16: then the server says no instead.
   ok(err.includes('aren\'t 12 account words') ? !typoSent : err.length > 0, 'a wrong word doesn\'t sign in: ' + err.trim());
+  // Real words that sign in to nothing: refused, and never sent (not even as a fallback).
+  const nobody = 'legal winner thank year wave sausage worth useful legal winner thank yellow';
+  const at = seen.length;
+  await signInTyping(page, nobody);
+  await page.locator('.login .err', { hasText: 'didn\'t sign in' }).waitFor({ timeout: 60000 });
+  await sleep(1000);
+  ok(seen.slice(at).filter((x) => x.path === '/login').length === 1 && !leaked(nobody), 'words that sign in to nothing are refused, and never sent: ' + (await page.locator('.login .err').textContent()).trim());
   const messy = list.map((w, i) => `${i + 1}. ${i % 3 === 0 ? w.toUpperCase() : i % 3 === 1 && w.length > 4 ? w.slice(0, 4) : w}`).join(', ');
   await signInTyping(page, messy);
   await page.waitForSelector('#composer', { timeout: 60000 });

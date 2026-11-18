@@ -5,7 +5,11 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::path::PathBuf;
 
 /// The app's package: its private files dir is named after it. The Play build is its own app.
-pub const PACKAGE: &str = if cfg!(feature = "play") { "ai.obscurify.play" } else { "ai.obscurify.android" };
+/// A test build made with APP_ID (build.sh) is its own app too.
+pub const PACKAGE: &str = match option_env!("APP_ID") {
+    Some(id) => id,
+    None => if cfg!(feature = "play") { "ai.obscurify.play" } else { "ai.obscurify.android" },
+};
 
 pub fn dir() -> PathBuf {
     let d = if cfg!(target_os = "android") {

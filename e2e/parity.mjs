@@ -1,7 +1,7 @@
 // Features the app shares with the website: guest chat, the Tools switch, the provider filter,
 // raw view and editing any answer, chat times, links, plan confirmation, amount presets, and
 // deleting the account. Test APK against a server, then: ACCOUNT=<funded number> node e2e/parity.mjs
-import { launch, agentSwitches, ok, sleep, flip } from './lib.mjs';
+import { launch, agentSwitches, ok, sleep, flip, wordsOn } from './lib.mjs';
 
 const answered = (page, n) => page.waitForFunction((n) => document.querySelectorAll('.msg.assistant').length >= n && !document.querySelector('.send.stop'), n, { timeout: 150000 });
 
@@ -47,8 +47,8 @@ ok(await page.getByText('Create Account').count() >= 1, 'a guest picking a model
 await page.locator('.check input').check();
 ok((await page.locator('.check').textContent()).includes("I'm 18 or older"), 'sign-up says 18+');
 ok(await page.locator('input[placeholder^="Referral code"]').count() === 1, 'sign-up takes a referral code');
-await page.getByRole('button', { name: 'Generate Account Number' }).click();
-const fresh = (await page.locator('.number').textContent({ timeout: 20000 })).trim();
+await page.getByRole('button', { name: 'Make My Account Words' }).click();
+const fresh = await wordsOn(page, '.words', 20000);
 await page.locator('.check input').check();
 await page.getByRole('button', { name: 'Start Chatting' }).click();
 await page.waitForSelector('#composer');

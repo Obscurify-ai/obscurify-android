@@ -1080,6 +1080,8 @@ pub async fn wipe() {
 pub fn reset_switch() { store::remove(OFF) }
 
 /// Signing out: this phone's chats go (chat.rs), the synced copy stays for the next sign-in.
+/// Signing in: the key a switch here moved sync to goes (the sign-in's own seed is used).
+pub fn forget_moved_key() { store::remove(SEED) }
 pub fn forget() {
     clear();
     store::remove(SEED);

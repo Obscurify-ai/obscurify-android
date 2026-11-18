@@ -281,8 +281,13 @@ pub async fn login(number: &str) -> Result<(), String> {
         Ok(key) => send(false, "POST", "/login", Some(&json!({"account_key": key})), 20).await.ok().filter(|(_, v, _)| v["success"] != false),
         Err(_) => None,
     };
+    // Words never leave the phone, even when signing in with their key fails: only a 16-digit
+    // number from before login keys is sent as it is, once, to move the account over.
     let (_, v, session) = match by_key {
         Some(r) => r,
+        None if crate::private::kind_of(number) == Some("words") => {
+            return Err("Those words didn't sign in. Check each word and its order.".to_string());
+        }
         None => send(false, "POST", "/login", Some(&json!({"account_number": number})), 20).await.map_err(msg)?,
     };
     if v["success"] == false {

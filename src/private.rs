@@ -47,6 +47,9 @@ pub async fn keys(number_or_words: &str) -> Result<String, String> {
     let k = keys_of(number_or_words).await?;
     store::save(SEED_FILE, &Some(k.seed.0.iter().map(|b| format!("{b:02x}")).collect::<String>()));
     set_kind(kind_of(number_or_words).unwrap_or("number"));
+    // A sign-in replaces whatever key chat sync moved to after a switch here (sync.rs), which may
+    // belong to another account if that session ended without signing out.
+    crate::sync::forget_moved_key();
     Ok(k.login_key)
 }
 
