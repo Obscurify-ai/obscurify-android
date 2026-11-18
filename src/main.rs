@@ -169,6 +169,8 @@ struct App {
     frontier: Signal<Vec<String>>,
     uncensored: Signal<Vec<String>>,
     access: Signal<Option<Access>>,
+    /// The models the plan opens chats on, best first (`default_models` from `/account_tier`).
+    plan_defaults: Signal<Vec<String>>,
     convs: Signal<Vec<Meta>>,
     conv: Signal<Conv>,
     live: Signal<Option<Msg>>,
@@ -224,7 +226,9 @@ impl App {
                 self.access.set(Some(Access {
                     frontier: v["can_access_frontier"].as_bool().unwrap_or(tier != "pay_as_you_go"),
                     uncensored: v["can_access_uncensored"].as_bool().unwrap_or(tier == "pro"),
-                }))
+                }));
+                self.plan_defaults.set(v["default_models"].as_array().into_iter().flatten().filter_map(|m| m.as_str().map(String::from)).collect());
+                chat::open_on_plan_default(self);
             }
         })
     }
@@ -244,6 +248,8 @@ impl App {
         self.conv.set(Conv::new());
         self.balance.set(None);
         self.access.set(None);
+        self.plan_defaults.set(vec![]);
+        chat::PLAN_DEFAULT_DONE.store(false, std::sync::atomic::Ordering::SeqCst);
         self.top_ups.set(vec![]);
         self.top_up_seen.set(None);
         self.screen.set(Screen::Login);
@@ -357,6 +363,7 @@ fn Root() -> Element {
             frontier: Signal::new(vec![]),
             uncensored: Signal::new(vec![]),
             access: Signal::new(None),
+            plan_defaults: Signal::new(vec![]),
             convs: Signal::new(convs),
             conv: Signal::new(conv),
             live: Signal::new(None),
@@ -402,6 +409,7 @@ fn Root() -> Element {
             models.sort_by_key(|m| (std::cmp::Reverse(m.created), m.name.to_lowercase()));
             models.retain(|m| chat::offered(m, &[]));
             app.models.set(models);
+            chat::open_on_plan_default(app);
         }
         // An answer the app was writing when it closed: the server finished it; show it.
         if *app.screen.peek() == Screen::Chat {
