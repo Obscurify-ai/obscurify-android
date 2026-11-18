@@ -1,6 +1,7 @@
 // Shared by the e2e scripts: drives the installed app's WebView with Playwright's Android support.
 import { _android } from 'playwright';
 import { execFileSync } from 'node:child_process';
+import { randomBytes, createHash } from 'node:crypto';
 
 // PKG=ai.obscurify.play drives the Play build.
 export const PKG = process.env.PKG || 'ai.obscurify.android';
@@ -51,8 +52,20 @@ export async function agentSwitches(page, on) {
   }
 }
 
-// The 12 seed words shown in a grid (sign-up, Account): "1. word" per cell.
-export async function wordsOn(page, sel = '.words', timeout = 30000) {
+// The account code (or number) shown in a box (sign-up, Account).
+export async function wordsOn(page, sel = '.number', timeout = 30000) {
   await page.locator(sel).first().waitFor({ timeout });
-  return (await page.locator(`${sel} span`).allTextContents()).map((t) => t.replace(/^\d+\.\s*/, '').trim()).join(' ');
+  return (await page.locator(sel).first().textContent()).trim();
 }
+
+// A valid account code (typo check and all) that belongs to no account: the library's format.
+export function newCode() {
+  const random = randomBytes(12);
+  const check = createHash('sha256').update(random).digest()[0] >> 4;
+  let bits = (BigInt('0x' + random.toString('hex')) << 4n) | BigInt(check);
+  const A = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  let out = '';
+  for (let k = 19; k >= 0; k--) out += A[Number((bits >> BigInt(5 * k)) & 31n)];
+  return out.match(/.{5}/g).join('-');
+}
+export const CODE = /^[0-9A-HJKMNP-TV-Z]{5}(-[0-9A-HJKMNP-TV-Z]{5}){3}$/;

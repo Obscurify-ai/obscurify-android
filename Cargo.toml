@@ -58,6 +58,6 @@ strip = true
 lto = true
 
 
-# Dev: account words before unlinkable-inference 0.1.2 is published.
+# Dev: account codes before unlinkable-inference 0.1.2 is published.
 [patch.crates-io]
 unlinkable-inference = { path = "../unlinkable-inference-words/lib" }

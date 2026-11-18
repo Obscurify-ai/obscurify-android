@@ -71,8 +71,8 @@ try {
   await page.getByText('Create one').click();
   await page.locator('.check input').check();
   await page.getByRole('button', { name: 'Create Account' }).click();
-  const number = await wordsOn(page, '.words', 30000);
-  ok(/^([a-z]+ ){11}[a-z]+$/.test(number), 'the phone made 12 seed words');
+  const number = await wordsOn(page, '.number', 30000);
+  ok(/^[0-9A-Z]{5}(-[0-9A-Z]{5}){3}$/.test(number), 'the phone made an account code');
   const digits = number;
   const signup = seen.find((r) => r.path === '/create_account');
   ok(signup && /"account_key":"[0-9a-f]{64}"/.test(signup.body) && !signup.body.includes(digits), 'the server got only a key');

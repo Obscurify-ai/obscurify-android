@@ -15,8 +15,8 @@ use unlinkable_inference::seed::{account_keys, normalize_credential, AccountKeys
 
 const SEED_FILE: &str = "unlinkable-seed.json";
 const STATE_FILE: &str = "unlinkable-state.json";
-/// How this phone signed in: "words" (12 seed words) or "number" (16 digits). None: before
-/// words existed, so a number. Chat sync is only for words (sync.rs).
+/// How this phone signed in: "code" (an account code) or "number" (16 digits). None: before
+/// codes existed, so a number. Chat sync is only for codes (sync.rs).
 const KIND_FILE: &str = "account-kind.json";
 
 fn state() -> &'static tokio::sync::Mutex<Option<Manager>> {
@@ -32,41 +32,41 @@ pub fn set_chat(id: &str) { *CHAT.lock().unwrap() = id.to_string() }
 /// On: there is a seed from signing in on this phone.
 pub fn on() -> bool { store::load::<Option<String>>(SEED_FILE).is_some() }
 
-/// The login key and seed for 12 seed words or a 16-digit number, kept nowhere. Argon2id is
+/// The login key and seed for an account code or a 16-digit number, kept nowhere. Argon2id is
 /// slow on purpose, so it runs off the UI thread.
-pub async fn keys_of(number_or_words: &str) -> Result<AccountKeys, String> {
-    let n = number_or_words.to_string();
+pub async fn keys_of(code_or_number: &str) -> Result<AccountKeys, String> {
+    let n = code_or_number.to_string();
     let (tx, rx) = futures_channel::oneshot::channel();
     std::thread::spawn(move || { let _ = tx.send(account_keys(&n)); });
     rx.await.map_err(|_| "Could not derive the key".to_string())?.map_err(|e| e.to_string())
 }
 
-/// The login key for the words or number (sent to sign in, instead of them), keeping its seed for
+/// The login key for the code or number (sent to sign in, instead of it), keeping its seed for
 /// the wallet and which kind it was.
-pub async fn keys(number_or_words: &str) -> Result<String, String> {
-    let k = keys_of(number_or_words).await?;
+pub async fn keys(code_or_number: &str) -> Result<String, String> {
+    let k = keys_of(code_or_number).await?;
     store::save(SEED_FILE, &Some(k.seed.0.iter().map(|b| format!("{b:02x}")).collect::<String>()));
-    set_kind(kind_of(number_or_words).unwrap_or("number"));
+    set_kind(kind_of(code_or_number).unwrap_or("number"));
     // A sign-in replaces whatever key chat sync moved to after a switch here (sync.rs), which may
     // belong to another account if that session ended without signing out.
     crate::sync::forget_moved_key();
     Ok(k.login_key)
 }
 
-/// "words" (12 seed words whose checksum holds), "number" (16 digits), or None for what was typed.
+/// "code" (an account code whose typo check holds), "number" (16 digits), or None for what was typed.
 pub fn kind_of(input: &str) -> Option<&'static str> {
     match normalize_credential(input)? {
         Credential::Number(_) => Some("number"),
-        Credential::Words(_) => Some("words"),
+        Credential::Code(_) => Some("code"),
     }
 }
 
-/// This phone signed in with seed words (or switched to them).
-pub fn words() -> bool { store::load::<Option<String>>(KIND_FILE).as_deref() == Some("words") }
+/// This phone signed in with an account code (or converted to one).
+pub fn has_code() -> bool { store::load::<Option<String>>(KIND_FILE).as_deref() == Some("code") }
 pub fn set_kind(kind: &str) { store::save(KIND_FILE, &Some(kind.to_string())) }
 
-/// 12 new seed words (128 random bits), made on the phone (the server never learns them).
-pub fn new_words() -> String { unlinkable_inference::seed::new_recovery_words() }
+/// A new account code (96 random bits), made on the phone (the server never learns it).
+pub fn new_code() -> String { unlinkable_inference::seed::new_account_code() }
 
 /// Where requests go changed (Tor on or off, a mirror): the manager connects again on its next
 /// use, to the new address and with a client made for it (its state is saved after every call).

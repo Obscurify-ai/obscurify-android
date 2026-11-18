@@ -1042,7 +1042,7 @@ fn PrivateSetup() -> Element {
     let turn_on = move |_| {
         let digits = number().trim().to_string();
         if crate::private::kind_of(&digits).is_none() {
-            error.set(Some(if digits.chars().any(|c| c.is_ascii_alphabetic()) { "Those aren't 12 seed words: check each word and its order." } else { "That is not 16 digits." }.into()));
+            error.set(Some(if digits.chars().any(|c| c.is_ascii_alphabetic()) { "That isn't a valid account code: check each character." } else { "That is not 16 digits or an account code." }.into()));
             return
         }
         busy.set(true);
@@ -1059,10 +1059,10 @@ fn PrivateSetup() -> Element {
         div { class: "veil" }
         div { class: "sheet private-setup",
             h2 { "Make your chats private here" }
-            p { class: "muted", "You signed in here before private chats existed. Enter your seed words (or number) once on this phone, and after that we can't tell which chats are yours. "
+            p { class: "muted", "You signed in here before private chats existed. Enter your account code (or number) once on this phone, and after that we can't tell which chats are yours. "
                 a { onclick: move |_| crate::open_url(&format!("{}/blog/unlinkable_inference", api::BASE)), "How this works" }
             }
-            label { class: "field-label", r#for: "setup-words", "Seed words or account number" }
+            label { class: "field-label", r#for: "setup-words", "Account code or number" }
             input { class: "field", id: "setup-words", autocapitalize: "none", spellcheck: "false", value: "{number}", oninput: move |e| number.set(e.value()) }
             if let Some(e) = error() { p { class: "err", "{e}" } }
             div { class: "row end",

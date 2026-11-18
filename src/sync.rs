@@ -1,4 +1,4 @@
-//! Encrypted chat sync with the website and other phones signed in with the same seed words.
+//! Encrypted chat sync with the website and other phones signed in with the same account code.
 //!
 //! Chats and favorites are encrypted here with a key from the account number's seed (private.rs)
 //! before they leave the phone. The server (`/sync/v1`, see the website's src/api/sync.rs) gets
@@ -119,9 +119,9 @@ fn seed() -> Option<[u8; 32]> {
     }
 }
 
-/// Only accounts with 12 seed words sync: 16 digits can be guessed by someone holding the
+/// Only accounts with an account code sync: 16 digits can be guessed by someone holding the
 /// server, words can't (private.rs keeps which this phone signed in with).
-pub fn available() -> bool { crate::private::words() && seed().is_some() }
+pub fn available() -> bool { crate::private::has_code() && seed().is_some() }
 /// Bumped when the account switches to words (Account), so the switch shows it.
 pub static REFRESH: GlobalSignal<u32> = Signal::global(|| 0);
 pub fn on() -> bool { available() && !store::load::<bool>(OFF) }
@@ -937,7 +937,7 @@ pub fn JoinAsk() -> Element {
         div { class: "sheet", id: "sync-join",
             h2 { "Combine chats?" }
             p { class: "muted", id: "sync-join-text",
-                "This phone has {chats(here)} {that} synced, and your account has {chats(there)} from your other devices. Combine puts all {here + there} on every device signed in with your seed words. Nothing is deleted."
+                "This phone has {chats(here)} {that} synced, and your account has {chats(there)} from your other devices. Combine puts all {here + there} on every device signed in with your account code. Nothing is deleted."
             }
             div { class: "row end",
                 button { class: "bare", id: "sync-join-no", onclick: move |_| answer_join(app, false), "Not on this phone" }
@@ -1128,10 +1128,10 @@ pub fn SyncSection() -> Element {
         div { class: "section",
             h2 { "Sync" }
             if !available() {
-                p { class: "muted", id: "sync-needs-words", if crate::private::on() && !crate::private::words() {
-                    "Off until you convert to seed words above."
+                p { class: "muted", id: "sync-needs-words", if crate::private::on() && !crate::private::has_code() {
+                    "Off until you convert to an account code above."
                 } else {
-                    "Sign in with your seed words on this phone to sync chats."
+                    "Sign in with your account code on this phone to sync chats."
                 } }
             } else {
                 label { class: "tor-always", id: "sync-switch",
@@ -1153,7 +1153,7 @@ pub fn SyncSection() -> Element {
                         } }
                     "Sync chats between devices"
                 }
-                p { class: "muted", "Encrypted on this phone with a key from your seed words. We hold only ciphertext, never the key." }
+                p { class: "muted", "Encrypted on this phone with a key from your account code. We hold only ciphertext, never the key." }
                 if full() { p { class: "muted", "Sync storage for this account is full: new chats stay on this phone." } }
                 if asking() {
                     p { class: "muted", "Stop syncing? The synced copy is deleted and your other devices stop syncing too. Chats stay on each device." }

@@ -29,7 +29,7 @@ let { page } = await launch(true);
 await page.getByText('Create one').click();
 await page.locator('.check input').check();
 await page.getByRole('button', { name: 'Create Account' }).click();
-await page.locator('.words').waitFor({ timeout: 20000 });
+await page.locator('.number').waitFor({ timeout: 20000 });
 await page.locator('.check input').check();
 await page.getByRole('button', { name: 'Start Chatting' }).click();
 await page.waitForSelector('#composer');

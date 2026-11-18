@@ -48,7 +48,7 @@ await page.locator('.check input').check();
 ok((await page.locator('.check').textContent()).includes("I'm 18 or older"), 'sign-up says 18+');
 ok(await page.locator('input[placeholder^="Referral code"]').count() === 1, 'sign-up takes a referral code');
 await page.getByRole('button', { name: 'Create Account' }).click();
-const fresh = await wordsOn(page, '.words', 20000);
+const fresh = await wordsOn(page, '.number', 20000);
 await page.locator('.check input').check();
 await page.getByRole('button', { name: 'Start Chatting' }).click();
 await page.waitForSelector('#composer');

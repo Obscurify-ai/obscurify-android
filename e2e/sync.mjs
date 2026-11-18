@@ -72,9 +72,9 @@ try {
   await page.getByText('Create one').click();
   await page.locator('.check input').check();
   await page.getByRole('button', { name: 'Create Account' }).click();
-  await page.locator('.words').waitFor({ timeout: 30000 });
-  // 12 seed words (only word accounts sync); "digits" is what signs in.
-  const digits = (await page.locator('.words span').allTextContents()).map((t) => t.replace(/^\d+\.\s*/, '').trim()).join(' ');
+  await page.locator('.number').waitFor({ timeout: 30000 });
+  // An account code (only accounts with a code sync); "digits" is what signs in.
+  const digits = (await page.locator('.number').textContent()).trim();
   await page.locator('.check input').check();
   await page.getByRole('button', { name: 'Start Chatting' }).click();
   await page.waitForSelector('#composer');
@@ -222,12 +222,12 @@ try {
   await web.evaluate(() => ChatSync.setOn(true));
   await webSync();
   await page.locator('#rotate-words').click();
-  await page.locator('#new-words .words').waitFor({ timeout: 30000 });
-  const fresh = (await page.locator('#new-words .words span').allTextContents()).map((t) => t.replace(/^\d+\.\s*/, '').trim()).join(' ');
+  await page.locator('#new-words .number').waitFor({ timeout: 30000 });
+  const fresh = (await page.locator('#new-words .number').textContent()).trim();
   await page.locator('#words-saved input').check();
   await page.locator('#switch-words').click();
   await page.locator('#new-words', { hasText: 'Done' }).waitFor({ timeout: 60000 });
-  ok(/^([a-z]+ ){11}[a-z]+$/.test(fresh) && fresh !== digits, 'the phone got new seed words');
+  ok(/^[0-9A-Z]{5}(-[0-9A-Z]{5}){3}$/.test(fresh) && fresh !== digits, 'the phone got a new account code');
   await until('the phone moved to the new store', async () => cat('sync-seed.json').length > 60 && json('sync-state.json', {}).epoch);
   await webSync();
   ok(await web.evaluate(() => !ChatSync.on()), 'the website on the old number stopped syncing');
@@ -236,7 +236,7 @@ try {
   await web2.goto(WEB + '/');
   await web2.waitForFunction(() => window.PrivateSessions && window.ChatSync && typeof chatStore !== 'undefined');
   const seed2 = await web2.evaluate((n) => PrivateSessions.seedOf(n), fresh);
-  await web2.evaluate((s) => { localStorage.setItem('obscurify_private_off', '1'); localStorage.setItem('obscurify_account_kind', 'words'); localStorage.setItem('obscurify_sync_seed', s); }, seed2);
+  await web2.evaluate((s) => { localStorage.setItem('obscurify_private_off', '1'); localStorage.setItem('obscurify_account_kind', 'code'); localStorage.setItem('obscurify_sync_seed', s); }, seed2);
   await web2.reload();
   await web2.waitForFunction(() => window.ChatSync && typeof chatStore !== 'undefined');
   const moved = await until('the phone\'s chats under the new number', async () => (await web2.evaluate(async () => { await ChatSync.syncNow(); await ChatSync.syncNow(); return getConversations(); })).find((c) => c.id === mango.id));
@@ -370,7 +370,7 @@ try {
   const web3 = await ctx3.newPage();
   await web3.goto(WEB + '/');
   await web3.waitForFunction(() => window.ChatSync && typeof chatStore !== 'undefined');
-  await web3.evaluate((s) => { localStorage.setItem('obscurify_private_off', '1'); localStorage.setItem('obscurify_account_kind', 'words'); localStorage.setItem('obscurify_sync_seed', s); }, seed2);
+  await web3.evaluate((s) => { localStorage.setItem('obscurify_private_off', '1'); localStorage.setItem('obscurify_account_kind', 'code'); localStorage.setItem('obscurify_sync_seed', s); }, seed2);
   await web3.reload();
   await web3.waitForFunction(() => window.ChatSync && typeof chatStore !== 'undefined');
   const third = await until('the chat on a new browser', async () => (await web3.evaluate(async () => { await chatStore.ready; await ChatSync.syncNow(); await ChatSync.syncNow(); return getConversations(); })).find((x) => x.id === PIC_ID));

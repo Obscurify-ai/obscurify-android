@@ -272,7 +272,7 @@ pub fn status_of(e: &str) -> (u16, &str) {
 
 pub fn msg(e: String) -> String { status_of(&e).1.to_string() }
 
-/// Signs in with the 12 seed words or a 16-digit account number (any spacing). Only the
+/// Signs in with the account code or a 16-digit account number (any spacing). Only the
 /// session it starts is kept.
 pub async fn login(number: &str) -> Result<(), String> {
     // Only a key derived from the number is sent (private.rs); an account from before that is moved
@@ -281,12 +281,12 @@ pub async fn login(number: &str) -> Result<(), String> {
         Ok(key) => send(false, "POST", "/login", Some(&json!({"account_key": key})), 20).await.ok().filter(|(_, v, _)| v["success"] != false),
         Err(_) => None,
     };
-    // Words never leave the phone, even when signing in with their key fails: only a 16-digit
+    // A code never leaves the phone, even when signing in with its key fails: only a 16-digit
     // number from before login keys is sent as it is, once, to move the account over.
     let (_, v, session) = match by_key {
         Some(r) => r,
-        None if crate::private::kind_of(number) == Some("words") => {
-            return Err("Those words didn't sign in. Check each word and its order.".to_string());
+        None if crate::private::kind_of(number) == Some("code") => {
+            return Err("That account code didn't sign in. Check each character.".to_string());
         }
         None => send(false, "POST", "/login", Some(&json!({"account_number": number})), 20).await.map_err(msg)?,
     };
@@ -298,11 +298,11 @@ pub async fn login(number: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Makes a new account (the caller has had the Terms accepted), signed in. Returns its 12 account
-/// words and any starter credit it got.
+/// Makes a new account (the caller has had the Terms accepted), signed in. Returns its account
+/// code and any starter credit it got.
 pub async fn create_account(referral: &str) -> Result<(String, Option<f64>), String> {
-    // The words are made here and only a key derived from them is sent: the server never learns them.
-    let number = crate::private::new_words();
+    // The code is made here and only a key derived from it is sent: the server never learns it.
+    let number = crate::private::new_code();
     let key = crate::private::keys(&number).await?;
     let mut body = json!({"accept_tos": true, "account_key": key});
     if !referral.trim().is_empty() {
@@ -316,10 +316,10 @@ pub async fn create_account(referral: &str) -> Result<(String, Option<f64>), Str
     Ok((n, credit))
 }
 
-/// Switches the account to new seed words made on the phone: only their login key is sent.
-/// The old number or words, the old API key and other sessions stop working. Returns the words' seed.
-pub async fn switch_to_words(words: &str) -> Result<[u8; 32], String> {
-    let k = crate::private::keys_of(words).await?;
+/// Switches the account to a new account code made on the phone: only its login key is sent.
+/// The old number or code, the old API key and other sessions stop working. Returns the code's seed.
+pub async fn switch_to_code(code: &str) -> Result<[u8; 32], String> {
+    let k = crate::private::keys_of(code).await?;
     call("POST", "/account_number/rotate", Some(json!({"account_key": k.login_key}))).await?;
     Ok(k.seed.0)
 }
