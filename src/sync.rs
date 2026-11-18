@@ -69,6 +69,13 @@ struct Prefs {
 #[derive(Serialize, Deserialize, Default)]
 struct State {
     owner: String,
+    /// The store's random epoch (`None` until first contact): another one means it was deleted.
+    #[serde(default)]
+    epoch: Option<String>,
+    /// Chats made under another account on this phone (the session ended without signing out):
+    /// never uploaded to this one.
+    #[serde(default)]
+    foreign: BTreeSet<String>,
     after: i64,
     convs: BTreeMap<String, Rec>,
     /// Images known to the server, by hash.
@@ -85,6 +92,8 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
 }
 
 static STOPPED: AtomicBool = AtomicBool::new(false);
+/// Wipe in progress: nothing from the server may be written back meanwhile.
+static WIPING: AtomicBool = AtomicBool::new(false);
 static FULL: AtomicBool = AtomicBool::new(false);
 static BACKOFF_UNTIL: AtomicI64 = AtomicI64::new(0);
 
@@ -169,7 +178,8 @@ fn unseal(k: &Keys, id: &str, blob: &[u8]) -> Option<Value> {
 
 enum Got {
     Ok(Value),
-    Conflict(i64, Option<String>),
+    /// 409: the record's revision and data now, and the store's epoch (`None`: no store).
+    Conflict(i64, Option<String>, Option<String>),
     Failed,
 }
 
@@ -184,12 +194,42 @@ async fn call(k: &Keys, method: &str, path: &str, if_match: Option<i64>, body: O
     let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     match status {
         200..=299 => Got::Ok(v),
-        409 => Got::Conflict(v["rev"].as_i64().unwrap_or(0), v["data"].as_str().map(String::from)),
+        409 => Got::Conflict(v["rev"].as_i64().unwrap_or(0), v["data"].as_str().map(String::from), v["epoch"].as_str().map(String::from)),
         404 => { STOPPED.store(true, Ordering::Relaxed); Got::Failed }
         413 => { FULL.store(true, Ordering::Relaxed); Got::Failed }
         _ => {
             BACKOFF_UNTIL.store(store::now() + 1000 * retry.unwrap_or(60).min(3600) as i64, Ordering::Relaxed);
             Got::Failed
+        }
+    }
+}
+
+/// False: the store isn't the one this phone synced with (deleted, or deleted and made again):
+/// sync was turned off on another device, so it stops here too.
+fn same_store(epoch: Option<&str>) -> bool {
+    let mine = with_state(|s| s.epoch.clone());
+    if mine.as_deref() == epoch {
+        return true;
+    }
+    if mine.is_some() {
+        turned_off_elsewhere();
+        return false;
+    }
+    with_state(|s| s.epoch = epoch.map(String::from));
+    true
+}
+
+/// A write answered from another store: this phone made it again after another device deleted it.
+async fn made_here(k: &Keys, v: &Value) -> bool {
+    let epoch = v["epoch"].as_str();
+    let mine = with_state(|s| s.epoch.clone());
+    match mine {
+        None => { with_state(|s| s.epoch = epoch.map(String::from)); true }
+        Some(e) if Some(e.as_str()) == epoch => true,
+        Some(_) => {
+            let _ = call(k, "DELETE", "", None, None).await;
+            turned_off_elsewhere();
+            false
         }
     }
 }
@@ -374,8 +414,8 @@ async fn upload_image(k: &Keys, h: &str, data: &str) -> bool {
         return true; // too big to sync: other devices see it missing
     }
     match call(k, "PUT", &format!("/records/{id}"), Some(0), Some(blob)).await {
-        Got::Ok(v) => { with_state(|s| s.atts.insert(h.into(), v["rev"].as_i64().unwrap_or(0))); true }
-        Got::Conflict(rev, _) => { with_state(|s| s.atts.insert(h.into(), rev)); true }
+        Got::Ok(v) => { if !made_here(k, &v).await { return false } with_state(|s| s.atts.insert(h.into(), v["rev"].as_i64().unwrap_or(0))); true }
+        Got::Conflict(rev, _, epoch) => { if !same_store(epoch.as_deref()) { return false } with_state(|s| s.atts.insert(h.into(), rev)); true }
         Got::Failed => false,
     }
 }
@@ -452,6 +492,9 @@ fn local(app: &App, id: &str) -> Option<Value> {
 
 /// Writes a chat from another device here (not a change to send back).
 fn write(mut app: App, v: &Value) {
+    if WIPING.load(Ordering::SeqCst) {
+        return;
+    }
     let Some((conv, updated)) = conv_from_web(v) else { return };
     store::save(&format!("chat-{}.json", conv.id), &conv);
     {
@@ -482,6 +525,9 @@ pub fn changed(app: App, id: &str) {
         return;
     }
     with_state(|s| {
+        if s.foreign.contains(id) {
+            return;
+        }
         let r = s.convs.entry(id.to_string()).or_default();
         r.dirty = true;
         r.deleted = false;
@@ -506,9 +552,11 @@ fn favorites(app: &App) -> Value { json!(app.settings.peek().favorites) }
 
 // ---- pulling ------------------------------------------------------------------------------------
 
-async fn apply(mut app: App, k: &Keys, id: &str, rev: i64, data: &str) {
-    let Ok(blob) = base64::engine::general_purpose::STANDARD.decode(data) else { return };
-    let Some(env) = unseal(k, id, &blob) else { eprintln!("sync: a record could not be read"); return };
+/// False: deferred. The chat is open with an answer being written; applying it now would be
+/// overwritten when the answer is saved, so it comes again next round.
+async fn apply(mut app: App, k: &Keys, id: &str, rev: i64, data: &str) -> bool {
+    let Ok(blob) = base64::engine::general_purpose::STANDARD.decode(data) else { return true };
+    let Some(env) = unseal(k, id, &blob) else { eprintln!("sync: a record could not be read"); return true };
     match env["k"].as_str() {
         Some("att") => {
             if let (Some(h), Some(d)) = (env["h"].as_str(), env["data"].as_str())
@@ -523,7 +571,7 @@ async fn apply(mut app: App, k: &Keys, id: &str, rev: i64, data: &str) {
             let changed_here = with_state(|s| s.prefs.as_ref().is_some_and(|p| p.hash != mine));
             if changed_here {
                 with_state(|s| if let Some(p) = s.prefs.as_mut() { p.rev = rev });
-                return;
+                return true;
             }
             if let Some(fav) = env["prefs"]["favorites"].as_array() {
                 app.settings.write().favorites = fav.iter().filter_map(|f| f.as_str().map(String::from)).collect();
@@ -533,18 +581,23 @@ async fn apply(mut app: App, k: &Keys, id: &str, rev: i64, data: &str) {
             with_state(|s| s.prefs = Some(Prefs { rev, hash, last: env["prefs"].clone() }));
         }
         Some("conv") => {
-            let Some(cid) = env["id"].as_str().filter(|c| valid_id(c)).map(String::from) else { return };
+            let Some(cid) = env["id"].as_str().filter(|c| valid_id(c)).map(String::from) else { return true };
+            if app.conv.peek().id == cid && app.live.peek().is_some() {
+                return false;
+            }
             let rec = with_state(|s| s.convs.get(&cid).cloned()).unwrap_or_default();
             let here = local(&app, &cid);
             let changed_here = rec.dirty && here.is_some() && !rec.deleted;
             if env["deleted"] == true {
                 if changed_here {
                     with_state(|s| if let Some(r) = s.convs.get_mut(&cid) { r.rev = rev });
-                    return;
+                    return true;
                 }
-                remove(app, &cid);
+                if !WIPING.load(Ordering::SeqCst) {
+                    remove(app, &cid);
+                }
                 with_state(|s| s.convs.insert(cid, Rec { rev, deleted: true, ..Default::default() }));
-                return;
+                return true;
             }
             let mut remote = join_images(&env["conv"]);
             remote["id"] = json!(cid);
@@ -564,6 +617,7 @@ async fn apply(mut app: App, k: &Keys, id: &str, rev: i64, data: &str) {
         }
         _ => {}
     }
+    true
 }
 
 async fn pull(app: App, k: &Keys) -> bool {
@@ -574,13 +628,22 @@ async fn pull(app: App, k: &Keys) -> bool {
         }
         let after = with_state(|s| s.after);
         let Got::Ok(v) = call(k, "GET", &format!("/records?after={after}"), None, None).await else { return false };
-        if v["rev"].as_i64().unwrap_or(0) < after {
-            turned_off_elsewhere();
+        if !same_store(v["epoch"].as_str()) {
             return false;
+        }
+        if v["rev"].as_i64().unwrap_or(0) < after {
+            // Same store, older revisions (restored from a backup): send everything again.
+            with_state(|s| {
+                s.after = 0;
+                for r in s.convs.values_mut().filter(|r| !r.deleted) { r.dirty = true; r.ver += 1; }
+            });
+            continue;
         }
         for r in v["records"].as_array().into_iter().flatten() {
             let (Some(id), Some(rev), Some(data)) = (r["id"].as_str(), r["rev"].as_i64(), r["data"].as_str()) else { continue };
-            apply(app, k, id, rev, data).await;
+            if !apply(app, k, id, rev, data).await {
+                return true;
+            }
             with_state(|s| s.after = rev);
         }
         if v["more"] != true {
@@ -626,6 +689,9 @@ async fn push_conv(app: App, k: &Keys, id: &str) -> Pushed {
     }
     match call(k, "PUT", &format!("/records/{rid}"), Some(rec.rev), Some(blob)).await {
         Got::Ok(v) => {
+            if !made_here(k, &v).await {
+                return Pushed::Failed;
+            }
             let rev = v["rev"].as_i64().unwrap_or(0);
             let old = rec.atts.clone();
             if env["deleted"] == true {
@@ -646,8 +712,10 @@ async fn push_conv(app: App, k: &Keys, id: &str) -> Pushed {
             }
             Pushed::Done
         }
-        Got::Conflict(rev, Some(data)) => { apply(app, k, &rid, rev, &data).await; Pushed::Again }
-        Got::Conflict(_, None) => { turned_off_elsewhere(); Pushed::Failed }
+        Got::Conflict(_, _, epoch) if !same_store(epoch.as_deref()) => Pushed::Failed,
+        Got::Conflict(rev, Some(data), _) => if apply(app, k, &rid, rev, &data).await { Pushed::Again } else { Pushed::Failed },
+        // The record is gone from the store: make it again.
+        Got::Conflict(_, None, _) => { with_state(|s| if let Some(r) = s.convs.get_mut(id) { r.rev = 0 }); Pushed::Again }
         Got::Failed => Pushed::Failed,
     }
 }
@@ -664,25 +732,31 @@ async fn push_prefs(app: App, k: &Keys) {
     let rid = record_id(k, "prefs");
     let blob = seal(k, &rid, &json!({ "v": 1, "k": "prefs", "prefs": out }));
     match call(k, "PUT", &format!("/records/{rid}"), Some(prefs.as_ref().map_or(0, |p| p.rev)), Some(blob)).await {
-        Got::Ok(v) => { let rev = v["rev"].as_i64().unwrap_or(0); with_state(|s| s.prefs = Some(Prefs { rev, hash, last: out })); }
+        Got::Ok(v) => {
+            if made_here(k, &v).await {
+                let rev = v["rev"].as_i64().unwrap_or(0);
+                with_state(|s| s.prefs = Some(Prefs { rev, hash, last: out }));
+            }
+        }
+        Got::Conflict(_, _, epoch) if !same_store(epoch.as_deref()) => {}
         // Ours wins: try again next round at the revision there now.
-        Got::Conflict(rev, Some(_)) => with_state(|s| match s.prefs.as_mut() {
-            Some(p) => p.rev = rev,
+        Got::Conflict(rev, _, _) => with_state(|s| match s.prefs.as_mut() {
+            Some(p) => { p.rev = rev; p.hash = String::new() }
             None => s.prefs = Some(Prefs { rev, hash: String::new(), last: json!({}) }),
         }),
-        Got::Conflict(_, None) => turned_off_elsewhere(),
         Got::Failed => {}
     }
 }
 
 // ---- running ------------------------------------------------------------------------------------
 
+/// Forgets the synced copy, but not which account this phone's chats were made under.
 fn clear() {
     let s: State = store::load(STATE);
     for h in s.atts.keys() {
         store::remove(&att_file(h));
     }
-    store::remove(STATE);
+    store::save(STATE, &State { owner: s.owner, foreign: s.foreign, ..Default::default() });
 }
 
 /// The synced copy is gone (turned off on another device): stop here too, keep the chats.
@@ -692,25 +766,37 @@ fn turned_off_elsewhere() {
 }
 
 async fn run(app: App) {
-    if !on() || STOPPED.load(Ordering::Relaxed) || store::now() < BACKOFF_UNTIL.load(Ordering::Relaxed) || !api::has_session() {
+    if !on() || WIPING.load(Ordering::SeqCst) || STOPPED.load(Ordering::Relaxed) || store::now() < BACKOFF_UNTIL.load(Ordering::Relaxed) || !api::has_session() {
         return;
     }
     let Some(k) = keys() else { return };
-    with_state(|s| if s.owner != k.owner { *s = State { owner: k.owner.clone(), ..Default::default() } });
-    // Chats with nothing on record yet go up.
     let ids: Vec<String> = app.convs.peek().iter().map(|m| m.id.clone()).collect();
+    with_state(|s| if s.owner != k.owner {
+        // Signed in to another account while chats from the last one are still here (its
+        // session ended without signing out): they stay on the phone and never go up.
+        let foreign = if s.owner.is_empty() { s.foreign.clone() } else { ids.iter().cloned().collect() };
+        *s = State { owner: k.owner.clone(), foreign, ..Default::default() };
+    });
+    // Chats with nothing on record yet go up.
     with_state(|s| for id in ids {
-        s.convs.entry(id).or_insert_with(|| Rec { dirty: true, ver: 1, ..Default::default() });
+        if !s.foreign.contains(&id) {
+            s.convs.entry(id).or_insert_with(|| Rec { dirty: true, ver: 1, ..Default::default() });
+        }
     });
     if !pull(app, &k).await || !on() {
         return;
     }
+    FULL.store(false, Ordering::Relaxed); // try again: other devices may have deleted chats
     let dirty: Vec<String> = with_state(|s| s.convs.iter().filter(|(_, r)| r.dirty).map(|(id, _)| id.clone()).collect());
     for id in dirty {
+        // Full: only deletes, which make room.
+        if FULL.load(Ordering::Relaxed) && !with_state(|s| s.convs.get(&id).is_some_and(|r| r.deleted)) {
+            continue;
+        }
         for _ in 0..3 {
             if !matches!(push_conv(app, &k, &id).await, Pushed::Again) { break }
         }
-        if STOPPED.load(Ordering::Relaxed) || FULL.load(Ordering::Relaxed) || store::now() < BACKOFF_UNTIL.load(Ordering::Relaxed) || !on() {
+        if STOPPED.load(Ordering::Relaxed) || store::now() < BACKOFF_UNTIL.load(Ordering::Relaxed) || !on() {
             return;
         }
     }
@@ -770,13 +856,24 @@ pub async fn set_on(app: App, v: bool) -> bool {
     ok
 }
 
+/// Wipe starts (chat.rs, before it deletes the chats): nothing from the server is written here
+/// until `wipe` has deleted the synced copy.
+pub fn begin_wipe() { WIPING.store(true, Ordering::SeqCst) }
+
 /// Wipe: the synced copy goes too, or the chats would come straight back.
 pub async fn wipe() {
+    while BUSY.load(Ordering::SeqCst) {
+        crate::sleep(50).await;
+    }
     if on() {
         delete_remote().await;
     }
     clear();
+    WIPING.store(false, Ordering::SeqCst);
 }
+
+/// The account was deleted (its synced copy with it): the next account here starts with sync on.
+pub fn reset_switch() { store::remove(OFF) }
 
 /// Signing out: this phone's chats go (chat.rs), the synced copy stays for the next sign-in.
 pub fn forget() {
@@ -794,6 +891,9 @@ pub async fn move_to(app: App, new_seed: [u8; 32]) {
         let _ = call(&old, "DELETE", "", None, None).await;
     }
     clear();
+    // The chats are this account's under its new number, not another account's.
+    let owner = keys_of(new_seed).owner;
+    with_state(|s| s.owner = owner);
     store::save(SEED, &Some(hex(&new_seed)));
     if was_on {
         tick(app).await;

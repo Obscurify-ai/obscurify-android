@@ -205,13 +205,53 @@ try {
   await page.locator('#sync-on').uncheck();
   await page.locator('#sync-off-confirm').click();
   await until('sync off on the phone', async () => cat('sync-off.json').trim() === 'true');
-  ok(!cat('sync-state.json'), 'the phone forgot its sync records');
+  const left = json('sync-state.json', {});
+  ok(Object.keys(left.convs || {}).length === 0 && !left.epoch && !left.after && left.owner, 'the phone forgot its sync records (it keeps which account its chats are from)');
   await webSync();
   ok(await web.evaluate(() => !ChatSync.on()), 'the website stopped syncing too');
   ok((await web.evaluate(() => getConversations())).some((c) => c.id === mango.id), 'and kept its chats');
   ok(json('chats.json', []).some((m) => m.id === mango.id), 'the phone kept its chats');
+
+  // 10. Back on, then a new account number: the chats move to its store; the website, still on
+  // the old number, stops.
+  await page.locator('#sync-on').check();
+  await until('sync back on', async () => !cat('sync-off.json').includes('true') && cat('sync-state.json').includes('"epoch":"'));
+  await web.evaluate(() => ChatSync.setOn(true));
+  await webSync();
+  await page.locator('button', { hasText: 'Get a New Number' }).first().click();
+  await page.locator('button.danger', { hasText: 'Get a New Number' }).click();
+  const fresh = (await page.locator('.number').textContent({ timeout: 30000 })).replace(/\D/g, '');
+  ok(fresh.length === 16 && fresh !== digits, 'the phone got a new number');
+  await until('the phone moved to the new store', async () => cat('sync-seed.json').length > 60 && json('sync-state.json', {}).epoch);
+  await webSync();
+  ok(await web.evaluate(() => !ChatSync.on()), 'the website on the old number stopped syncing');
+  const ctx2 = await browser.newContext();
+  const web2 = await ctx2.newPage();
+  await web2.goto(WEB + '/');
+  await web2.waitForFunction(() => window.PrivateSessions && window.ChatSync && typeof chatStore !== 'undefined');
+  const seed2 = await web2.evaluate((n) => PrivateSessions.seedOf(n), fresh);
+  await web2.evaluate((s) => { localStorage.setItem('obscurify_private_off', '1'); localStorage.setItem('obscurify_sync_seed', s); }, seed2);
+  await web2.reload();
+  await web2.waitForFunction(() => window.ChatSync && typeof chatStore !== 'undefined');
+  const moved = await until('the phone\'s chats under the new number', async () => (await web2.evaluate(async () => { await ChatSync.syncNow(); await ChatSync.syncNow(); return getConversations(); })).find((c) => c.id === mango.id));
+  ok(moved.messages.length === 3, 'a browser with the new number gets the phone\'s chats');
+
+  // 11. Wipe on the phone: its chats and the synced copy go, and nothing comes back.
+  await page.locator('.bar .icon').first().click().catch(() => {});
+  await page.locator('.icon', { hasText: '☰' }).click();
+  await page.locator('#wipe').click();
+  await page.locator('#wipe-yes').click();
+  await until('the wipe', async () => json('chats.json', []).length === 0);
+  await web2.evaluate(async () => { await ChatSync.syncNow(); await ChatSync.syncNow(); });
+  ok(await web2.evaluate(() => !ChatSync.on()), 'Wipe deleted the synced copy (the browser on that number stopped)');
+  ok(await web2.evaluate(() => getConversations().length > 0), '  and the browser kept its chats');
+  await nudge();
+  await sleep(5000);
+  ok(json('chats.json', []).length === 0, 'nothing came back to the phone');
+
   console.log('\nall sync checks passed');
 } finally {
   await browser.close();
   recorder.close();
 }
+process.exit(0);

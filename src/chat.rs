@@ -309,6 +309,7 @@ fn toggle_temp(app: App) {
 /// (vouchers not yet added to the balance, which are money) stay.
 fn wipe(app: App) {
     after_answer(app, |mut app| {
+        crate::sync::begin_wipe();
         if let Ok(dir) = std::fs::read_dir(store::dir()) {
             for e in dir.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();

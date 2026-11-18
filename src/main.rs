@@ -868,6 +868,7 @@ fn Account() -> Element {
                                         Ok(_) => {
                                             // The synced chats aren't linked to the account on the server, so the phone deletes them.
                                             if sync::on() { sync::set_on(app, false).await; }
+                                            sync::reset_switch();
                                             app.sign_out();
                                             app.say("Your account is deleted")
                                         }
