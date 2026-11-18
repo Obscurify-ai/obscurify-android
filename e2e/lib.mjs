@@ -51,7 +51,7 @@ export async function agentSwitches(page, on) {
   }
 }
 
-// The 12 account words shown in a grid (sign-up, Account): "1. word" per cell.
+// The 12 seed words shown in a grid (sign-up, Account): "1. word" per cell.
 export async function wordsOn(page, sel = '.words', timeout = 30000) {
   await page.locator(sel).first().waitFor({ timeout });
   return (await page.locator(`${sel} span`).allTextContents()).map((t) => t.replace(/^\d+\.\s*/, '').trim()).join(' ');

@@ -15,10 +15,10 @@ let { browser, page } = await launch(true);
 
 // 1. A new account, the web's way: Terms checkbox, the number shown once, "I have saved it", then chat.
 await page.getByText('Create one').click();
-await page.getByRole('button', { name: 'Make My Account Words' }).click();
+await page.getByRole('button', { name: 'Create Account' }).click();
 ok(await page.locator('.err', { hasText: 'Terms of Service' }).count() === 1, 'Terms must be accepted first');
 await page.locator('.check input').check();
-await page.getByRole('button', { name: 'Make My Account Words' }).click();
+await page.getByRole('button', { name: 'Create Account' }).click();
 let number = await wordsOn(page, '.words', 20000);
 ok(/^([a-z]+ ){11}[a-z]+$/.test(number), `account created: ${number.split(' ')[0]} …`);
 ok(await page.getByRole('button', { name: 'Start Chatting' }).isDisabled(), 'Start Chatting waits for "I have saved my 12 words"');
@@ -128,13 +128,13 @@ await page.locator('.veil').click({ position: { x: 380, y: 300 } });
 // 8. A new number replaces the old one; it's shown once and never again.
 await page.locator('.bar .icon').first().click();
 await page.locator('.drawer .foot button').click();
-ok(await page.getByText('Hidden. We only store a scrambled copy', { exact: false }).count() === 1, 'account words are hidden');
+ok(await page.getByText('Hidden. We only store a scrambled copy', { exact: false }).count() === 1, 'seed words are hidden');
 await page.locator('#rotate-words').click();
 const fresh = await wordsOn(page, '#new-words .words', 20000);
 await page.locator('#words-saved input').check();
 await page.locator('#switch-words').click();
 await page.locator('#new-words', { hasText: 'Done' }).waitFor({ timeout: 60000 });
-ok(/^([a-z]+ ){11}[a-z]+$/.test(fresh) && fresh !== number, 'new account words shown once');
+ok(/^([a-z]+ ){11}[a-z]+$/.test(fresh) && fresh !== number, 'new seed words shown once');
 await page.getByRole('button', { name: "I've Saved It" }).click();
 ok(await page.locator('#new-words').count() === 0, 'and hidden again');
 
@@ -151,7 +151,7 @@ await page.getByRole('button', { name: 'Sign In' }).click();
 await page.waitForSelector('#composer', { timeout: 20000 });
 await page.locator('.bar .icon').first().click();
 await page.waitForFunction(() => /\$\d/.test(document.querySelector('.drawer .foot')?.textContent || ''), null, { timeout: 20000 });
-ok(true, 'signed back in with the new account words: ' + await page.locator('.drawer .foot').textContent());
+ok(true, 'signed back in with the new seed words: ' + await page.locator('.drawer .foot').textContent());
 
 console.log('all passed');
 await device.close();

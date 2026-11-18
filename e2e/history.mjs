@@ -16,7 +16,7 @@ adb('reverse', 'tcp:8230', 'tcp:8230');
 let { page } = await launch(true);
 await page.getByText('Create one').click();
 await page.locator('.check input').check();
-await page.getByRole('button', { name: 'Make My Account Words' }).click();
+await page.getByRole('button', { name: 'Create Account' }).click();
 await page.locator('.words').waitFor({ timeout: 30000 });
 const userId = sql(`SELECT id FROM users ORDER BY created_at DESC LIMIT 1`);
 await page.locator('.check input').check();

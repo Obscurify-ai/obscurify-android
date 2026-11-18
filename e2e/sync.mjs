@@ -71,9 +71,9 @@ try {
   let { page } = await launch(true);
   await page.getByText('Create one').click();
   await page.locator('.check input').check();
-  await page.getByRole('button', { name: 'Make My Account Words' }).click();
+  await page.getByRole('button', { name: 'Create Account' }).click();
   await page.locator('.words').waitFor({ timeout: 30000 });
-  // 12 account words (only word accounts sync); "digits" is what signs in.
+  // 12 seed words (only word accounts sync); "digits" is what signs in.
   const digits = (await page.locator('.words span').allTextContents()).map((t) => t.replace(/^\d+\.\s*/, '').trim()).join(' ');
   await page.locator('.check input').check();
   await page.getByRole('button', { name: 'Start Chatting' }).click();
@@ -227,7 +227,7 @@ try {
   await page.locator('#words-saved input').check();
   await page.locator('#switch-words').click();
   await page.locator('#new-words', { hasText: 'Done' }).waitFor({ timeout: 60000 });
-  ok(/^([a-z]+ ){11}[a-z]+$/.test(fresh) && fresh !== digits, 'the phone got new account words');
+  ok(/^([a-z]+ ){11}[a-z]+$/.test(fresh) && fresh !== digits, 'the phone got new seed words');
   await until('the phone moved to the new store', async () => cat('sync-seed.json').length > 60 && json('sync-state.json', {}).epoch);
   await webSync();
   ok(await web.evaluate(() => !ChatSync.on()), 'the website on the old number stopped syncing');

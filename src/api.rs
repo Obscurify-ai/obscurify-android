@@ -272,7 +272,7 @@ pub fn status_of(e: &str) -> (u16, &str) {
 
 pub fn msg(e: String) -> String { status_of(&e).1.to_string() }
 
-/// Signs in with the 12 account words or a 16-digit account number (any spacing). Only the
+/// Signs in with the 12 seed words or a 16-digit account number (any spacing). Only the
 /// session it starts is kept.
 pub async fn login(number: &str) -> Result<(), String> {
     // Only a key derived from the number is sent (private.rs); an account from before that is moved
@@ -316,7 +316,7 @@ pub async fn create_account(referral: &str) -> Result<(String, Option<f64>), Str
     Ok((n, credit))
 }
 
-/// Switches the account to new account words made on the phone: only their login key is sent.
+/// Switches the account to new seed words made on the phone: only their login key is sent.
 /// The old number or words, the old API key and other sessions stop working. Returns the words' seed.
 pub async fn switch_to_words(words: &str) -> Result<[u8; 32], String> {
     let k = crate::private::keys_of(words).await?;

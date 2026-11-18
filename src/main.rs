@@ -527,7 +527,7 @@ fn Root() -> Element {
 
 // ---- sign in and sign up: the web's flow ----
 
-/// 12 account words as a numbered grid (a number as it is).
+/// 12 seed words as a numbered grid (a number as it is).
 #[component]
 fn Words(text: String) -> Element {
     if !text.chars().any(|c| c.is_ascii_alphabetic()) {
@@ -553,9 +553,9 @@ fn Login() -> Element {
         let n = number.peek().trim().to_string();
         if crate::private::kind_of(&n).is_none() {
             error.set(Some(if n.chars().any(|c| c.is_ascii_alphabetic()) {
-                "Those aren't 12 account words. Check each word and its order: one is misspelled, missing or in the wrong place."
+                "Those aren't 12 seed words. Check each word and its order: one is misspelled, missing or in the wrong place."
             } else {
-                "Enter your 12 account words, or your 16-digit account number."
+                "Enter your 12 seed words, or your 16-digit account number."
             }.into()));
             return;
         }
@@ -572,8 +572,8 @@ fn Login() -> Element {
     rsx! {
         div { class: "login",
             h1 { "Sign In" }
-            p { class: "muted", "Enter your 12 account words, or your 16-digit account number." }
-            input { r#type: "text", autocomplete: "off", autocapitalize: "none", spellcheck: "false", placeholder: "12 words, or 1234 5678 9012 3456", class: "mono",
+            label { class: "field-label", r#for: "login-words", "Seed words or account number" }
+            input { r#type: "text", id: "login-words", autocomplete: "off", autocapitalize: "none", spellcheck: "false", class: "mono",
                 oninput: move |e| number.set(e.value()),
                 onkeydown: move |e| if e.key() == Key::Enter { sign_in(()) } }
             button { class: "go", disabled: *busy.read(), onclick: move |_| sign_in(()), if *busy.read() { "Signing in…" } else { "Sign In" } }
@@ -603,11 +603,11 @@ fn Signup() -> Element {
     if let Some(n) = created.read().clone() {
         return rsx! {
             div { class: "login center",
-                h1 { "Your account words" }
-                p { class: "muted", "Write them down in order, or keep them in a password manager. If you lose them, the account, its balance and its synced chats are gone." }
+                h1 { "Your seed words" }
+                p { class: "muted", "Write them down in order. Lose them and the account is gone." }
                 if let Some(c) = *credit.read() { p { class: "ok", "{usd(c)} of starter credit is on your balance." } }
                 Words { text: n.clone() }
-                button { onclick: { let n = n.clone(); move |_| app.copy(&n, "Account words") }, "Copy" }
+                button { onclick: { let n = n.clone(); move |_| app.copy(&n, "Seed words") }, "Copy" }
                 label { class: "check",
                     input { r#type: "checkbox", onchange: move |e| saved.set(e.checked()) }
                     "I have saved my 12 words"
@@ -639,7 +639,7 @@ fn Signup() -> Element {
             p { class: "muted", "No email, no username, no password" }
             div { class: "info",
                 h4 { "How it works" }
-                p { "The app makes 12 random words. They are the only thing you need to sign in. They never leave this phone: we only get a scrambled key made from them, so we can't look them up or send them to you again, and no one can guess them." }
+                p { "You get 12 seed words, made on this phone. They're your only way to sign in, and we never see them." }
             }
             label { class: "check",
                 input { r#type: "checkbox", onchange: move |e| tos.set(e.checked()) }
@@ -647,7 +647,7 @@ fn Signup() -> Element {
                 a { href: "{api::BASE}/terms", "Terms of Service" }
             }
             if !PLAY { input { class: "field", autocomplete: "off", placeholder: "Referral code (optional)", oninput: move |e| referral.set(e.value()) } }
-            button { class: "go", disabled: *busy.read(), onclick: create, if *busy.read() { "Making your words…" } else { "Make My Account Words" } }
+            button { class: "go", disabled: *busy.read(), onclick: create, if *busy.read() { "Creating…" } else { "Create Account" } }
             if let Some(e) = error.read().clone() { p { class: "err", "{e}" } }
             p { class: "muted center", style: "margin-top: 16px",
                 "Already have an account? "
@@ -782,24 +782,24 @@ fn Account() -> Element {
                     }
                     if !PLAY { p { class: "muted", style: "margin-top: 8px", "Plans are paid from your balance and renew monthly while it covers them." } }
                 }
-                // Account words (or, for older accounts, a 16-digit number). New words are made on
+                // Seed words (or, for older accounts, a 16-digit number). New words are made on
                 // the phone and shown first; only once they're saved does the account switch to
                 // them (the server gets only their login key).
                 div { class: "section",
-                    h2 { if crate::private::words() { "Account words" } else { "Account number" } }
+                    h2 { if crate::private::words() { "Seed words" } else { "Account number" } }
                     if let Some(n) = new_number.read().clone() {
                         div { class: "info center", id: "new-words",
                             if *switched.read() {
-                                p { style: "color: #fff; font-weight: 600", "Your account words" }
-                                p { class: "muted", "Done: sign in with these words from now on. Your old number or words, your old API key and other signed-in devices no longer work." }
+                                p { style: "color: #fff; font-weight: 600", "Your seed words" }
+                                p { class: "muted", "Done. Sign in with these seed words from now on; the old number or words and your other sessions no longer work." }
                             } else {
-                                p { style: "color: #fff; font-weight: 600", "Your new account words" }
-                                p { class: "muted", "Write these 12 words down in order, or keep them in a password manager. They replace your current number or words when you press Switch, and we can't show them again." }
+                                p { style: "color: #fff; font-weight: 600", "Your new seed words" }
+                                p { class: "muted", if crate::private::words() { "Write these down in order. They replace your current seed words when you press Switch." } else { "Write these down in order. They replace your account number when you press Convert." } }
                             }
                             Words { text: n.clone() }
                             if *switched.read() {
                                 div { class: "row", style: "justify-content: center; border: 0",
-                                    button { onclick: { let n = n.clone(); move |_| app.copy(&n, "Account words") }, "Copy" }
+                                    button { onclick: { let n = n.clone(); move |_| app.copy(&n, "Seed words") }, "Copy" }
                                     button { class: "go", onclick: move |_| { new_number.set(None); switched.set(false) }, "I've Saved It" }
                                 }
                             } else {
@@ -809,7 +809,7 @@ fn Account() -> Element {
                                 }
                                 div { class: "row end", style: "border: 0",
                                     button { class: "bare", onclick: move |_| new_number.set(None), "Cancel" }
-                                    button { onclick: { let n = n.clone(); move |_| app.copy(&n, "Account words") }, "Copy" }
+                                    button { onclick: { let n = n.clone(); move |_| app.copy(&n, "Seed words") }, "Copy" }
                                     button { class: "go", id: "switch-words", disabled: !*words_saved.read() || *switching.read(), onclick: {
                                         let n = n.clone();
                                         move |_| {
@@ -831,7 +831,7 @@ fn Account() -> Element {
                                                 switching.set(false);
                                             })
                                         }
-                                    }, if *switching.read() { "Switching…" } else { "Switch" } }
+                                    }, match (*switching.read(), crate::private::words()) { (true, true) => "Switching…", (true, false) => "Converting…", (false, true) => "Switch", (false, false) => "Convert" } }
                                 }
                             }
                         }
@@ -840,14 +840,14 @@ fn Account() -> Element {
                         div { class: "grow muted", if crate::private::words() {
                             "Hidden. We only store a scrambled copy, so we can't show them again."
                         } else {
-                            "A 16-digit number. Switch to 12 account words: no one can guess them, and they turn on chat sync."
+                            "To enable encrypted sync, convert your account number to seed words."
                         } }
                         if new_number.read().is_none() {
                             button { id: "rotate-words", onclick: move |_| {
                                 words_saved.set(false);
                                 switched.set(false);
                                 new_number.set(Some(crate::private::new_words()));
-                            }, if crate::private::words() { "Get New Words" } else { "Switch to Words" } }
+                            }, if crate::private::words() { "New Seed Words" } else { "Generate My Seed Words" } }
                         }
                     }
                 }
@@ -904,7 +904,7 @@ fn Account() -> Element {
                 History { rev: tx_rev, mine }
                 div { class: "section",
                     if *confirm.read() == Some("out") {
-                        p { class: "muted", "Chats on this phone are deleted. Make sure you have your account words (or number)." }
+                        p { class: "muted", "Chats on this phone are deleted. Make sure you have your seed words (or number)." }
                         if w.held_cents() > 0 { p { class: "muted", "{cents(w.held_cents())} in blind vouchers stays on this phone and goes to the next account that signs in." } }
                         div { class: "row",
                             button { class: "danger", onclick: move |_| app.sign_out(), "Sign out" }
@@ -917,7 +917,7 @@ fn Account() -> Element {
                 div { class: "section",
                     h2 { "Delete account" }
                     if *confirm.read() == Some("delete") {
-                        p { class: "muted", "Your account words or number, API key and sign-ins are erased for good, and the balance and plan are lost. Payment records stay, with nothing that links them to you. Chats on this phone and their synced copy are deleted." }
+                        p { class: "muted", "Your seed words or number, API key and sign-ins are erased for good, and the balance and plan are lost. Payment records stay, with nothing that links them to you. Chats on this phone and their synced copy are deleted." }
                         div { class: "row",
                             button { class: "danger", disabled: *deleting.read(), onclick: move |_| {
                                 deleting.set(true);

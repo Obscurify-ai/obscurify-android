@@ -15,7 +15,7 @@ use unlinkable_inference::seed::{account_keys, normalize_credential, AccountKeys
 
 const SEED_FILE: &str = "unlinkable-seed.json";
 const STATE_FILE: &str = "unlinkable-state.json";
-/// How this phone signed in: "words" (12 account words) or "number" (16 digits). None: before
+/// How this phone signed in: "words" (12 seed words) or "number" (16 digits). None: before
 /// words existed, so a number. Chat sync is only for words (sync.rs).
 const KIND_FILE: &str = "account-kind.json";
 
@@ -32,7 +32,7 @@ pub fn set_chat(id: &str) { *CHAT.lock().unwrap() = id.to_string() }
 /// On: there is a seed from signing in on this phone.
 pub fn on() -> bool { store::load::<Option<String>>(SEED_FILE).is_some() }
 
-/// The login key and seed for 12 account words or a 16-digit number, kept nowhere. Argon2id is
+/// The login key and seed for 12 seed words or a 16-digit number, kept nowhere. Argon2id is
 /// slow on purpose, so it runs off the UI thread.
 pub async fn keys_of(number_or_words: &str) -> Result<AccountKeys, String> {
     let n = number_or_words.to_string();
@@ -53,7 +53,7 @@ pub async fn keys(number_or_words: &str) -> Result<String, String> {
     Ok(k.login_key)
 }
 
-/// "words" (12 account words whose checksum holds), "number" (16 digits), or None for what was typed.
+/// "words" (12 seed words whose checksum holds), "number" (16 digits), or None for what was typed.
 pub fn kind_of(input: &str) -> Option<&'static str> {
     match normalize_credential(input)? {
         Credential::Number(_) => Some("number"),
@@ -61,11 +61,11 @@ pub fn kind_of(input: &str) -> Option<&'static str> {
     }
 }
 
-/// This phone signed in with account words (or switched to them).
+/// This phone signed in with seed words (or switched to them).
 pub fn words() -> bool { store::load::<Option<String>>(KIND_FILE).as_deref() == Some("words") }
 pub fn set_kind(kind: &str) { store::save(KIND_FILE, &Some(kind.to_string())) }
 
-/// 12 new account words (128 random bits), made on the phone (the server never learns them).
+/// 12 new seed words (128 random bits), made on the phone (the server never learns them).
 pub fn new_words() -> String { unlinkable_inference::seed::new_recovery_words() }
 
 /// Where requests go changed (Tor on or off, a mirror): the manager connects again on its next

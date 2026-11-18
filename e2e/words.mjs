@@ -1,4 +1,4 @@
-// Account words on the phone (private.rs, api.rs, main.rs): sign-up makes 12 words on the phone and
+// Seed words on the phone (private.rs, api.rs, main.rs): sign-up makes 12 words on the phone and
 // sends only a key made from them; they sign back in however they're typed; a typo is caught on the
 // phone; an account with a 16-digit number signs in, can't sync, and switches to words (saved first),
 // which turns sync on; the old number stops working.
@@ -53,10 +53,10 @@ try {
   let { page } = await launch(true);
   await page.getByText('Create one').click();
   await page.locator('.check input').check();
-  await page.getByRole('button', { name: 'Make My Account Words' }).click();
+  await page.getByRole('button', { name: 'Create Account' }).click();
   await page.locator('.words').waitFor({ timeout: 30000 });
   const words = await wordsOn(page, '.words');
-  ok(/^([a-z]+ ){11}[a-z]+$/.test(words), 'sign-up shows 12 account words: ' + words);
+  ok(/^([a-z]+ ){11}[a-z]+$/.test(words), 'sign-up shows 12 seed words: ' + words);
   shot('words-signup');
   const created = seen.find((r) => r.path === '/create_account');
   ok(created && /"account_key":"[0-9a-f]{64}"/.test(created.body) && !leaked(words), '  only a key made from them left the phone');
@@ -76,7 +76,7 @@ try {
   const err = await page.locator('.login .err').textContent();
   const typoSent = seen.slice(before).some((r) => r.path === '/login');
   // A different last word passes the checksum 1 time in 16: then the server says no instead.
-  ok(err.includes('aren\'t 12 account words') ? !typoSent : err.length > 0, 'a wrong word doesn\'t sign in: ' + err.trim());
+  ok(err.includes('aren\'t 12 seed words') ? !typoSent : err.length > 0, 'a wrong word doesn\'t sign in: ' + err.trim());
   // Real words that sign in to nothing: refused, and never sent (not even as a fallback).
   const nobody = 'legal winner thank year wave sausage worth useful legal winner thank yellow';
   const at = seen.length;
@@ -99,14 +99,14 @@ try {
   await page.waitForSelector('#composer', { timeout: 60000 });
   ok(true, 'a 16-digit number still signs in');
   await toAccount(page);
-  ok(await page.locator('#sync-needs-words').isVisible(), '  Account says sync needs account words');
-  ok((await page.locator('#rotate-words').textContent()).includes('Switch to Words'), '  and offers Switch to Words');
+  ok(await page.locator('#sync-needs-words').isVisible(), '  Account says sync needs seed words');
+  ok((await page.locator('#rotate-words').textContent()).includes('Generate My Seed Words'), '  and offers Generate My Seed Words');
   shot('words-number-account');
 
   // Switching: the words come first, Switch waits until they're saved, Cancel changes nothing.
   await page.locator('#rotate-words').click();
   await page.locator('#new-words .words').waitFor();
-  ok(await page.locator('#switch-words').isDisabled(), 'Switch to Words shows 12 words, and Switch waits until they\'re saved');
+  ok(await page.locator('#switch-words').isDisabled(), 'Generate My Seed Words shows 12 words, and Convert waits until they\'re saved');
   await page.locator('#new-words button.bare', { hasText: 'Cancel' }).click();
   ok(!seen.some((x) => x.path === '/account_number/rotate'), '  Cancel changes nothing');
   await page.locator('#rotate-words').click();
