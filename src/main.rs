@@ -595,7 +595,7 @@ fn Signup() -> Element {
         return rsx! {
             div { class: "login center",
                 h1 { "Your account code" }
-                p { class: "muted", "Write them down in order. Lose them and the account is gone." }
+                p { class: "muted", "Write it down. Lose it and the account is gone." }
                 if let Some(c) = *credit.read() { p { class: "ok", "{usd(c)} of starter credit is on your balance." } }
                 Words { text: n.clone() }
                 button { onclick: { let n = n.clone(); move |_| app.copy(&n, "Account code") }, "Copy" }

@@ -37,7 +37,7 @@ a { color: var(--g); text-decoration: none; }
 .login { display: flex; flex-direction: column; justify-content: center; gap: 16px; height: 100%; padding: 32px 24px; }
 .login h1 { font-size: 28px; font-weight: 400; color: var(--g); }
 .login input { padding: 14px; letter-spacing: .1em; text-align: center; font-size: 18px; }
-.number { font-size: 22px; letter-spacing: .08em; text-align: center; color: var(--g); border: 1px solid var(--g); border-radius: 8px; padding: 14px; }
+.number { font-size: min(22px, 4.8vw); letter-spacing: .02em; white-space: nowrap; text-align: center; color: var(--g); border: 1px solid var(--g); border-radius: 8px; padding: 14px 8px; }
 
 /* chat */
 #msgs { flex: 1; overflow-y: auto; padding: 12px 14px 4px; }
