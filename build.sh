@@ -19,7 +19,7 @@
 # The sideload app has in-app Tor (src/tor.rs) with bridges: tools/lyrebird.sh builds the bridge transport
 # (needs Go). The Play app is built without Tor.
 # Test builds only: OBSCURIFY_API=https://... points the app at another server; DEVTOOLS=1 lets the
-# e2e scripts drive the WebView. Never ship either.
+# e2e scripts drive the WebView; APP_ID/APP_LABEL install it beside the real app. Never ship any.
 set -euo pipefail
 cd "$(dirname "$0")"
 if [ -z "${JAVA_HOME:-}" ] && command -v mise >/dev/null; then JAVA_HOME=$(mise where java@temurin-21 2>/dev/null || true); fi
@@ -72,6 +72,13 @@ if [ -n "$play" ]; then
   grep -q suppressUnsupportedCompileSdk $gen/gradle.properties || echo android.suppressUnsupportedCompileSdk=36 >> $gen/gradle.properties
   sed -i 's/applicationId = "ai.obscurify.android"/applicationId = "ai.obscurify.play"/' $gen/app/build.gradle.kts
   grep -q 'applicationId = "ai.obscurify.play"' $gen/app/build.gradle.kts || { echo "couldn't set the Play package id" >&2; exit 1; }
+fi
+# Test builds only: APP_ID=... installs beside the real app (a preview on a phone that has it), with
+# APP_LABEL as its name under the icon.
+if [ -n "${APP_ID:-}" ]; then
+  sed -i "s/applicationId = \"ai\.obscurify\.[a-z]*\"/applicationId = \"$APP_ID\"/" $gen/app/build.gradle.kts
+  grep -q "applicationId = \"$APP_ID\"" $gen/app/build.gradle.kts || { echo "couldn't set the package id" >&2; exit 1; }
+  [ -n "${APP_LABEL:-}" ] && sed -i "s#android:label=\"[^\"]*\"#android:label=\"$APP_LABEL\"#" $gen/app/src/main/AndroidManifest.xml
 fi
 man=$gen/app/src/main/AndroidManifest.xml
 grep -q ACCESS_NETWORK_STATE $man || sed -i 's#<uses-permission android:name="android.permission.INTERNET" />#&\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />#' $man

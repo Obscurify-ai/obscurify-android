@@ -337,6 +337,45 @@ try {
   });
   ok(phoneFork.length === webFork.length, `  and on the phone (${phoneFork.length} chats each)`);
 
+  // Deleted on the website while the phone, offline, adds to it: the chat comes back everywhere,
+  // with its image (not a reference to an image the delete took away).
+  const PIC_ID = 'conv-' + Date.now() + '-pic';
+  await web2.evaluate(async ([id, img]) => {
+    await chatStore.save(chatStore.all().concat([{ id, title: 'Picture to keep', model: 'google/gemini-2.5-flash-lite', createdAt: Date.now(), updatedAt: Date.now(),
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Describe this picture' }, { type: 'image_url', image_url: { url: img } }] }, { role: 'assistant', content: 'A test pattern.' }] }]));
+    await ChatSync.syncNow(); await ChatSync.syncNow();
+  }, [PIC_ID, IMAGE]);
+  await nudge();
+  await until('the picture chat on the phone', async () => json('chats.json', []).some((m) => m.id === PIC_ID));
+  blockSync = true;
+  await web2.evaluate(async (id) => { deleteConversation(id); await ChatSync.syncNow(); await ChatSync.syncNow(); }, PIC_ID);
+  page = (await launch(false, true)).page;
+  await page.locator('.icon', { hasText: '☰' }).click();
+  await page.locator('.drawer .item .grow', { hasText: 'Picture to keep' }).click();
+  await page.waitForSelector('.msg img');
+  // A model that takes images (the chat has one).
+  await page.locator('.title.model').click();
+  await page.locator('input.search').fill('Gemini 2.5 Flash Lite');
+  await page.locator('.pick', { hasText: 'Gemini 2.5 Flash Lite' }).first().locator('.grow').click();
+  const grape = await ask('Reply with exactly the word: grape');
+  ok(/grape/i.test(grape), 'the phone adds to a chat the website just deleted: ' + grape.slice(0, 40));
+  blockSync = false;
+  await nudge();
+  const back2 = await until('the chat back on the website', async () => {
+    const c = (await web2.evaluate(async () => { await ChatSync.syncNow(); await ChatSync.syncNow(); return getConversations(); })).find((x) => x.id === PIC_ID);
+    return c && JSON.stringify(c.messages).includes('exactly the word: grape') && c;
+  });
+  ok(back2.messages[0].content[1].image_url.url === IMAGE, 'deleted on the website while the phone added to it: it comes back, with its image');
+  const ctx3 = await browser.newContext();
+  const web3 = await ctx3.newPage();
+  await web3.goto(WEB + '/');
+  await web3.waitForFunction(() => window.ChatSync && typeof chatStore !== 'undefined');
+  await web3.evaluate((s) => { localStorage.setItem('obscurify_private_off', '1'); localStorage.setItem('obscurify_account_kind', 'words'); localStorage.setItem('obscurify_sync_seed', s); }, seed2);
+  await web3.reload();
+  await web3.waitForFunction(() => window.ChatSync && typeof chatStore !== 'undefined');
+  const third = await until('the chat on a new browser', async () => (await web3.evaluate(async () => { await chatStore.ready; await ChatSync.syncNow(); await ChatSync.syncNow(); return getConversations(); })).find((x) => x.id === PIC_ID));
+  ok(third.messages[0].content[1].image_url.url === IMAGE, '  a new browser gets it with its image too');
+
   console.log('\nall sync checks passed');
 } finally {
   await browser.close();

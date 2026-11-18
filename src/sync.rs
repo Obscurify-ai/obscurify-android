@@ -90,6 +90,10 @@ struct State {
     convs: BTreeMap<String, Rec>,
     /// Images known to the server, by hash.
     atts: BTreeMap<String, i64>,
+    /// Images deleted on the server (tombstones, by hash: their revision). A chat here that still
+    /// uses one puts it back over the tombstone.
+    #[serde(default)]
+    gone_atts: BTreeMap<String, i64>,
     prefs: Option<Prefs>,
 }
 
@@ -427,21 +431,46 @@ async fn upload_image(k: &Keys, h: &str, data: &str) -> bool {
     if blob.len() > MAX_RECORD {
         return true; // too big to sync: other devices see it missing
     }
-    match call(k, "PUT", &format!("/records/{id}"), Some(0), Some(blob)).await {
-        Got::Ok(v) => { if !made_here(k, &v).await { return false } with_state(|s| s.atts.insert(h.into(), v["rev"].as_i64().unwrap_or(0))); true }
-        Got::Conflict(rev, _, epoch) => { if !same_store(epoch.as_deref()) { return false } with_state(|s| s.atts.insert(h.into(), rev)); true }
-        Got::Failed => false,
+    // Over a tombstone (deleted elsewhere while a chat here still used it): at its revision.
+    let mut if_match = with_state(|s| s.gone_atts.get(h).copied()).unwrap_or(0);
+    for _ in 0..2 {
+        match call(k, "PUT", &format!("/records/{id}"), Some(if_match), Some(blob.clone())).await {
+            Got::Ok(v) => {
+                if !made_here(k, &v).await { return false }
+                with_state(|s| { s.atts.insert(h.into(), v["rev"].as_i64().unwrap_or(0)); s.gone_atts.remove(h); });
+                return true;
+            }
+            Got::Conflict(rev, data, epoch) => {
+                if !same_store(epoch.as_deref()) { return false }
+                let there = data
+                    .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
+                    .and_then(|b| unseal(k, &id, &b));
+                if there.as_ref().is_some_and(|e| e["deleted"] == true) {
+                    if_match = rev; // a tombstone: put it back
+                    continue;
+                }
+                // Already there (the same image in another chat, or from another device).
+                with_state(|s| { s.atts.insert(h.into(), rev); s.gone_atts.remove(h); });
+                return true;
+            }
+            Got::Failed => return false,
+        }
     }
+    false
 }
-
+/// Images no synced chat here uses any more become tombstones on the server (FORMAT, chat-sync.js).
 async fn drop_images(k: &Keys, hashes: Vec<String>) {
     for h in hashes {
-        let used = with_state(|s| s.convs.values().any(|r| !r.deleted && r.atts.contains(&h)) || !s.atts.contains_key(&h));
+        let used = with_state(|s| s.convs.values().any(|r| !r.deleted && r.atts.contains(&h)));
+        let Some(rev) = with_state(|s| s.atts.get(&h).copied()) else { continue };
         if used {
             continue;
         }
-        if let Got::Ok(_) = call(k, "DELETE", &format!("/records/{}", record_id(k, &format!("att:{h}"))), None, None).await {
-            with_state(|s| s.atts.remove(&h));
+        let id = record_id(k, &format!("att:{h}"));
+        let tomb = seal(k, &id, &json!({ "v": 1, "k": "att", "h": h, "deleted": true }));
+        if let Got::Ok(v) = call(k, "PUT", &format!("/records/{id}"), Some(rev), Some(tomb)).await {
+            let new = v["rev"].as_i64().unwrap_or(0);
+            with_state(|s| { s.atts.remove(&h); s.gone_atts.insert(h.clone(), new); });
             store::remove(&att_file(&h));
         }
     }
@@ -575,11 +604,28 @@ async fn apply(mut app: App, k: &Keys, id: &str, rev: i64, data: &str) -> bool {
     let Some(env) = unseal(k, id, &blob) else { eprintln!("sync: a record could not be read"); return true };
     match env["k"].as_str() {
         Some("att") => {
-            if let (Some(h), Some(d)) = (env["h"].as_str(), env["data"].as_str())
-                && h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())
-            {
+            let Some(h) = env["h"].as_str().filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())) else { return true };
+            if env["deleted"] == true {
+                // Deleted elsewhere: chats here that still use it put it back (next push).
+                with_state(|s| {
+                    s.atts.remove(h);
+                    s.gone_atts.insert(h.into(), rev);
+                    for r in s.convs.values_mut().filter(|r| !r.deleted && r.rev > 0 && r.atts.iter().any(|a| a == h)) {
+                        r.dirty = true;
+                        r.ver += 1;
+                    }
+                });
+            } else if let Some(d) = env["data"].as_str() {
                 let _ = std::fs::write(store::dir().join(att_file(h)), d);
-                with_state(|s| s.atts.insert(h.into(), rev));
+                with_state(|s| { s.atts.insert(h.into(), rev); s.gone_atts.remove(h); });
+                // Chats here that came without it (it was gone when they did) get it now.
+                let placeholder = format!("{ATT_PREFIX}{h}");
+                let waiting: Vec<String> = with_state(|s| s.convs.iter().filter(|(_, r)| r.atts.iter().any(|a| a == h)).map(|(id, _)| id.clone()).collect());
+                for cid in waiting {
+                    if let Some(v) = local(&app, &cid) && v.to_string().contains(&placeholder) {
+                        write(app, &join_images(&v));
+                    }
+                }
             }
         }
         Some("prefs") => {
@@ -710,6 +756,9 @@ async fn push_conv(app: App, k: &Keys, id: &str) -> Pushed {
             }
             let rev = v["rev"].as_i64().unwrap_or(0);
             let old = rec.atts.clone();
+            if env["deleted"] != true {
+                FULL.store(false, Ordering::Relaxed); // room again
+            }
             if env["deleted"] == true {
                 with_state(|s| s.convs.insert(id.into(), Rec { rev, deleted: true, ..Default::default() }));
                 drop_images(k, old).await;
@@ -927,12 +976,16 @@ async fn run(app: App) {
     if !pull(app, &k).await || !on() {
         return;
     }
-    FULL.store(false, Ordering::Relaxed); // try again: other devices may have deleted chats
     let dirty: Vec<String> = with_state(|s| s.convs.iter().filter(|(_, r)| r.dirty).map(|(id, _)| id.clone()).collect());
+    let mut probed = false;
     for id in dirty {
-        // Full: only deletes, which make room.
+        // Full: deletes (which make room), and one new chat a round to see if there's room again
+        // (other devices may have deleted chats).
         if FULL.load(Ordering::Relaxed) && !with_state(|s| s.convs.get(&id).is_some_and(|r| r.deleted)) {
-            continue;
+            if probed {
+                continue;
+            }
+            probed = true;
         }
         for _ in 0..3 {
             if !matches!(push_conv(app, &k, &id).await, Pushed::Again) { break }
