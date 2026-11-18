@@ -698,7 +698,9 @@ fn Account() -> Element {
                 div { class: "section",
                     h2 { "Plan" }
                     if !t.is_null() {
-                        p { "{tier_name(&current)}" }
+                        // The plan list below marks the current plan; the Play
+                        // build has no list, so it names the plan here.
+                        if PLAY { p { "{tier_name(&current)}" } }
                         if t["included_credit"].as_f64().unwrap_or(0.0) > 0.0 {
                             p { class: "muted", "{usd(t[\"credit_used\"].as_f64().unwrap_or(0.0))} of {usd(t[\"included_credit\"].as_f64().unwrap_or(0.0))} included usage used" }
                         }
