@@ -1129,7 +1129,7 @@ pub fn SyncSection() -> Element {
             h2 { "Sync" }
             if !available() {
                 p { class: "muted", id: "sync-needs-words", if crate::private::on() && !crate::private::words() {
-                    "To enable encrypted sync, convert your account number to seed words above."
+                    "Off until you convert to seed words above."
                 } else {
                     "Sign in with your seed words on this phone to sync chats."
                 } }

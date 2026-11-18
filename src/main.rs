@@ -536,7 +536,7 @@ fn Words(text: String) -> Element {
     rsx! {
         div { class: "words mono",
             for (i, w) in text.split_whitespace().enumerate() {
-                span { key: "{i}", em { "{i + 1}." } " {w}" }
+                span { key: "{i}", em { "{i + 1}." } "{w}" }
             }
         }
     }
