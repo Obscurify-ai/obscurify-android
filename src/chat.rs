@@ -233,6 +233,39 @@ fn new_chat(app: App) {
     after_answer(app, start_new_chat);
 }
 
+/// Set once the app has opened on its starting model, so later plan refreshes leave the pick alone.
+pub static PLAN_DEFAULT_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// As the web chat does on each page load: when the app starts or someone signs in, open on the
+/// first usable favorite, else the plan's default (Pro: GLM 5.3 Uncensored, Casual: Claude Opus).
+/// Runs once both the catalogue and the plan have loaded; pay-as-you-go keeps its model.
+pub fn open_on_plan_default(mut app: App) {
+    use std::sync::atomic::Ordering::SeqCst;
+    if app.access.peek().is_none() || app.models.peek().is_empty() || PLAN_DEFAULT_DONE.swap(true, SeqCst) {
+        return;
+    }
+    let pick = first_usable_favorite(&app).or_else(|| {
+        let defaults = app.plan_defaults.peek();
+        defaults.iter().find(|id| usable(&app, id)).cloned()
+    });
+    if let Some(id) = pick
+        && app.settings.peek().model != id
+    {
+        app.settings.write().model = id;
+        app.save_settings();
+    }
+}
+
+/// Listed, offered on this build, not locked for the plan, and takes encrypted requests while
+/// Encrypted is on.
+fn usable(app: &App, id: &str) -> bool {
+    let settings = app.settings.peek();
+    let frontier = app.frontier.peek();
+    let uncensored = app.uncensored.peek();
+    app.models.peek().iter().any(|m| m.id == id && offered(m, &uncensored) && (!settings.encrypted || m.e2ee))
+        && needs_plan(id, *app.access.peek(), &frontier, &uncensored).is_none()
+}
+
 /// The model new chats start on: the first favorite that is listed, offered on this build, not
 /// locked for the plan, and takes encrypted requests while Encrypted is on. A favorite that can't
 /// be used is skipped for the next one down. Guests chat with the guest model, so none.
@@ -240,15 +273,8 @@ fn first_usable_favorite(app: &App) -> Option<String> {
     if !api::has_session() {
         return None;
     }
-    let settings = app.settings.peek();
-    let models = app.models.peek();
-    let frontier = app.frontier.peek();
-    let uncensored = app.uncensored.peek();
-    let access = *app.access.peek();
-    settings.favorites.iter().find(|id| {
-        models.iter().any(|m| &m.id == *id && offered(m, &uncensored) && (!settings.encrypted || m.e2ee))
-            && needs_plan(id, access, &frontier, &uncensored).is_none()
-    }).cloned()
+    let favorites = app.settings.peek().favorites.clone();
+    favorites.into_iter().find(|id| usable(app, id))
 }
 
 fn start_new_chat(mut app: App) {
