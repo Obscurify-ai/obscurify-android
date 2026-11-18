@@ -519,6 +519,21 @@ fn Root() -> Element {
 
 // ---- sign in and sign up: the web's flow ----
 
+/// 12 account words as a numbered grid (a number as it is).
+#[component]
+fn Words(text: String) -> Element {
+    if !text.chars().any(|c| c.is_ascii_alphabetic()) {
+        return rsx! { div { class: "number mono", "{text}" } };
+    }
+    rsx! {
+        div { class: "words mono",
+            for (i, w) in text.split_whitespace().enumerate() {
+                span { key: "{i}", em { "{i + 1}." } " {w}" }
+            }
+        }
+    }
+}
+
 #[component]
 fn Login() -> Element {
     let mut app = use_context::<App>();
@@ -527,9 +542,13 @@ fn Login() -> Element {
     let mut error = use_signal(|| None::<String>);
 
     let mut sign_in = move |_: ()| {
-        let n: String = number.peek().chars().filter(|c| c.is_ascii_digit()).collect();
-        if n.len() != 16 {
-            error.set(Some("Enter your 16-digit account number.".into()));
+        let n = number.peek().trim().to_string();
+        if crate::private::kind_of(&n).is_none() {
+            error.set(Some(if n.chars().any(|c| c.is_ascii_alphabetic()) {
+                "Those aren't 12 account words. Check each word and its order: one is misspelled, missing or in the wrong place."
+            } else {
+                "Enter your 12 account words, or your 16-digit account number."
+            }.into()));
             return;
         }
         busy.set(true);
@@ -545,8 +564,8 @@ fn Login() -> Element {
     rsx! {
         div { class: "login",
             h1 { "Sign In" }
-            p { class: "muted", "Enter your 16-digit account number." }
-            input { r#type: "text", inputmode: "numeric", autocomplete: "off", placeholder: "1234 5678 9012 3456", class: "mono",
+            p { class: "muted", "Enter your 12 account words, or your 16-digit account number." }
+            input { r#type: "text", autocomplete: "off", autocapitalize: "none", spellcheck: "false", placeholder: "12 words, or 1234 5678 9012 3456", class: "mono",
                 oninput: move |e| number.set(e.value()),
                 onkeydown: move |e| if e.key() == Key::Enter { sign_in(()) } }
             button { class: "go", disabled: *busy.read(), onclick: move |_| sign_in(()), if *busy.read() { "Signing in…" } else { "Sign In" } }
@@ -572,18 +591,18 @@ fn Signup() -> Element {
     let mut credit = use_signal(|| None::<f64>);
     let mut referral = use_signal(String::new);
 
-    // The number is shown once. We only keep a scrambled copy and can't show it again.
+    // The words are shown once. We only keep a scrambled copy and can't show them again.
     if let Some(n) = created.read().clone() {
         return rsx! {
             div { class: "login center",
-                h1 { "Your account number" }
-                p { class: "muted", "Write it down or keep it in a password manager. If you lose it, the account and its balance are gone." }
+                h1 { "Your account words" }
+                p { class: "muted", "Write them down in order, or keep them in a password manager. If you lose them, the account, its balance and its synced chats are gone." }
                 if let Some(c) = *credit.read() { p { class: "ok", "{usd(c)} of starter credit is on your balance." } }
-                div { class: "number mono", "{n}" }
-                button { onclick: { let n = n.clone(); move |_| app.copy(&n, "Account number") }, "Copy" }
+                Words { text: n.clone() }
+                button { onclick: { let n = n.clone(); move |_| app.copy(&n, "Account words") }, "Copy" }
                 label { class: "check",
                     input { r#type: "checkbox", onchange: move |e| saved.set(e.checked()) }
-                    "I have saved my account number"
+                    "I have saved my 12 words"
                 }
                 button { class: "go", disabled: !*saved.read(), onclick: move |_| { created.set(None); app.signed_in() }, "Start Chatting" }
             }
@@ -612,7 +631,7 @@ fn Signup() -> Element {
             p { class: "muted", "No email, no username, no password" }
             div { class: "info",
                 h4 { "How it works" }
-                p { "We give you a random 16-digit account number. It is the only thing you need to sign in, and we only keep a scrambled copy of it, so we can't look it up or send it to you again." }
+                p { "The app makes 12 random words. They are the only thing you need to sign in. They never leave this phone: we only get a scrambled key made from them, so we can't look them up or send them to you again, and no one can guess them." }
             }
             label { class: "check",
                 input { r#type: "checkbox", onchange: move |e| tos.set(e.checked()) }
@@ -620,7 +639,7 @@ fn Signup() -> Element {
                 a { href: "{api::BASE}/terms", "Terms of Service" }
             }
             if !PLAY { input { class: "field", autocomplete: "off", placeholder: "Referral code (optional)", oninput: move |e| referral.set(e.value()) } }
-            button { class: "go", disabled: *busy.read(), onclick: create, "Generate Account Number" }
+            button { class: "go", disabled: *busy.read(), onclick: create, if *busy.read() { "Making your words…" } else { "Make My Account Words" } }
             if let Some(e) = error.read().clone() { p { class: "err", "{e}" } }
             p { class: "muted center", style: "margin-top: 16px",
                 "Already have an account? "
@@ -644,6 +663,9 @@ fn Account() -> Element {
     let mut refill = use_signal(|| Value::Null);
     let mut key = use_signal(|| None::<String>);
     let mut new_number = use_signal(|| None::<String>);
+    let mut words_saved = use_signal(|| false);
+    let mut switched = use_signal(|| false);
+    let mut switching = use_signal(|| false);
     let mut confirm = use_signal(|| None::<&'static str>);
     let mut plan_ask = use_signal(|| None::<String>);
     let mut deleting = use_signal(|| false);
@@ -752,47 +774,72 @@ fn Account() -> Element {
                     }
                     if !PLAY { p { class: "muted", style: "margin-top: 8px", "Plans are paid from your balance and renew monthly while it covers them." } }
                 }
+                // Account words (or, for older accounts, a 16-digit number). New words are made on
+                // the phone and shown first; only once they're saved does the account switch to
+                // them (the server gets only their login key).
                 div { class: "section",
-                    h2 { "Account number" }
+                    h2 { if crate::private::words() { "Account words" } else { "Account number" } }
                     if let Some(n) = new_number.read().clone() {
-                        div { class: "info center",
-                            p { style: "color: #fff; font-weight: 600", "This is your account number" }
-                            p { class: "muted", "Your old number no longer works. Save this one now: we can't show it again." }
-                            div { class: "number mono", "{n}" }
-                            div { class: "row", style: "justify-content: center; border: 0",
-                                button { onclick: { let n = n.clone(); move |_| app.copy(&n, "Account number") }, "Copy" }
-                                button { class: "go", onclick: move |_| new_number.set(None), "I've Saved It" }
+                        div { class: "info center", id: "new-words",
+                            if *switched.read() {
+                                p { style: "color: #fff; font-weight: 600", "Your account words" }
+                                p { class: "muted", "Done: sign in with these words from now on. Your old number or words, your old API key and other signed-in devices no longer work." }
+                            } else {
+                                p { style: "color: #fff; font-weight: 600", "Your new account words" }
+                                p { class: "muted", "Write these 12 words down in order, or keep them in a password manager. They replace your current number or words when you press Switch, and we can't show them again." }
+                            }
+                            Words { text: n.clone() }
+                            if *switched.read() {
+                                div { class: "row", style: "justify-content: center; border: 0",
+                                    button { onclick: { let n = n.clone(); move |_| app.copy(&n, "Account words") }, "Copy" }
+                                    button { class: "go", onclick: move |_| { new_number.set(None); switched.set(false) }, "I've Saved It" }
+                                }
+                            } else {
+                                label { class: "check", id: "words-saved",
+                                    input { r#type: "checkbox", checked: *words_saved.read(), onchange: move |e| words_saved.set(e.checked()) }
+                                    "I've written down all 12 words, in order"
+                                }
+                                div { class: "row end", style: "border: 0",
+                                    button { class: "bare", onclick: move |_| new_number.set(None), "Cancel" }
+                                    button { onclick: { let n = n.clone(); move |_| app.copy(&n, "Account words") }, "Copy" }
+                                    button { class: "go", id: "switch-words", disabled: !*words_saved.read() || *switching.read(), onclick: {
+                                        let n = n.clone();
+                                        move |_| {
+                                            let n = n.clone();
+                                            switching.set(true);
+                                            bg(async move {
+                                                match api::switch_to_words(&n).await {
+                                                    Ok(seed) => {
+                                                        // Synced chats move to the new words; an account that had a
+                                                        // number can sync from now on (sync.rs).
+                                                        sync::move_to(app, seed).await;
+                                                        crate::private::set_kind("words");
+                                                        *sync::REFRESH.write() += 1;
+                                                        if sync::on() { sync::tick(app).await }
+                                                        switched.set(true);
+                                                    }
+                                                    Err(e) => app.say(e),
+                                                }
+                                                switching.set(false);
+                                            })
+                                        }
+                                    }, if *switching.read() { "Switching…" } else { "Switch" } }
+                                }
                             }
                         }
                     }
                     div { class: "row",
-                        div { class: "grow muted", "Hidden. We only store a scrambled copy, so we can't show it again." }
-                        if *confirm.read() != Some("number") {
-                            button { onclick: move |_| confirm.set(Some("number")), "Get a New Number" }
-                        }
-                    }
-                    if *confirm.read() == Some("number") {
-                        p { class: "muted", style: "margin-top: 8px", "Get a new account number? Your current number stops working right away. Make sure you can save the new one." }
-                        div { class: "row", style: "border: 0",
-                            button { class: "danger", onclick: move |_| {
-                                confirm.set(None);
-                                bg(async move {
-                                    match api::post("/account_number/rotate", json!({})).await {
-                                        Ok(v) => {
-                                            let n = v["account_number"].as_str().map(String::from);
-                                            new_number.set(n.clone());
-                                            // Synced chats move to the new number (sync.rs).
-                                            if let Some(n) = n && sync::available() {
-                                                let (tx, rx) = futures_channel::oneshot::channel();
-                                                std::thread::spawn(move || { let _ = tx.send(unlinkable_inference::seed::account_keys(&n)); });
-                                                if let Ok(Ok(k)) = rx.await { sync::move_to(app, k.seed.0).await }
-                                            }
-                                        }
-                                        Err(e) => app.say(e),
-                                    }
-                                })
-                            }, "Get a New Number" }
-                            button { class: "bare", onclick: move |_| confirm.set(None), "Cancel" }
+                        div { class: "grow muted", if crate::private::words() {
+                            "Hidden. We only store a scrambled copy, so we can't show them again."
+                        } else {
+                            "A 16-digit number. Switch to 12 account words: no one can guess them, and they turn on chat sync."
+                        } }
+                        if new_number.read().is_none() {
+                            button { id: "rotate-words", onclick: move |_| {
+                                words_saved.set(false);
+                                switched.set(false);
+                                new_number.set(Some(crate::private::new_words()));
+                            }, if crate::private::words() { "Get New Words" } else { "Switch to Words" } }
                         }
                     }
                 }
@@ -849,7 +896,7 @@ fn Account() -> Element {
                 History { rev: tx_rev, mine }
                 div { class: "section",
                     if *confirm.read() == Some("out") {
-                        p { class: "muted", "Chats on this phone are deleted. Make sure you have your account number." }
+                        p { class: "muted", "Chats on this phone are deleted. Make sure you have your account words (or number)." }
                         if w.held_cents() > 0 { p { class: "muted", "{cents(w.held_cents())} in blind vouchers stays on this phone and goes to the next account that signs in." } }
                         div { class: "row",
                             button { class: "danger", onclick: move |_| app.sign_out(), "Sign out" }
@@ -862,7 +909,7 @@ fn Account() -> Element {
                 div { class: "section",
                     h2 { "Delete account" }
                     if *confirm.read() == Some("delete") {
-                        p { class: "muted", "Your account number, API key and sign-ins are erased for good, and the balance and plan are lost. Payment records stay, with nothing that links them to you. Chats on this phone and their synced copy are deleted." }
+                        p { class: "muted", "Your account words or number, API key and sign-ins are erased for good, and the balance and plan are lost. Payment records stay, with nothing that links them to you. Chats on this phone and their synced copy are deleted." }
                         div { class: "row",
                             button { class: "danger", disabled: *deleting.read(), onclick: move |_| {
                                 deleting.set(true);

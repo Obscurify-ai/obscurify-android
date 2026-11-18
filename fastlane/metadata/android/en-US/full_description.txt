@@ -1,7 +1,7 @@
-<p>Obscurify is private AI chat with hundreds of models behind one anonymous account. There's no email, username or password, only a 16-digit account number.</p>
+<p>Obscurify is private AI chat with hundreds of models behind one anonymous account. There's no email, username or password, only 12 account words, made on your phone.</p>
 <ul>
 <li>Chat with frontier, open and uncensored models, with streamed answers, web search and image attachments</li>
-<li>Your chats are stored on your phone and sync between your devices end-to-end encrypted with your account number: we hold only ciphertext, never the key</li>
+<li>Your chats are stored on your phone and sync between your devices end-to-end encrypted with your account words: we hold only ciphertext, never the key, and no one can guess the words</li>
 <li>Search models, browse them by category and keep favorites</li>
 <li>Prepaid balance and plans, plus an API key for the Pro plan</li>
 <li>Add funds by card, Bitcoin, Lightning or Monero. A payment goes on your balance when it confirms, even if you close the app. Or choose a blind voucher, which the server signs without seeing, so the payment can't be linked to the account it funds</li>

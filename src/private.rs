@@ -11,10 +11,13 @@ use crate::{api, store};
 use serde_json::{json, Value};
 use std::sync::{Mutex as StdMutex, OnceLock};
 use unlinkable_inference::manager::Manager;
-use unlinkable_inference::seed::{account_keys, Seed};
+use unlinkable_inference::seed::{account_keys, normalize_credential, AccountKeys, Credential, Seed};
 
 const SEED_FILE: &str = "unlinkable-seed.json";
 const STATE_FILE: &str = "unlinkable-state.json";
+/// How this phone signed in: "words" (12 account words) or "number" (16 digits). None: before
+/// words existed, so a number. Chat sync is only for words (sync.rs).
+const KIND_FILE: &str = "account-kind.json";
 
 fn state() -> &'static tokio::sync::Mutex<Option<Manager>> {
     static S: OnceLock<tokio::sync::Mutex<Option<Manager>>> = OnceLock::new();
@@ -29,19 +32,38 @@ pub fn set_chat(id: &str) { *CHAT.lock().unwrap() = id.to_string() }
 /// On: there is a seed from signing in on this phone.
 pub fn on() -> bool { store::load::<Option<String>>(SEED_FILE).is_some() }
 
-/// The login key for `number` (sent to sign in, instead of the number), keeping its seed for the
-/// wallet. Argon2id is slow on purpose, so it runs off the UI thread.
-pub async fn keys(number: &str) -> Result<String, String> {
-    let n = number.to_string();
+/// The login key and seed for 12 account words or a 16-digit number, kept nowhere. Argon2id is
+/// slow on purpose, so it runs off the UI thread.
+pub async fn keys_of(number_or_words: &str) -> Result<AccountKeys, String> {
+    let n = number_or_words.to_string();
     let (tx, rx) = futures_channel::oneshot::channel();
     std::thread::spawn(move || { let _ = tx.send(account_keys(&n)); });
-    let k = rx.await.map_err(|_| "Could not derive the key".to_string())?.map_err(|e| e.to_string())?;
+    rx.await.map_err(|_| "Could not derive the key".to_string())?.map_err(|e| e.to_string())
+}
+
+/// The login key for the words or number (sent to sign in, instead of them), keeping its seed for
+/// the wallet and which kind it was.
+pub async fn keys(number_or_words: &str) -> Result<String, String> {
+    let k = keys_of(number_or_words).await?;
     store::save(SEED_FILE, &Some(k.seed.0.iter().map(|b| format!("{b:02x}")).collect::<String>()));
+    set_kind(kind_of(number_or_words).unwrap_or("number"));
     Ok(k.login_key)
 }
 
-/// A new 16-digit account number, made on the phone (the server never learns it).
-pub fn new_number() -> String { unlinkable_inference::seed::new_account_number() }
+/// "words" (12 account words whose checksum holds), "number" (16 digits), or None for what was typed.
+pub fn kind_of(input: &str) -> Option<&'static str> {
+    match normalize_credential(input)? {
+        Credential::Number(_) => Some("number"),
+        Credential::Words(_) => Some("words"),
+    }
+}
+
+/// This phone signed in with account words (or switched to them).
+pub fn words() -> bool { store::load::<Option<String>>(KIND_FILE).as_deref() == Some("words") }
+pub fn set_kind(kind: &str) { store::save(KIND_FILE, &Some(kind.to_string())) }
+
+/// 12 new account words (128 random bits), made on the phone (the server never learns them).
+pub fn new_words() -> String { unlinkable_inference::seed::new_recovery_words() }
 
 /// Where requests go changed (Tor on or off, a mirror): the manager connects again on its next
 /// use, to the new address and with a client made for it (its state is saved after every call).
@@ -57,6 +79,7 @@ pub fn reset() {
 pub fn forget() {
     store::remove(SEED_FILE);
     store::remove(STATE_FILE);
+    store::remove(KIND_FILE);
     if let Ok(mut s) = state().try_lock() {
         *s = None;
     }

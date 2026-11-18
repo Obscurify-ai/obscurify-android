@@ -272,8 +272,8 @@ pub fn status_of(e: &str) -> (u16, &str) {
 
 pub fn msg(e: String) -> String { status_of(&e).1.to_string() }
 
-/// Signs in with the 16-digit account number (spaces and dashes are fine). Only the session it
-/// starts is kept.
+/// Signs in with the 12 account words or a 16-digit account number (any spacing). Only the
+/// session it starts is kept.
 pub async fn login(number: &str) -> Result<(), String> {
     // Only a key derived from the number is sent (private.rs); an account from before that is moved
     // over by sending the number once.
@@ -293,24 +293,30 @@ pub async fn login(number: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Makes a new account (the caller has had the Terms accepted), signed in. Returns its number and
-/// any starter credit it got.
+/// Makes a new account (the caller has had the Terms accepted), signed in. Returns its 12 account
+/// words and any starter credit it got.
 pub async fn create_account(referral: &str) -> Result<(String, Option<f64>), String> {
-    // The number is made here and only a key derived from it is sent: the server never learns it.
-    let number = crate::private::new_number();
+    // The words are made here and only a key derived from them is sent: the server never learns them.
+    let number = crate::private::new_words();
     let key = crate::private::keys(&number).await?;
     let mut body = json!({"accept_tos": true, "account_key": key});
     if !referral.trim().is_empty() {
         body["referral_code"] = json!(referral.trim());
     }
     let (_, v, session) = send(false, "POST", "/create_account", Some(&body), 20).await.map_err(msg)?;
-    let n = v["account_number"].as_str().map(str::to_string).unwrap_or_else(|| {
-        number.as_bytes().chunks(4).map(|c| String::from_utf8_lossy(c).into_owned()).collect::<Vec<_>>().join(" ")
-    });
+    let n = v["account_number"].as_str().map(str::to_string).unwrap_or(number);
     set_session(Some(session.ok_or("Sign-up didn't start a session")?));
     EXPIRED.store(false, Ordering::SeqCst);
     let credit = v["starter_credit"].as_f64().or_else(|| v["starter_credit"].as_str().and_then(|s| s.parse().ok()));
     Ok((n, credit))
+}
+
+/// Switches the account to new account words made on the phone: only their login key is sent.
+/// The old number or words, the old API key and other sessions stop working. Returns the words' seed.
+pub async fn switch_to_words(words: &str) -> Result<[u8; 32], String> {
+    let k = crate::private::keys_of(words).await?;
+    call("POST", "/account_number/rotate", Some(json!({"account_key": k.login_key}))).await?;
+    Ok(k.seed.0)
 }
 
 /// A signed-in call. A 401 means the session is over: the app goes back to sign-in.

@@ -1,12 +1,12 @@
 # Obscurify for Android
 
 Private AI chat from [Obscurify](https://obscurify.ai): hundreds of models behind one anonymous account.
-There's no email, username or password, only a 16-digit account number. A payment goes straight on
+There's no email, username or password, only 12 account words (accounts from before 2026-11 have a 16-digit number, which still signs in and can switch to words). A payment goes straight on
 the account's balance, or, if you choose, buys blind vouchers the server signs without seeing them, so
 the payment can't be linked to the account it funds.
 
 The app is a small, native Rust client of the Obscurify API (Dioxus 0.7 in the system WebView). Chats
-are stored on the phone and sync, encrypted on the phone with a key from the account number, with
+are stored on the phone and sync, encrypted on the phone with a key from the account words (sync is only for accounts with words), with
 the website and other phones on the same number (`src/sync.rs`; the server holds only ciphertext).
 
 ## Features
@@ -89,8 +89,8 @@ when the notes are about something the Play app doesn't have (payments, uncensor
 | `src/compact.rs` | Compaction: earlier messages summarized in chunks so a chat goes on past the model's context |
 | `src/api.rs` | HTTP. Signed-in calls (top-ups too) carry the session; blind voucher calls carry nothing |
 | `src/wallet.rs` | Top-ups (`/top_ups`), and blind voucher orders: blind, sign, unblind, redeem |
-| `src/sync.rs` | Encrypted chat sync with the website and other phones: chats and favorites, AES-256-GCM with a key from the account number's seed, opaque records with no cookie, merges by server revision; the Account switch (off deletes the synced copy) |
-| `src/private.rs` | Private sessions (default once signed in): chat requests carry a session secret and no cookie, paid from a blind-voucher wallet derived from the account number (the open-source [unlinkable-inference](https://github.com/Obscurify-ai/unlinkable-inference) crate); a wiped phone gets it back at sign-in. Sign-up makes the number on the phone and sends only a key derived from it |
+| `src/sync.rs` | Encrypted chat sync with the website and other phones: chats and favorites, AES-256-GCM with a key from the account words' seed (word accounts only), opaque records with no cookie, merges by server revision; the Account switch (off deletes the synced copy) |
+| `src/private.rs` | Private sessions (default once signed in): chat requests carry a session secret and no cookie, paid from a blind-voucher wallet derived from the account number (the open-source [unlinkable-inference](https://github.com/Obscurify-ai/unlinkable-inference) crate); a wiped phone gets it back at sign-in. Sign-up makes 12 account words on the phone and sends only a key derived from them; Account switches a number account to words the same way |
 | `src/store.rs` | JSON files in the app's private storage |
 | `src/tor.rs` | In-app Tor: Arti on its own thread behind a SOCKS5 proxy on 127.0.0.1 (random port and password per run), built-in bridges through lyrebird (`tools/lyrebird.sh` builds it; `src/tor_off.rs` for the Play app) |
 | `MainActivity.kt` | The only Kotlin: Back asks the page first; opening links and wallet URIs; copy; Code Mode's sandbox WebView and full-screen pages |

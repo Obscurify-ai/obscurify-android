@@ -1014,14 +1014,17 @@ fn PrivateSetup() -> Element {
         return rsx! {};
     }
     let turn_on = move |_| {
-        let digits: String = number().chars().filter(char::is_ascii_digit).collect();
-        if digits.len() != 16 { error.set(Some("That is not 16 digits.".into())); return }
+        let digits = number().trim().to_string();
+        if crate::private::kind_of(&digits).is_none() {
+            error.set(Some(if digits.chars().any(|c| c.is_ascii_alphabetic()) { "Those aren't 12 account words: check each word and its order." } else { "That is not 16 digits." }.into()));
+            return
+        }
         busy.set(true);
         error.set(None);
         bg(async move {
             match api::login(&digits).await {
                 Ok(()) => { shown.set(false); app.say("Private chats are on".to_string()); app.refresh_balance() }
-                Err(_) => { crate::private::forget(); error.set(Some("That number did not sign in. Check it and try again.".into())) }
+                Err(_) => { crate::private::forget(); error.set(Some("That did not sign in. Check it and try again.".into())) }
             }
             busy.set(false);
         });
@@ -1030,10 +1033,10 @@ fn PrivateSetup() -> Element {
         div { class: "veil" }
         div { class: "sheet private-setup",
             h2 { "Make your chats private here" }
-            p { class: "muted", "You signed in here before private chats existed. Enter your account number once on this phone, and after that we can't tell which chats are yours. "
+            p { class: "muted", "You signed in here before private chats existed. Enter your account words (or number) once on this phone, and after that we can't tell which chats are yours. "
                 a { onclick: move |_| crate::open_url(&format!("{}/blog/unlinkable_inference", api::BASE)), "How this works" }
             }
-            input { class: "field", inputmode: "numeric", placeholder: "Account number", value: "{number}", oninput: move |e| number.set(e.value()) }
+            input { class: "field", autocapitalize: "none", spellcheck: "false", placeholder: "12 words, or account number", value: "{number}", oninput: move |e| number.set(e.value()) }
             if let Some(e) = error() { p { class: "err", "{e}" } }
             div { class: "row end",
                 button { class: "bare", onclick: move |_| { store::save(PRIVATE_SETUP_LATER, &true); shown.set(false) }, "Not now" }

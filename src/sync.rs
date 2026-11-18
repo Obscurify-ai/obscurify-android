@@ -1,4 +1,4 @@
-//! Encrypted chat sync with the website and other phones signed in with the same account number.
+//! Encrypted chat sync with the website and other phones signed in with the same account words.
 //!
 //! Chats and favorites are encrypted here with a key from the account number's seed (private.rs)
 //! before they leave the phone. The server (`/sync/v1`, see the website's src/api/sync.rs) gets
@@ -115,7 +115,11 @@ fn seed() -> Option<[u8; 32]> {
     }
 }
 
-pub fn available() -> bool { seed().is_some() }
+/// Only accounts with 12 account words sync: 16 digits can be guessed by someone holding the
+/// server, words can't (private.rs keeps which this phone signed in with).
+pub fn available() -> bool { crate::private::words() && seed().is_some() }
+/// Bumped when the account switches to words (Account), so the switch shows it.
+pub static REFRESH: GlobalSignal<u32> = Signal::global(|| 0);
 pub fn on() -> bool { available() && !store::load::<bool>(OFF) }
 pub fn full() -> bool { FULL.load(Ordering::Relaxed) }
 
@@ -884,7 +888,7 @@ pub fn JoinAsk() -> Element {
         div { class: "sheet", id: "sync-join",
             h2 { "Combine chats?" }
             p { class: "muted", id: "sync-join-text",
-                "This phone has {chats(here)} {that} synced, and your account has {chats(there)} from your other devices. Combine puts all {here + there} on every device signed in with your number. Nothing is deleted."
+                "This phone has {chats(here)} {that} synced, and your account has {chats(there)} from your other devices. Combine puts all {here + there} on every device signed in with your account words. Nothing is deleted."
             }
             div { class: "row end",
                 button { class: "bare", id: "sync-join-no", onclick: move |_| answer_join(app, false), "Not on this phone" }
@@ -1062,12 +1066,18 @@ pub fn SyncSection() -> Element {
     let mut asking = use_signal(|| false);
     let mut busy = use_signal(|| false);
     // "Not on this phone" ([`JoinAsk`]) turns it off.
-    use_effect(move || if JOIN_ASK.read().is_none() && !*busy.peek() { enabled.set(on()) });
+    // and switching the account to words turns it on.
+    use_effect(move || { let _ = REFRESH.read(); if JOIN_ASK.read().is_none() && !*busy.peek() { enabled.set(on()) } });
+    let _ = REFRESH.read();
     rsx! {
         div { class: "section",
             h2 { "Sync" }
             if !available() {
-                p { class: "muted", "Sign in with your account number on this phone to sync chats." }
+                p { class: "muted", id: "sync-needs-words", if crate::private::on() && !crate::private::words() {
+                    "Sync needs account words, which no one can guess. Use Switch to Words above, and it turns on."
+                } else {
+                    "Sign in with your account words on this phone to sync chats."
+                } }
             } else {
                 label { class: "tor-always", id: "sync-switch",
                     input { r#type: "checkbox", id: "sync-on", checked: enabled(), disabled: busy(),
@@ -1088,7 +1098,7 @@ pub fn SyncSection() -> Element {
                         } }
                     "Sync chats between devices"
                 }
-                p { class: "muted", "Encrypted on this phone with a key from your account number. We hold only ciphertext, never the key." }
+                p { class: "muted", "Encrypted on this phone with a key from your account words. We hold only ciphertext, never the key." }
                 if full() { p { class: "muted", "Sync storage for this account is full: new chats stay on this phone." } }
                 if asking() {
                     p { class: "muted", "Stop syncing? The synced copy is deleted and your other devices stop syncing too. Chats stay on each device." }

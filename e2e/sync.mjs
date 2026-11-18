@@ -71,13 +71,14 @@ try {
   let { page } = await launch(true);
   await page.getByText('Create one').click();
   await page.locator('.check input').check();
-  await page.getByRole('button', { name: 'Generate Account Number' }).click();
-  const number = (await page.locator('.number').textContent({ timeout: 30000 })).trim();
-  const digits = number.replace(/\D/g, '');
+  await page.getByRole('button', { name: 'Make My Account Words' }).click();
+  await page.locator('.words').waitFor({ timeout: 30000 });
+  // 12 account words (only word accounts sync); "digits" is what signs in.
+  const digits = (await page.locator('.words span').allTextContents()).map((t) => t.replace(/^\d+\.\s*/, '').trim()).join(' ');
   await page.locator('.check input').check();
   await page.getByRole('button', { name: 'Start Chatting' }).click();
   await page.waitForSelector('#composer');
-  const key = execFileSync(process.env.SESSIONS_BIN || `${process.env.HOME}/Work/unlinkable-inference/target/release/unlinkable-inference`, ['login-key'], { input: digits }).toString().trim();
+  const key = execFileSync(process.env.SESSIONS_BIN || `${process.env.HOME}/Work/unlinkable-inference-words/target/release/unlinkable-inference`, ['login-key'], { input: digits }).toString().trim();
   const secretFile = (process.env.SECRET_FILE || `${process.env.HOME}/Work/obscurify-sync/local/anon_keys/account_secret`).replace(/^~/, process.env.HOME);
   const hash = execFileSync('python3', ['-c', 'import hmac,hashlib,sys; print(hmac.new(bytes.fromhex(open(sys.argv[1]).read().strip()), b"obscurify-login-key-v1:"+sys.argv[2].encode(), hashlib.sha256).hexdigest())', secretFile, key]).toString().trim();
   const userId = sql(`SELECT id FROM users WHERE account_number_hash = '${hash}'`);
@@ -220,10 +221,13 @@ try {
   await until('sync back on', async () => !cat('sync-off.json').includes('true') && cat('sync-state.json').includes('"epoch":"'));
   await web.evaluate(() => ChatSync.setOn(true));
   await webSync();
-  await page.locator('button', { hasText: 'Get a New Number' }).first().click();
-  await page.locator('button.danger', { hasText: 'Get a New Number' }).click();
-  const fresh = (await page.locator('.number').textContent({ timeout: 30000 })).replace(/\D/g, '');
-  ok(fresh.length === 16 && fresh !== digits, 'the phone got a new number');
+  await page.locator('#rotate-words').click();
+  await page.locator('#new-words .words').waitFor({ timeout: 30000 });
+  const fresh = (await page.locator('#new-words .words span').allTextContents()).map((t) => t.replace(/^\d+\.\s*/, '').trim()).join(' ');
+  await page.locator('#words-saved input').check();
+  await page.locator('#switch-words').click();
+  await page.locator('#new-words', { hasText: 'Done' }).waitFor({ timeout: 60000 });
+  ok(/^([a-z]+ ){11}[a-z]+$/.test(fresh) && fresh !== digits, 'the phone got new account words');
   await until('the phone moved to the new store', async () => cat('sync-seed.json').length > 60 && json('sync-state.json', {}).epoch);
   await webSync();
   ok(await web.evaluate(() => !ChatSync.on()), 'the website on the old number stopped syncing');
@@ -232,7 +236,7 @@ try {
   await web2.goto(WEB + '/');
   await web2.waitForFunction(() => window.PrivateSessions && window.ChatSync && typeof chatStore !== 'undefined');
   const seed2 = await web2.evaluate((n) => PrivateSessions.seedOf(n), fresh);
-  await web2.evaluate((s) => { localStorage.setItem('obscurify_private_off', '1'); localStorage.setItem('obscurify_sync_seed', s); }, seed2);
+  await web2.evaluate((s) => { localStorage.setItem('obscurify_private_off', '1'); localStorage.setItem('obscurify_account_kind', 'words'); localStorage.setItem('obscurify_sync_seed', s); }, seed2);
   await web2.reload();
   await web2.waitForFunction(() => window.ChatSync && typeof chatStore !== 'undefined');
   const moved = await until('the phone\'s chats under the new number', async () => (await web2.evaluate(async () => { await ChatSync.syncNow(); await ChatSync.syncNow(); return getConversations(); })).find((c) => c.id === mango.id));

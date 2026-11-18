@@ -1632,7 +1632,7 @@ checksum = "17933e749f2502cfcd1c27519292fbbea22e8fc64ce680e863f855e8cd8cce23"
 dependencies = [
  "heck 0.5.0",
  "indexmap 2.14.2",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "proc-macro-crate 3.5.0",
  "proc-macro2",
  "quote",
@@ -3613,7 +3613,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -9277,9 +9277,7 @@ dependencies = [
 
 [[package]]
 name = "unlinkable-inference"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e17061e21f531377b033fb9e2767a1158bffd81f5d57835a7dec6f288b60b9b8"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "argon2",
