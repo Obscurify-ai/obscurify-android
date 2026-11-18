@@ -13,6 +13,11 @@
 //!
 //! On by default once signed in with the number. The switch (Account) is per phone; off deletes
 //! the synced copy, and the other devices stop too (they keep their chats).
+//!
+//! Joining: a phone with chats from before it had the number (signed out, or an app from before
+//! sync) that finds other devices' chats already synced asks first ("Combine chats?", [`JoinAsk`]).
+//! Until then it takes nothing in and sends nothing. Combine puts all of them on every device;
+//! "Not on this phone" turns sync off here only (the synced copy and the other devices carry on).
 
 use crate::chat::{Conv, Meta, Msg};
 use crate::{App, api, store};
@@ -32,6 +37,8 @@ const STATE: &str = "sync-state.json";
 const OFF: &str = "sync-off.json";
 /// The seed after the account number changed here (else private.rs's, from signing in).
 const SEED: &str = "sync-seed.json";
+/// The account (owner) this phone joined: agreed to combine with, or had nothing to combine.
+const JOINED: &str = "sync-joined.json";
 const ATT_MIN: usize = 2048;
 const ATT_PREFIX: &str = "obscurify-att:";
 const PAD: usize = 4096;
@@ -56,6 +63,9 @@ struct Rec {
     base: Option<Value>,
     #[serde(default)]
     atts: Vec<String>,
+    /// Over the record size limit: stays on this phone.
+    #[serde(default)]
+    too_big: bool,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -539,6 +549,8 @@ pub fn changed(app: App, id: &str) {
 /// A chat was deleted here (chat.rs).
 pub fn deleted(app: App, id: &str) {
     if !on() {
+        // Off: nothing to send, but its record (its title as last synced) goes.
+        with_state(|s| { s.convs.remove(id); });
         return;
     }
     with_state(|s| match s.convs.get_mut(id) {
@@ -612,7 +624,7 @@ async fn apply(mut app: App, k: &Keys, id: &str, rev: i64, data: &str) -> bool {
                     if let Some(id) = copy["id"].as_str() { changed(app, id) }
                 }
             }
-            with_state(|s| s.convs.insert(cid.clone(), Rec { rev, dirty, deleted: false, ver: rec.ver + 1, base: Some(fields_of(&remote)), atts: refs(&env["conv"]) }));
+            with_state(|s| s.convs.insert(cid.clone(), Rec { rev, dirty, deleted: false, ver: rec.ver + 1, base: Some(fields_of(&remote)), atts: refs(&env["conv"]), too_big: false }));
             write(app, &keep);
         }
         _ => {}
@@ -684,7 +696,7 @@ async fn push_conv(app: App, k: &Keys, id: &str) -> Pushed {
     let rid = record_id(k, &format!("conv:{id}"));
     let blob = seal(k, &rid, &env);
     if blob.len() > MAX_RECORD {
-        with_state(|s| if let Some(r) = s.convs.get_mut(id) { r.dirty = false });
+        with_state(|s| if let Some(r) = s.convs.get_mut(id) { r.dirty = false; r.too_big = true });
         return Pushed::Done;
     }
     match call(k, "PUT", &format!("/records/{rid}"), Some(rec.rev), Some(blob)).await {
@@ -756,13 +768,130 @@ fn clear() {
     for h in s.atts.keys() {
         store::remove(&att_file(h));
     }
-    store::save(STATE, &State { owner: s.owner, foreign: s.foreign, ..Default::default() });
+    // Each chat's title, folder etc. as last synced stay: on joining again, a rename made
+    // elsewhere meanwhile isn't undone by this phone's older title (merge() sees no change here).
+    // (Only for chats still here: a wiped or deleted chat leaves nothing of itself behind.)
+    let here: BTreeSet<String> = store::load::<Vec<Meta>>("chats.json").into_iter().map(|m| m.id).collect();
+    let convs = s.convs.into_iter()
+        .filter(|(id, r)| !r.deleted && here.contains(id))
+        .map(|(id, r)| (id, Rec { base: r.base, ..Default::default() }))
+        .collect();
+    store::save(STATE, &State { owner: s.owner, foreign: s.foreign, convs, ..Default::default() });
 }
 
 /// The synced copy is gone (turned off on another device): stop here too, keep the chats.
 fn turned_off_elsewhere() {
     store::save(OFF, &true);
+    store::remove(JOINED);
     clear();
+}
+
+// ---- joining: asking before this phone's chats and the synced ones are combined --------------
+
+/// The question on screen: (this phone's chats, the account's from other devices).
+pub static JOIN_ASK: GlobalSignal<Option<(usize, usize)>> = Signal::global(|| None);
+
+/// Joined: agreed to combine, or had nothing to combine. Phones that synced before the question
+/// existed count as joined.
+fn is_joined(k: &Keys) -> bool {
+    store::load::<Option<String>>(JOINED).as_deref() == Some(k.owner.as_str()) || {
+        let s: State = store::load(STATE);
+        s.owner == k.owner && s.epoch.is_some()
+    }
+}
+fn agree(k: &Keys) { store::save(JOINED, &Some(k.owner.clone())) }
+/// Whether this phone joined the synced copy (switching off then deletes it).
+pub fn joined() -> bool { on() && keys().is_some_and(|k| is_joined(&k)) }
+
+/// The chats in the synced copy, read without joining it: nothing is kept, and the epoch isn't
+/// recorded (`same_store`), so the next round still knows this phone hasn't joined.
+async fn remote_chats(k: &Keys) -> Option<BTreeSet<String>> {
+    let mut ids = BTreeSet::new();
+    let mut after = 0;
+    for _ in 0..100 {
+        let Got::Ok(v) = call(k, "GET", &format!("/records?after={after}"), None, None).await else { return None };
+        if v["epoch"].is_null() {
+            return Some(ids); // no synced copy
+        }
+        for r in v["records"].as_array().into_iter().flatten() {
+            let (Some(id), Some(rev), Some(data)) = (r["id"].as_str(), r["rev"].as_i64(), r["data"].as_str()) else { continue };
+            after = rev;
+            let Ok(blob) = base64::engine::general_purpose::STANDARD.decode(data) else { continue };
+            let Some(env) = unseal(k, id, &blob) else { continue };
+            if env["k"] == "conv" && let Some(cid) = env["id"].as_str() {
+                if env["deleted"] == true { ids.remove(cid); } else { ids.insert(cid.to_string()); }
+            }
+        }
+        if v["more"] != true {
+            break;
+        }
+    }
+    Some(ids)
+}
+
+/// true: go ahead and sync. false: wait (the question is on screen, or the server can't be
+/// reached). The question is about chats this phone had before it had this account's key: they
+/// carry no record yet. Chats made since, signed in to this account, are its own ([`changed`]).
+async fn may_join(app: App, k: &Keys) -> bool {
+    if is_joined(k) {
+        return true;
+    }
+    if JOIN_ASK.peek().is_some() {
+        return false;
+    }
+    let local: Vec<String> = app.convs.peek().iter().map(|m| m.id.clone()).collect();
+    let here: Vec<String> = with_state(|s| local.iter().filter(|id| !s.convs.contains_key(*id) && !s.foreign.contains(*id)).cloned().collect());
+    if !here.is_empty() {
+        let Some(there) = remote_chats(k).await else { return false };
+        let new_here = here.iter().filter(|id| !there.contains(*id)).count();
+        let new_there = there.iter().filter(|id| !local.contains(id)).count();
+        if new_here > 0 && new_there > 0 {
+            if on() {
+                *JOIN_ASK.write() = Some((new_here, new_there));
+            }
+            return false;
+        }
+    }
+    if !on() {
+        return false;
+    }
+    agree(k);
+    true
+}
+
+/// The answer to "Combine chats?".
+pub fn answer_join(app: App, combine: bool) {
+    *JOIN_ASK.write() = None;
+    if combine {
+        if let Some(k) = keys() {
+            agree(&k);
+        }
+        bg_run(async move { tick(app).await });
+    } else {
+        store::save(OFF, &true); // here only: the synced copy stays
+    }
+}
+
+/// "Combine chats?", over whatever screen is showing.
+#[component]
+pub fn JoinAsk() -> Element {
+    let app = use_context::<App>();
+    let Some((here, there)) = *JOIN_ASK.read() else { return rsx! {} };
+    let chats = |n: usize| if n == 1 { "1 chat".to_string() } else { format!("{n} chats") };
+    let that = if here == 1 { "that isn't" } else { "that aren't" };
+    rsx! {
+        div { class: "veil" }
+        div { class: "sheet", id: "sync-join",
+            h2 { "Combine chats?" }
+            p { class: "muted", id: "sync-join-text",
+                "This phone has {chats(here)} {that} synced, and your account has {chats(there)} from your other devices. Combine puts all {here + there} on every device signed in with your number. Nothing is deleted."
+            }
+            div { class: "row end",
+                button { class: "bare", id: "sync-join-no", onclick: move |_| answer_join(app, false), "Not on this phone" }
+                button { class: "go", id: "sync-join-combine", onclick: move |_| answer_join(app, true), "Combine" }
+            }
+        }
+    }
 }
 
 async fn run(app: App) {
@@ -777,10 +906,18 @@ async fn run(app: App) {
         let foreign = if s.owner.is_empty() { s.foreign.clone() } else { ids.iter().cloned().collect() };
         *s = State { owner: k.owner.clone(), foreign, ..Default::default() };
     });
-    // Chats with nothing on record yet go up.
+    if !may_join(app, &k).await {
+        return;
+    }
+    // Chats with nothing on record yet go up, as do ones known from before sync was last off.
     with_state(|s| for id in ids {
-        if !s.foreign.contains(&id) {
-            s.convs.entry(id).or_insert_with(|| Rec { dirty: true, ver: 1, ..Default::default() });
+        if s.foreign.contains(&id) {
+            continue;
+        }
+        let r = s.convs.entry(id).or_insert_with(|| Rec { dirty: true, ver: 1, ..Default::default() });
+        if r.rev == 0 && !r.dirty && !r.deleted && !r.too_big {
+            r.dirty = true;
+            r.ver += 1;
         }
     });
     if !pull(app, &k).await || !on() {
@@ -839,19 +976,28 @@ async fn delete_remote() -> bool {
 }
 
 /// The switch on the Account screen. Off deletes the synced copy.
-pub async fn set_on(app: App, v: bool) -> bool {
+/// The switch. On is agreeing to combine. Off deletes the synced copy (the other devices then
+/// stop too) if this phone joined it, or always with `everywhere` (account deletion); a phone
+/// that never joined only stops here.
+pub async fn set_on(app: App, v: bool, everywhere: bool) -> bool {
+    *JOIN_ASK.write() = None;
     if v {
         store::remove(OFF);
+        if let Some(k) = keys() {
+            agree(&k);
+        }
         STOPPED.store(false, Ordering::Relaxed);
         BACKOFF_UNTIL.store(0, Ordering::Relaxed);
         tick(app).await;
         return true;
     }
+    let was_joined = joined();
     store::save(OFF, &true);
     while BUSY.load(Ordering::SeqCst) {
         crate::sleep(50).await;
     }
-    let ok = delete_remote().await;
+    let ok = if was_joined || everywhere { delete_remote().await } else { true };
+    store::remove(JOINED);
     clear();
     ok
 }
@@ -865,7 +1011,8 @@ pub async fn wipe() {
     while BUSY.load(Ordering::SeqCst) {
         crate::sleep(50).await;
     }
-    if on() {
+    *JOIN_ASK.write() = None;
+    if joined() {
         delete_remote().await;
     }
     clear();
@@ -879,11 +1026,17 @@ pub fn reset_switch() { store::remove(OFF) }
 pub fn forget() {
     clear();
     store::remove(SEED);
+    store::remove(JOINED);
+    *JOIN_ASK.write() = None;
 }
 
 /// A new account number (Account): the chats move to the new number's store.
+/// The old number's copy is deleted even if this phone never joined it: devices still on the
+/// old number would otherwise keep syncing to it.
 pub async fn move_to(app: App, new_seed: [u8; 32]) {
     let was_on = on();
+    let was_joined = joined();
+    *JOIN_ASK.write() = None;
     while BUSY.load(Ordering::SeqCst) {
         crate::sleep(50).await;
     }
@@ -892,8 +1045,9 @@ pub async fn move_to(app: App, new_seed: [u8; 32]) {
     }
     clear();
     // The chats are this account's under its new number, not another account's.
-    let owner = keys_of(new_seed).owner;
-    with_state(|s| s.owner = owner);
+    let fresh = keys_of(new_seed);
+    with_state(|s| s.owner = fresh.owner.clone());
+    if was_joined { agree(&fresh) } else { store::remove(JOINED) }
     store::save(SEED, &Some(hex(&new_seed)));
     if was_on {
         tick(app).await;
@@ -907,6 +1061,8 @@ pub fn SyncSection() -> Element {
     let mut enabled = use_signal(on);
     let mut asking = use_signal(|| false);
     let mut busy = use_signal(|| false);
+    // "Not on this phone" ([`JoinAsk`]) turns it off.
+    use_effect(move || if JOIN_ASK.read().is_none() && !*busy.peek() { enabled.set(on()) });
     rsx! {
         div { class: "section",
             h2 { "Sync" }
@@ -919,10 +1075,15 @@ pub fn SyncSection() -> Element {
                             if e.checked() {
                                 enabled.set(true);
                                 busy.set(true);
-                                bg_run(async move { set_on(app, true).await; busy.set(false) });
-                            } else {
+                                bg_run(async move { set_on(app, true, false).await; busy.set(false) });
+                            } else if joined() {
                                 enabled.set(true);
                                 asking.set(true);
+                            } else {
+                                // Never joined: nothing to delete, it just stops here.
+                                enabled.set(false);
+                                busy.set(true);
+                                bg_run(async move { set_on(app, false, false).await; busy.set(false) });
                             }
                         } }
                     "Sync chats between devices"
@@ -936,7 +1097,7 @@ pub fn SyncSection() -> Element {
                             asking.set(false);
                             enabled.set(false);
                             busy.set(true);
-                            bg_run(async move { set_on(app, false).await; busy.set(false) });
+                            bg_run(async move { set_on(app, false, false).await; busy.set(false) });
                         }, "Stop syncing" }
                         button { class: "bare", onclick: move |_| asking.set(false), "Cancel" }
                     }

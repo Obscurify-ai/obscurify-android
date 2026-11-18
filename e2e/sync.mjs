@@ -10,7 +10,7 @@
 //   adb root; adb reverse tcp:8232 tcp:8232
 //   UPSTREAM_PORT=8097 DB=obscurify_sync SECRET_FILE=~/Work/obscurify-sync/local/anon_keys/account_secret node sync.mjs
 import http from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHmac, createHash } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright';
@@ -21,7 +21,9 @@ const WEB = `http://${UPSTREAM.host}:${UPSTREAM.port}`;
 const DB = process.env.DB || 'obscurify_sync';
 const sql = (q) => execFileSync('docker', ['exec', '-i', 'obscurify-postgres-dev', 'psql', '-U', 'obscurify', '-d', DB, '-tAX', '-c', q]).toString().trim();
 const seen = [];
+let blockSync = false; // the phone "offline" for sync (503, retry in 1 s)
 const recorder = http.createServer((req, res) => {
+  if (blockSync && req.url.startsWith('/sync/')) { res.writeHead(503, { 'Retry-After': '1' }); res.end(); return; }
   const chunks = [];
   req.on('data', (c) => chunks.push(c));
   req.on('end', () => {
@@ -206,7 +208,7 @@ try {
   await page.locator('#sync-off-confirm').click();
   await until('sync off on the phone', async () => cat('sync-off.json').trim() === 'true');
   const left = json('sync-state.json', {});
-  ok(Object.keys(left.convs || {}).length === 0 && !left.epoch && !left.after && left.owner, 'the phone forgot its sync records (it keeps which account its chats are from)');
+  ok(Object.values(left.convs || {}).every((r) => !r.rev && !r.dirty) && !left.epoch && !left.after && left.owner, 'the phone forgot its sync records (it keeps which account its chats are from, and their titles as last synced)');
   await webSync();
   ok(await web.evaluate(() => !ChatSync.on()), 'the website stopped syncing too');
   ok((await web.evaluate(() => getConversations())).some((c) => c.id === mango.id), 'and kept its chats');
@@ -248,6 +250,88 @@ try {
   await nudge();
   await sleep(5000);
   ok(json('chats.json', []).length === 0, 'nothing came back to the phone');
+  ok(!cat('sync-state.json').includes('mango'), '  and no wiped chat\'s title is left in the sync records');
+
+  // 12. Joining with chats on both sides: the phone asks first. A phone that has chats from before
+  // it synced (an app from before sync, here: chats made with sync off, then the off flag gone)
+  // meets an account whose synced copy has the browser's chats.
+  if (!(await page.locator('.drawer .foot .account').isVisible())) await page.locator('.icon', { hasText: '☰' }).click();
+  await page.locator('.drawer .foot .account').click();
+  await page.locator('#sync-on').uncheck();
+  await page.locator('#sync-off-confirm').click(); // joined: switching off deletes the synced copy, so it asks
+  await until('sync off', async () => cat('sync-off.json').trim() === 'true');
+  await page.locator('.bar .icon').first().click().catch(() => {});
+  await page.locator('.bar .icon', { hasText: '＋' }).click().catch(() => {});
+  await sleep(500);
+  const kiwi = await ask('Reply with exactly the word: kiwi');
+  ok(/kiwi/i.test(kiwi), 'a chat made on the phone with sync off: ' + kiwi.slice(0, 40));
+  const kiwiId = json('chats.json', []).find((m) => /kiwi/i.test(m.title || '') || /kiwi/i.test(cat(`chat-${m.id}.json`))).id;
+  await web2.evaluate(() => ChatSync.setOn(true));
+  const webChats = await web2.evaluate(async () => { await ChatSync.syncNow(); await ChatSync.syncNow(); return getConversations().map((c) => c.id); });
+  ok(webChats.length > 0 && !webChats.includes(kiwiId), `the browser's ${webChats.length} chat(s) are synced, the phone's isn't`);
+  execFileSync('adb', ['shell', 'rm', '-f', `${files}/sync-off.json`, `${files}/sync-joined.json`]);
+  // The store's name on the server: SHA-256 of the token made from the number's seed (FORMAT).
+  const lp = (parts) => Buffer.concat(parts.flatMap((x) => { const b = Buffer.from(x); const n = Buffer.alloc(4); n.writeUInt32BE(b.length); return [n, b]; }));
+  const storeHash = createHash('sha256').update('sync1_' + createHmac('sha256', Buffer.from(seed2, 'hex')).update(lp(['chat-sync', 'token'])).digest('hex')).digest('hex');
+  const epochBefore = sql(`SELECT epoch FROM sync_stores WHERE store_hash = '${storeHash}'`);
+  ok(epochBefore.length === 16, '(the browser\'s synced copy is on the server)');
+  const writesBefore = seen.filter((r) => r.path.startsWith('/sync/') && r.method !== 'GET').length;
+  await nudge();
+  page = (await launch(false, true)).page;
+  await page.locator('#sync-join').waitFor({ timeout: 60000 });
+  const askText = await page.locator('#sync-join-text').textContent();
+  ok(askText.includes('This phone has 1 chat that isn\'t synced') && askText.includes(`${webChats.length} chat`), 'the phone asks before combining: ' + askText);
+  shot('sync-join');
+  ok(!json('chats.json', []).some((m) => webChats.includes(m.id)), '  until answered, nothing comes in');
+  ok(seen.filter((r) => r.path.startsWith('/sync/') && r.method !== 'GET').length === writesBefore, '  and nothing goes out');
+
+  // "Not on this phone": sync off here only; the browser carries on.
+  await page.locator('#sync-join-no').click();
+  await until('sync off after "Not on this phone"', async () => cat('sync-off.json').trim() === 'true');
+  await web2.evaluate(async () => { await ChatSync.syncNow(); await ChatSync.syncNow(); });
+  ok(await web2.evaluate(() => ChatSync.on()) && sql(`SELECT count(*) FROM sync_stores WHERE epoch = '${epochBefore}'`) === '1', '"Not on this phone": the synced copy and the browser carry on');
+  ok(!json('chats.json', []).some((m) => webChats.includes(m.id)), '  and the phone keeps only its own chats');
+
+  // Asked again (the app updated again, say), and this time Combine.
+  execFileSync('adb', ['shell', 'rm', '-f', `${files}/sync-off.json`]);
+  await nudge();
+  page = (await launch(false, true)).page;
+  await page.locator('#sync-join').waitFor({ timeout: 60000 });
+  await page.locator('#sync-join-combine').click();
+  await until('the browser\'s chats on the phone', async () => webChats.every((id) => json('chats.json', []).some((m) => m.id === id)));
+  const union = await until('the phone\'s chat on the browser', async () => {
+    const list = await web2.evaluate(async () => { await ChatSync.syncNow(); await ChatSync.syncNow(); return getConversations(); });
+    return list.some((c) => c.id === kiwiId) && list;
+  });
+  ok(union.length === webChats.length + 1, `Combine: both have all ${union.length} chats`);
+  ok(json('chats.json', []).length === union.length, '  no chat doubled on the phone');
+
+  // Both add to the same chat while apart: both versions are kept, on both.
+  blockSync = true;
+  await web2.evaluate(async (id) => {
+    const list = chatStore.all();
+    list.find((c) => c.id === id).messages.push({ role: 'user', content: [{ type: 'text', text: 'Website side of the fork' }] });
+    await chatStore.save(list);
+    await ChatSync.syncNow(); await ChatSync.syncNow();
+  }, kiwiId);
+  await page.locator('.icon', { hasText: '☰' }).click();
+  await page.locator('.drawer .item .grow').filter({ hasText: /kiwi/i }).first().click();
+  const lime = await ask('Reply with exactly the word: lime');
+  ok(/lime/i.test(lime), 'the phone adds to the same chat while it can\'t sync: ' + lime.slice(0, 40));
+  blockSync = false;
+  await nudge();
+  const both = (list) => list.some((c) => JSON.stringify(c.messages).includes('Website side of the fork')) && list.some((c) => JSON.stringify(c.messages).includes('exactly the word: lime'));
+  const webFork = await until('both versions on the browser', async () => {
+    const list = await web2.evaluate(async () => { await ChatSync.syncNow(); await ChatSync.syncNow(); return getConversations(); });
+    return both(list) && list;
+  });
+  ok(webFork.filter((c) => JSON.stringify(c.messages).includes('exactly the word: kiwi')).length === 2, 'two different additions to one chat: both versions kept on the browser');
+  await nudge();
+  const phoneFork = await until('both versions on the phone', async () => {
+    const list = json('chats.json', []).map((m) => json(`chat-${m.id}.json`, {}));
+    return list.some((c) => JSON.stringify(c).includes('Website side of the fork')) && list.some((c) => JSON.stringify(c).includes('exactly the word: lime')) && list;
+  });
+  ok(phoneFork.length === webFork.length, `  and on the phone (${phoneFork.length} chats each)`);
 
   console.log('\nall sync checks passed');
 } finally {

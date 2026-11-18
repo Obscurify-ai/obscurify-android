@@ -512,6 +512,7 @@ fn Root() -> Element {
             Screen::Funds if !PLAY => rsx! { Funds {} },
             Screen::Funds => rsx! { Account {} },
         }
+        if api::has_session() { sync::JoinAsk {} }
         if let Some(t) = app.toast.read().clone() { div { class: "toast", "{t}" } }
     }
 }
@@ -869,7 +870,7 @@ fn Account() -> Element {
                                     match api::post("/account/delete", json!({"confirm": true})).await {
                                         Ok(_) => {
                                             // The synced chats aren't linked to the account on the server, so the phone deletes them.
-                                            if sync::on() { sync::set_on(app, false).await; }
+                                            if sync::on() { sync::set_on(app, false, true).await; }
                                             sync::reset_switch();
                                             app.sign_out();
                                             app.say("Your account is deleted")
