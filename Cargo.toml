@@ -47,6 +47,10 @@ iana-time-zone = "0.1"
 arti-client = { version = "0.48", default-features = false, features = ["tokio", "rustls", "onion-service-client", "compression", "static-sqlite", "bridge-client", "pt-client"], optional = true }
 tor-rtcompat = { version = "0.48", default-features = false, features = ["tokio", "rustls"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+aes-gcm = "0.10"
+flate2 = "1"
+hmac = "0.12"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = "s"

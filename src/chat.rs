@@ -1,6 +1,6 @@
 //! Chat: the conversation, streaming answers, web search, images, the chats drawer and the model
-//! picker. Chats live only on the phone (`chats.json` lists them, `chat-<id>.json` holds each), the
-//! same as the web, which keeps them in the browser.
+//! picker. Chats live on the phone (`chats.json` lists them, `chat-<id>.json` holds each), and sync
+//! encrypted with the website and other phones on the same account number (sync.rs).
 
 use crate::{Access, App, Model, Overlay, PLAY, Screen, api, bg, code, js, store, usd};
 use dioxus::prelude::*;
@@ -60,6 +60,9 @@ pub struct Msg {
     /// the reply it came with.
     #[serde(skip)]
     pub suggest: Option<Suggest>,
+    /// Fields from the website this app doesn't use, kept for sync (sync.rs).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 /// The server's `suggest_model` chunk: from a user's second refusal of the day, an uncensored model
@@ -178,6 +181,10 @@ pub struct Conv {
     pub messages: Vec<Msg>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<Compaction>,
+    /// Fields from the website this app doesn't use (folder, pin, chat settings...), kept for
+    /// sync (sync.rs).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 impl Conv {
@@ -198,6 +205,8 @@ fn save(mut app: App) {
     list.retain(|m| m.id != c.id);
     list.insert(0, Meta { id: c.id.clone(), title: c.title.clone(), updated: store::now() });
     store::save("chats.json", &*list);
+    drop(list);
+    crate::sync::changed(app, &c.id);
 }
 
 /// Runs `then` once no answer is streaming. One that is gets stopped first and is saved, as far
@@ -310,6 +319,8 @@ fn wipe(app: App) {
         }
         store::remove("chats.json");
         store::remove("settings.json");
+        // The synced copy goes too, or the chats would come straight back.
+        bg(crate::sync::wipe());
         app.convs.set(vec![]);
         app.conv.set(Conv::new());
         app.settings.set(crate::Settings::default());
@@ -323,6 +334,8 @@ fn delete(mut app: App, id: &str) {
     let mut list = app.convs.write();
     list.retain(|m| m.id != id);
     store::save("chats.json", &*list);
+    drop(list);
+    crate::sync::deleted(app, id);
     if app.conv.peek().id == id {
         app.conv.set(Conv::new())
     }

@@ -1263,6 +1263,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
 dependencies = [
  "generic-array",
+ "rand_core 0.6.4",
  "typenum",
 ]
 
@@ -5024,6 +5025,7 @@ dependencies = [
 name = "obscurify"
 version = "0.8.39"
 dependencies = [
+ "aes-gcm",
  "arti-client",
  "base64 0.22.1",
  "blind-rsa-signatures",
@@ -5031,8 +5033,10 @@ dependencies = [
  "calamine",
  "chrono",
  "dioxus",
+ "flate2",
  "futures-channel",
  "futures-util",
+ "hmac 0.12.1",
  "iana-time-zone",
  "obscurify-tee-verify",
  "pdf-extract",
@@ -5044,6 +5048,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tor-rtcompat",
  "unlinkable-inference",

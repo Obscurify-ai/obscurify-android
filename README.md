@@ -6,7 +6,8 @@ the account's balance, or, if you choose, buys blind vouchers the server signs w
 the payment can't be linked to the account it funds.
 
 The app is a small, native Rust client of the Obscurify API (Dioxus 0.7 in the system WebView). Chats
-are stored only on the phone.
+are stored on the phone and sync, encrypted on the phone with a key from the account number, with
+the website and other phones on the same number (`src/sync.rs`; the server holds only ciphertext).
 
 ## Features
 
@@ -88,6 +89,7 @@ when the notes are about something the Play app doesn't have (payments, uncensor
 | `src/compact.rs` | Compaction: earlier messages summarized in chunks so a chat goes on past the model's context |
 | `src/api.rs` | HTTP. Signed-in calls (top-ups too) carry the session; blind voucher calls carry nothing |
 | `src/wallet.rs` | Top-ups (`/top_ups`), and blind voucher orders: blind, sign, unblind, redeem |
+| `src/sync.rs` | Encrypted chat sync with the website and other phones: chats and favorites, AES-256-GCM with a key from the account number's seed, opaque records with no cookie, merges by server revision; the Account switch (off deletes the synced copy) |
 | `src/private.rs` | Private sessions (default once signed in): chat requests carry a session secret and no cookie, paid from a blind-voucher wallet derived from the account number (the open-source [unlinkable-inference](https://github.com/Obscurify-ai/unlinkable-inference) crate); a wiped phone gets it back at sign-in. Sign-up makes the number on the phone and sends only a key derived from it |
 | `src/store.rs` | JSON files in the app's private storage |
 | `src/tor.rs` | In-app Tor: Arti on its own thread behind a SOCKS5 proxy on 127.0.0.1 (random port and password per run), built-in bridges through lyrebird (`tools/lyrebird.sh` builds it; `src/tor_off.rs` for the Play app) |
@@ -121,6 +123,7 @@ TARGET=<dev server> node flaky-proxy.mjs & ACCOUNT=<Pro> node refusal.mjs  # Cla
 node tor.mjs                         # in-app Tor (rooted emulator): off by default and not started, the button connects and chat goes to the onion address (the app's sockets never reach obscurify.ai's address), Code off, "Always" starts Tor with the app and can't be bypassed, off again goes direct
 node bridges.mjs                     # Tor bridges: a phone that needed them connects through the built-in bridges (lyrebird runs), never directly, and chats
 node mirror-proxy.mjs & ACCOUNT=… node mirror.mjs  # mirrors: the list kept at sign-in, an unreachable server moves requests to a mirror and they stay there, the next launch goes back (test APK with OBSCURIFY_API=http://127.0.0.1:8094, adb reverse tcp:8094 and tcp:8095)
+adb root; DB=obscurify_sync node sync.mjs  # chat sync: a website chat (image, folder) on the phone, the phone's answer back exactly, a phone chat on the website, an edit into the open chat, a delete, favorites, nothing readable or cookie on /sync, the switch off stops the website too (test APK with OBSCURIFY_API=http://127.0.0.1:8232)
 adb root; DB=… node private.mjs      # private sessions: number made on the phone, only a key sent; chat with a session secret and no cookie, not charged to the account, each chat on its own session; a 402 (a pricey model's hold, and one injected on a tool call) tops the session up and asks again; wiped app signs in and gets every millicent back (test APK with OBSCURIFY_API=http://127.0.0.1:8231: the test records what leaves the phone)
 ```
 

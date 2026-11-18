@@ -337,6 +337,24 @@ pub async fn reachable() -> bool {
     }
 }
 
+/// Chat sync (sync.rs): no cookie, only the sync token, by the same route as everything else
+/// (Tor, mirrors). `(status, body, Retry-After seconds)`.
+pub async fn sync_call(method: &str, path: &str, token: &str, if_match: Option<i64>, body: Option<Vec<u8>>) -> Result<(u16, Vec<u8>, Option<u64>), String> {
+    let m = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
+    let mut req = client().request(m, url(path)).timeout(Duration::from_secs(90)).header("Authorization", format!("Bearer {token}"));
+    if let Some(r) = if_match {
+        req = req.header("If-Match", r.to_string());
+    }
+    if let Some(b) = body {
+        req = req.header("Content-Type", "application/octet-stream").body(b);
+    }
+    let r = req.go().await.map_err(|_| offline())?;
+    let status = r.status().as_u16();
+    let retry = r.headers().get("retry-after").and_then(|v| v.to_str().ok()?.trim().parse().ok());
+    let bytes = r.bytes().await.map_err(|e| e.to_string())?.to_vec();
+    Ok((status, bytes, retry))
+}
+
 /// Public calls with no cookie or key: models and everything about buying vouchers.
 pub async fn public(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
     send(false, method, path, body.as_ref(), 30).await.map(|(_, v, _)| v)

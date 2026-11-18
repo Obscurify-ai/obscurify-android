@@ -70,7 +70,7 @@ fn save(m: &Manager) {
     }
 }
 
-fn seed() -> Option<[u8; 32]> {
+pub(crate) fn seed() -> Option<[u8; 32]> {
     let hex: String = store::load::<Option<String>>(SEED_FILE)?;
     let seed: Vec<u8> = (0..hex.len()).step_by(2).filter_map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok()).collect();
     seed.try_into().ok()

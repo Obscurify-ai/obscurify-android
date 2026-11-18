@@ -10,6 +10,7 @@ mod compact;
 mod private;
 mod files;
 mod store;
+mod sync;
 mod tee;
 #[cfg(feature = "tor")]
 mod tor;
@@ -236,6 +237,7 @@ impl App {
     fn sign_out(mut self) {
         bg(async move { let _ = api::call("POST", "/logout", Some(json!({}))).await; api::forget(); });
         private::forget();
+        sync::forget();
         for m in self.convs.peek().iter() {
             store::remove(&format!("chat-{}.json", m.id));
         }
@@ -431,6 +433,16 @@ fn Root() -> Element {
         }
     });
 
+    // Chat sync: a round now, then every 30 s while the app is on screen (and 1.5 s after a change).
+    use_future(move || async move {
+        loop {
+            if *app.visible.peek() && !matches!(*app.screen.peek(), Screen::Login | Screen::Signup) {
+                sync::tick(app).await;
+            }
+            sleep(30_000).await;
+        }
+    });
+
     // Blind vouchers: poll every 10 s while the app is on screen and there's something to do.
     // Top-ups: every 10 s on Add funds, once a minute elsewhere while one is still open.
     use_future(move || async move {
@@ -473,6 +485,7 @@ fn Root() -> Element {
                 if vis {
                     api::kick();
                     app.work_wallet(false);
+                    bg(sync::tick(app));
                     if !matches!(*app.screen.peek(), Screen::Login | Screen::Signup) { app.refresh_top_ups() }
                 }
             } else if let Some(e) = v["doc_error"].as_str() {
@@ -762,7 +775,16 @@ fn Account() -> Element {
                                 confirm.set(None);
                                 bg(async move {
                                     match api::post("/account_number/rotate", json!({})).await {
-                                        Ok(v) => new_number.set(v["account_number"].as_str().map(String::from)),
+                                        Ok(v) => {
+                                            let n = v["account_number"].as_str().map(String::from);
+                                            new_number.set(n.clone());
+                                            // Synced chats move to the new number (sync.rs).
+                                            if let Some(n) = n && sync::available() {
+                                                let (tx, rx) = futures_channel::oneshot::channel();
+                                                std::thread::spawn(move || { let _ = tx.send(unlinkable_inference::seed::account_keys(&n)); });
+                                                if let Ok(Ok(k)) = rx.await { sync::move_to(app, k.seed.0).await }
+                                            }
+                                        }
                                         Err(e) => app.say(e),
                                     }
                                 })
@@ -771,6 +793,7 @@ fn Account() -> Element {
                         }
                     }
                 }
+                sync::SyncSection {}
                 div { class: "section",
                     h2 { "API key" }
                     if let Some(k) = key.read().clone() {
@@ -836,13 +859,18 @@ fn Account() -> Element {
                 div { class: "section",
                     h2 { "Delete account" }
                     if *confirm.read() == Some("delete") {
-                        p { class: "muted", "Your account number, API key and sign-ins are erased for good, and the balance and plan are lost. Payment records stay, with nothing that links them to you. Chats on this phone are deleted." }
+                        p { class: "muted", "Your account number, API key and sign-ins are erased for good, and the balance and plan are lost. Payment records stay, with nothing that links them to you. Chats on this phone and their synced copy are deleted." }
                         div { class: "row",
                             button { class: "danger", disabled: *deleting.read(), onclick: move |_| {
                                 deleting.set(true);
                                 bg(async move {
                                     match api::post("/account/delete", json!({"confirm": true})).await {
-                                        Ok(_) => { app.sign_out(); app.say("Your account is deleted") }
+                                        Ok(_) => {
+                                            // The synced chats aren't linked to the account on the server, so the phone deletes them.
+                                            if sync::on() { sync::set_on(app, false).await; }
+                                            app.sign_out();
+                                            app.say("Your account is deleted")
+                                        }
                                         Err(e) => app.say(e),
                                     }
                                     deleting.set(false);
