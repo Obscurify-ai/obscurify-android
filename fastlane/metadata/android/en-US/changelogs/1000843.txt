@@ -1,0 +1,1 @@
+If you were already signed in with a 16-digit account number, the app now asks once whether to switch to an account code, which turns on encrypted chat sync. After that, the switch stays in Account.
