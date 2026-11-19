@@ -521,11 +521,44 @@ fn Root() -> Element {
             Screen::Funds => rsx! { Account {} },
         }
         if api::has_session() { sync::JoinAsk {} }
+        if matches!(screen, Screen::Chat) { CodeUpgrade {} }
         if let Some(t) = app.toast.read().clone() { div { class: "toast", "{t}" } }
     }
 }
 
 // ---- sign in and sign up: the web's flow ----
+
+/// Signed in with an old 16-digit number: ask once whether to upgrade to an account code ([`CodeUpgrade`]).
+pub static OFFER_CODE: GlobalSignal<bool> = Signal::global(|| false);
+/// "Generate New Account Code" was chosen: Account opens with a new code to save and convert.
+pub static START_CONVERT: GlobalSignal<bool> = Signal::global(|| false);
+
+/// "Enable encrypted sync?", after signing in with a 16-digit number.
+#[component]
+fn CodeUpgrade() -> Element {
+    let mut app = use_context::<App>();
+    if !*OFFER_CODE.read() || crate::private::has_code() || !api::has_session() {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "veil" }
+        div { class: "sheet", id: "code-upgrade",
+            h2 { "Enable encrypted sync?" }
+            p { class: "muted",
+                "Upgrading to account code enables encrypted sync. "
+                a { onclick: move |_| crate::open_url(&format!("{}/blog/account_codes", api::BASE)), "How this works" }
+            }
+            div { class: "row end",
+                button { class: "bare", id: "code-upgrade-later", onclick: move |_| *OFFER_CODE.write() = false, "Not now" }
+                button { class: "go", id: "code-upgrade-go", onclick: move |_| {
+                    *OFFER_CODE.write() = false;
+                    *START_CONVERT.write() = true;
+                    app.screen.set(Screen::Account);
+                }, "Generate New Account Code" }
+            }
+        }
+    }
+}
 
 /// An account code (or number) in a box, big enough to copy down.
 #[component]
@@ -554,7 +587,12 @@ fn Login() -> Element {
         error.set(None);
         bg(async move {
             match api::login(&n).await {
-                Ok(()) => { js("document.querySelector('.login input').value = ''"); app.signed_in() }
+                Ok(()) => {
+                    js("document.querySelector('.login input').value = ''");
+                    // An old 16-digit number: offer the upgrade to an account code (encrypted sync needs one).
+                    if crate::private::kind_of(&n) == Some("number") { *OFFER_CODE.write() = true }
+                    app.signed_in()
+                }
                 Err(e) => error.set(Some(e)),
             }
             busy.set(false);
@@ -563,7 +601,7 @@ fn Login() -> Element {
     rsx! {
         div { class: "login",
             h1 { "Sign In" }
-            label { class: "field-label", r#for: "login-words", "Account code or number" }
+            label { class: "field-label", r#for: "login-words", "Account code" }
             input { r#type: "text", id: "login-words", autocomplete: "off", autocapitalize: "none", spellcheck: "false", class: "mono",
                 oninput: move |e| number.set(e.value()),
                 onkeydown: move |e| if e.key() == Key::Enter { sign_in(()) } }
@@ -663,6 +701,14 @@ fn Account() -> Element {
     let mut key = use_signal(|| None::<String>);
     let mut new_number = use_signal(|| None::<String>);
     let mut words_saved = use_signal(|| false);
+    // From "Enable encrypted sync?": open with a new code to save and convert.
+    use_hook(move || if *START_CONVERT.peek() {
+        *START_CONVERT.write() = false;
+        if !crate::private::has_code() {
+            new_number.set(Some(crate::private::new_code()));
+            bg(async { sleep(400).await; js("document.getElementById('new-words')?.scrollIntoView({block: 'center'})") });
+        }
+    });
     let mut switched = use_signal(|| false);
     let mut switching = use_signal(|| false);
     let mut confirm = use_signal(|| None::<&'static str>);

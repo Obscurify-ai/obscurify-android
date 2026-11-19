@@ -1049,7 +1049,12 @@ fn PrivateSetup() -> Element {
         error.set(None);
         bg(async move {
             match api::login(&digits).await {
-                Ok(()) => { shown.set(false); app.say("Private chats are on".to_string()); app.refresh_balance() }
+                Ok(()) => {
+                    shown.set(false);
+                    app.say("Private chats are on".to_string());
+                    app.refresh_balance();
+                    if crate::private::kind_of(&digits) == Some("number") { *crate::OFFER_CODE.write() = true }
+                }
                 Err(_) => { crate::private::forget(); error.set(Some("That did not sign in. Check it and try again.".into())) }
             }
             busy.set(false);
@@ -1062,7 +1067,7 @@ fn PrivateSetup() -> Element {
             p { class: "muted", "You signed in here before private chats existed. Enter your account code (or number) once on this phone, and after that we can't tell which chats are yours. "
                 a { onclick: move |_| crate::open_url(&format!("{}/blog/unlinkable_inference", api::BASE)), "How this works" }
             }
-            label { class: "field-label", r#for: "setup-words", "Account code or number" }
+            label { class: "field-label", r#for: "setup-words", "Account code" }
             input { class: "field", id: "setup-words", autocapitalize: "none", spellcheck: "false", value: "{number}", oninput: move |e| number.set(e.value()) }
             if let Some(e) = error() { p { class: "err", "{e}" } }
             div { class: "row end",

@@ -98,7 +98,16 @@ try {
   await signInTyping(page, digits.replace(/(\d{4})(?=\d)/g, '$1 '));
   await page.waitForSelector('#composer', { timeout: 60000 });
   ok(true, 'a 16-digit number still signs in');
-  await toAccount(page);
+  // It asks once whether to upgrade (encrypted sync needs a code).
+  await page.locator('#code-upgrade').waitFor({ timeout: 20000 });
+  const offer = await page.locator('#code-upgrade').textContent();
+  ok(offer.includes('Enable encrypted sync?') && offer.includes('Upgrading to account code enables encrypted sync.') && offer.includes('How this works'), '  and asks "Enable encrypted sync?"');
+  shot('code-offer');
+  await page.locator('#code-upgrade-go').click();
+  await page.locator('#new-words .number').waitFor({ timeout: 20000 });
+  ok(CODE.test(await wordsOn(page, '#new-words .number')), '  "Generate New Account Code" opens Account with a new code to save');
+  await page.locator('#new-words button.bare', { hasText: 'Cancel' }).click();
+  await page.locator('#sync-needs-words').waitFor({ timeout: 10000 });
   ok(await page.locator('#sync-needs-words').isVisible(), '  Account says sync needs an account code');
   ok((await page.locator('#rotate-words').textContent()).includes('Generate My Account Code'), '  and offers Generate My Account Code');
   shot('code-number-account');
