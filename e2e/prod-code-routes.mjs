@@ -80,6 +80,28 @@ try {
   ok(true, 'Route 3:   converted on the Account screen');
   shot('prod-route3');
   credentialsMoved('Route 3', num, made);
+  // 4. Another device converts the account: this phone stays signed in and asks for the new code.
+  num = numberAccount();
+  ({ page } = await launch(true));
+  await signIn(page, num);
+  await offered(page);
+  await page.locator('#code-upgrade-later').click();
+  const jar = `/tmp/prod-route4-${Date.now()}.jar`;
+  const viaTor = (args) => execFileSync('curl', ['-s', '-m', '90', '--socks5-hostname', '127.0.0.1:9050', '-U', `phone4${Date.now()}:x`, ...args]).toString();
+  viaTor(['-c', jar, '-o', '/dev/null', '-H', 'Content-Type: application/json', '-d', JSON.stringify({ account_key: accountKey(num) }), BASE + '/login']);
+  const { newAccountCode } = await import('../../obscurify-cli/lib/account.mjs');
+  const elsewhere = newAccountCode();
+  const rotated = viaTor(['-b', jar, '-o', '/dev/null', '-w', '%{http_code}', '-H', 'Content-Type: application/json', '-d', JSON.stringify({ account_key: accountKey(elsewhere) }), BASE + '/account_number/rotate']);
+  ok(rotated === '200', `Route 4 (another device converted the account): ${elsewhere}`);
+  ({ page } = await launch(false));
+  await page.locator('#enter-code').waitFor({ timeout: 30000 });
+  ok(await page.locator('#composer').count() > 0 && !(await page.locator('#code-upgrade').count()), 'Route 4:   this phone stays signed in and asks for the code, not to make another');
+  shot('prod-route4');
+  await page.locator('#enter-code-input').fill(elsewhere);
+  await page.locator('#enter-code-go').click();
+  await page.locator('#enter-code').waitFor({ state: 'detached', timeout: 90000 });
+  ok(true, 'Route 4:   entering it signs in with it');
+
   console.log('\nall prod phone routes passed');
 } catch (e) {
   console.error('FAILED: ' + e.message);
