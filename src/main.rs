@@ -873,18 +873,29 @@ fn Account() -> Element {
                             }
                         }
                     }
-                    div { class: "row",
-                        div { class: "grow muted", if crate::private::has_code() {
-                            "Hidden. We only store a scrambled copy, so we can't show them again."
-                        } else {
-                            "To enable encrypted sync, convert your account number to an account code."
-                        } }
-                        if new_number.read().is_none() {
-                            button { id: "rotate-words", onclick: move |_| {
+                    if crate::private::has_code() {
+                        div { class: "row",
+                            div { class: "grow muted", "Hidden. We only store a scrambled copy, so we can't show it again." }
+                            if new_number.read().is_none() {
+                                button { id: "rotate-words", onclick: move |_| {
+                                    words_saved.set(false);
+                                    switched.set(false);
+                                    new_number.set(Some(crate::private::new_code()));
+                                }, "New Account Code" }
+                            }
+                        }
+                    } else if new_number.read().is_none() {
+                        // A 16-digit number: the reason to convert, up front.
+                        div { class: "callout", id: "sync-upgrade",
+                            h3 { "Enable encrypted chat sync" }
+                            p { "Your chats on every device you sign in on, encrypted so only you can read them. Convert your account number to an account code to turn it on. "
+                                a { onclick: move |_| crate::open_url(&format!("{}/blog/account_codes", api::BASE)), "How this works" }
+                            }
+                            button { class: "go", id: "rotate-words", onclick: move |_| {
                                 words_saved.set(false);
                                 switched.set(false);
                                 new_number.set(Some(crate::private::new_code()));
-                            }, if crate::private::has_code() { "New Account Code" } else { "Generate My Account Code" } }
+                            }, "Generate My Account Code" }
                         }
                     }
                 }
