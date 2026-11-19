@@ -27,7 +27,9 @@ const drawer = async () => { await page.locator('.icon', { hasText: '☰' }).cli
 
 // The row
 await drawer();
-ok(await page.locator('.drawer .quick .q').count() === 4 && await page.locator('#encrypted').count() === 1, 'the drawer has Temp, Encrypted, Tor and Wipe');
+ok(await page.locator('.drawer .quick .q').count() === 4 && await page.locator('#encrypted').count() === 1, 'the drawer has Temp, E2EE, Tor and Wipe');
+const qw = await page.$$eval('.drawer .quick .q', (els) => els.map((e) => Math.round(e.getBoundingClientRect().width * 10) / 10));
+ok(qw.every((w) => w === qw[0]), 'the quick controls are the same width: ' + qw.join(' '));
 ok(await page.locator('#tor').getAttribute('aria-pressed') === 'false' && await page.locator('#tor-always').count() === 0, 'Tor is off, and the drawer has no Tor settings until it is used');
 
 // Temp
