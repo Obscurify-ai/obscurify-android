@@ -1027,11 +1027,12 @@ fn PrivateSetup() -> Element {
     let app = use_context::<App>();
     let mut shown = use_signal(|| false);
     use_hook(move || {
-        if api::has_session() && !crate::private::on() && !store::load::<bool>(PRIVATE_SETUP_LATER) {
-            bg(async move {
-                if let Ok(v) = api::get("/private_setup").await && v["ask"] == true { shown.set(true) }
-            });
-        }
+        let may_ask = api::has_session() && !crate::private::on() && !store::load::<bool>(PRIVATE_SETUP_LATER);
+        bg(async move {
+            let asks = may_ask && matches!(api::get("/private_setup").await, Ok(v) if v["ask"] == true);
+            *crate::PRIVATE_SETUP_ASKS.write() = Some(asks);
+            if asks { shown.set(true) }
+        });
     });
     let mut number = use_signal(String::new);
     let mut error = use_signal(|| None::<String>);
@@ -1051,9 +1052,10 @@ fn PrivateSetup() -> Element {
             match api::login(&digits).await {
                 Ok(()) => {
                     shown.set(false);
+                    *crate::PRIVATE_SETUP_ASKS.write() = Some(false);
                     app.say("Private chats are on".to_string());
                     app.refresh_balance();
-                    if crate::private::kind_of(&digits) == Some("number") { *crate::OFFER_CODE.write() = true }
+                    if crate::private::kind_of(&digits) == Some("number") { crate::offer_code() }
                 }
                 Err(_) => { crate::private::forget(); error.set(Some("That did not sign in. Check it and try again.".into())) }
             }
@@ -1071,7 +1073,7 @@ fn PrivateSetup() -> Element {
             input { class: "field", id: "setup-words", autocapitalize: "none", spellcheck: "false", value: "{number}", oninput: move |e| number.set(e.value()) }
             if let Some(e) = error() { p { class: "err", "{e}" } }
             div { class: "row end",
-                button { class: "bare", onclick: move |_| { store::save(PRIVATE_SETUP_LATER, &true); shown.set(false) }, "Not now" }
+                button { class: "bare", onclick: move |_| { store::save(PRIVATE_SETUP_LATER, &true); shown.set(false); *crate::PRIVATE_SETUP_ASKS.write() = Some(false) }, "Not now" }
                 button { class: "go", disabled: busy(), onclick: turn_on, if busy() { "Turning on…" } else { "Turn on" } }
             }
         }

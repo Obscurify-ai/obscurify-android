@@ -12,11 +12,11 @@ import http from 'node:http';
 import { randomInt } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { launch, adb, ok, shot, sleep, PKG, wordsOn, newCode, CODE } from './lib.mjs';
+import { accountKey } from '../../obscurify-cli/lib/account.mjs';
 
 const UPSTREAM = { host: '127.0.0.1', port: +(process.env.UPSTREAM_PORT || 8097) };
 const WEB = `http://${UPSTREAM.host}:${UPSTREAM.port}`;
-const CLI = process.env.SESSIONS_BIN || `${process.env.HOME}/Work/unlinkable-inference-words/target/release/unlinkable-inference`;
-const loginKey = (input) => execFileSync(CLI, ['login-key'], { input }).toString().trim();
+const loginKey = accountKey;
 const seen = [];
 const recorder = http.createServer((req, res) => {
   const chunks = [];

@@ -528,8 +528,16 @@ fn Root() -> Element {
 
 // ---- sign in and sign up: the web's flow ----
 
-/// Signed in with an old 16-digit number: ask once whether to upgrade to an account code ([`CodeUpgrade`]).
-pub static OFFER_CODE: GlobalSignal<bool> = Signal::global(|| false);
+/// Signed in without an account code (an old 16-digit number): ask once whether to upgrade
+/// ([`CodeUpgrade`]), whether the number was just typed or the phone was already signed in. Once
+/// shown, never again on this phone; the Account screen keeps the upgrade.
+pub static OFFER_CODE: GlobalSignal<bool> = Signal::global(|| !store::load::<bool>(CODE_OFFER_SEEN));
+const CODE_OFFER_SEEN: &str = "code-offer-seen.json";
+/// Whether the private-sessions setup ([`chat::PrivateSetup`]) asks on this launch: `None` until it
+/// knows. The upgrade waits for a `Some(false)`, so the two sheets never stack.
+pub static PRIVATE_SETUP_ASKS: GlobalSignal<Option<bool>> = Signal::global(|| None);
+/// Signing in with a number offers the upgrade, unless this phone already showed it.
+pub fn offer_code() { *OFFER_CODE.write() = !store::load::<bool>(CODE_OFFER_SEEN) }
 /// "Generate New Account Code" was chosen: Account opens with a new code to save and convert.
 pub static START_CONVERT: GlobalSignal<bool> = Signal::global(|| false);
 
@@ -537,8 +545,11 @@ pub static START_CONVERT: GlobalSignal<bool> = Signal::global(|| false);
 #[component]
 fn CodeUpgrade() -> Element {
     let mut app = use_context::<App>();
-    if !*OFFER_CODE.read() || crate::private::has_code() || !api::has_session() {
+    if !*OFFER_CODE.read() || crate::private::has_code() || !api::has_session() || *PRIVATE_SETUP_ASKS.read() != Some(false) {
         return rsx! {};
+    }
+    if !store::load::<bool>(CODE_OFFER_SEEN) {
+        store::save(CODE_OFFER_SEEN, &true);
     }
     rsx! {
         div { class: "veil" }
@@ -590,7 +601,7 @@ fn Login() -> Element {
                 Ok(()) => {
                     js("document.querySelector('.login input').value = ''");
                     // An old 16-digit number: offer the upgrade to an account code (encrypted sync needs one).
-                    if crate::private::kind_of(&n) == Some("number") { *OFFER_CODE.write() = true }
+                    if crate::private::kind_of(&n) == Some("number") { offer_code() }
                     app.signed_in()
                 }
                 Err(e) => error.set(Some(e)),
