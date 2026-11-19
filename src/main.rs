@@ -541,31 +541,89 @@ pub fn offer_code() { *OFFER_CODE.write() = !store::load::<bool>(CODE_OFFER_SEEN
 /// "Generate New Account Code" was chosen: Account opens with a new code to save and convert.
 pub static START_CONVERT: GlobalSignal<bool> = Signal::global(|| false);
 
-/// "Enable encrypted sync?", after signing in with a 16-digit number.
+/// "Enable encrypted sync?" for a phone signed in with a 16-digit number. The whole switch happens
+/// in this sheet: Generate New Account Code makes the code here (never sent), shows it to write down,
+/// and Convert sends only its account key, moves synced chats to it and turns sync on.
 #[component]
 fn CodeUpgrade() -> Element {
-    let mut app = use_context::<App>();
-    if !*OFFER_CODE.read() || crate::private::has_code() || !api::has_session() || *PRIVATE_SETUP_ASKS.read() != Some(false) {
+    let app = use_context::<App>();
+    let mut code = use_signal(|| None::<String>);
+    let mut saved = use_signal(|| false);
+    let mut busy = use_signal(|| false);
+    let mut done = use_signal(|| false);
+    let mut error = use_signal(|| None::<String>);
+    let showing = *OFFER_CODE.read() && api::has_session() && *PRIVATE_SETUP_ASKS.read() == Some(false)
+        && (!crate::private::has_code() || *done.read());
+    if !showing {
         return rsx! {};
     }
     if !store::load::<bool>(CODE_OFFER_SEEN) {
         store::save(CODE_OFFER_SEEN, &true);
     }
+    let close = move |_| {
+        *OFFER_CODE.write() = false;
+        code.set(None);
+        done.set(false);
+    };
+    let convert = move |_| {
+        let Some(c) = code.peek().clone() else { return };
+        busy.set(true);
+        error.set(None);
+        bg(async move {
+            match api::switch_to_code(&c).await {
+                Ok(seed) => {
+                    // Synced chats move to the new code; the account can sync from now on (sync.rs).
+                    sync::move_to(app, seed).await;
+                    crate::private::set_kind("code");
+                    *sync::REFRESH.write() += 1;
+                    if sync::on() { sync::tick(app).await }
+                    done.set(true);
+                }
+                Err(e) => error.set(Some(e)),
+            }
+            busy.set(false);
+        });
+    };
+    let current = code.read().clone();
     rsx! {
         div { class: "veil" }
         div { class: "sheet", id: "code-upgrade",
-            h2 { "Enable encrypted sync?" }
-            p { class: "muted",
-                "Upgrading to account code enables encrypted sync. "
-                a { onclick: move |_| crate::open_url(&format!("{}/blog/account_codes", api::BASE)), "How this works" }
-            }
-            div { class: "row end",
-                button { class: "bare", id: "code-upgrade-later", onclick: move |_| *OFFER_CODE.write() = false, "Not now" }
-                button { class: "go", id: "code-upgrade-go", onclick: move |_| {
-                    *OFFER_CODE.write() = false;
-                    *START_CONVERT.write() = true;
-                    app.screen.set(Screen::Account);
-                }, "Generate New Account Code" }
+            match (current, *done.read()) {
+                (None, _) => rsx! {
+                    h2 { "Enable encrypted sync?" }
+                    p { class: "muted",
+                        "Upgrading to account code enables encrypted sync. "
+                        a { onclick: move |_| crate::open_url(&format!("{}/blog/account_codes", api::BASE)), "How this works" }
+                    }
+                    div { class: "row end",
+                        button { class: "bare", id: "code-upgrade-later", onclick: close, "Not now" }
+                        button { class: "go", id: "code-upgrade-go", onclick: move |_| { saved.set(false); code.set(Some(crate::private::new_code())) }, "Generate New Account Code" }
+                    }
+                },
+                (Some(c), false) => rsx! {
+                    h2 { "Your new account code" }
+                    p { class: "muted", "Write it down. It replaces your account number when you press Convert, and we can't show it to you again." }
+                    Words { text: c.clone() }
+                    label { class: "check", id: "code-upgrade-saved",
+                        input { r#type: "checkbox", checked: *saved.read(), disabled: *busy.read(), onchange: move |e| saved.set(e.checked()) }
+                        "I've written down my account code"
+                    }
+                    if let Some(e) = error.read().clone() { p { class: "err", "{e}" } }
+                    div { class: "row end", style: "border: 0",
+                        button { class: "bare", id: "code-upgrade-cancel", disabled: *busy.read(), onclick: close, "Cancel" }
+                        button { onclick: { let c = c.clone(); move |_| app.copy(&c, "Account code") }, "Copy" }
+                        button { class: "go", id: "code-upgrade-convert", disabled: !*saved.read() || *busy.read(), onclick: convert,
+                            if *busy.read() { "Converting…" } else { "Convert" } }
+                    }
+                },
+                (Some(c), true) => rsx! {
+                    h2 { "Encrypted sync is on" }
+                    p { class: "muted", "Sign in with this account code from now on. Your old number, your old API key and your other signed-in devices no longer work." }
+                    Words { text: c.clone() }
+                    div { class: "row end", style: "border: 0",
+                        button { class: "go", id: "code-upgrade-done", onclick: close, "Done" }
+                    }
+                },
             }
         }
     }

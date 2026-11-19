@@ -104,9 +104,12 @@ try {
   ok(offer.includes('Enable encrypted sync?') && offer.includes('Upgrading to account code enables encrypted sync.') && offer.includes('How this works'), '  and asks "Enable encrypted sync?"');
   shot('code-offer');
   await page.locator('#code-upgrade-go').click();
-  await page.locator('#new-words .number').waitFor({ timeout: 20000 });
-  ok(CODE.test(await wordsOn(page, '#new-words .number')), '  "Generate New Account Code" opens Account with a new code to save');
-  await page.locator('#new-words button.bare', { hasText: 'Cancel' }).click();
+  await page.locator('#code-upgrade .number').waitFor({ timeout: 20000 });
+  ok(CODE.test(await wordsOn(page, '#code-upgrade .number')) && await page.locator('#composer').count() > 0, '  "Generate New Account Code" shows a new code to save in the same sheet, over the chat');
+  ok(await page.locator('#code-upgrade-convert').isDisabled(), '  Convert waits until it\'s written down');
+  await page.locator('#code-upgrade-cancel').click();
+  ok(!(await page.locator('#code-upgrade').count()) && !seen.some((x) => x.path === '/account_number/rotate'), '  Cancel closes it and changes nothing');
+  await toAccount(page);
   await page.locator('#sync-needs-words').waitFor({ timeout: 10000 });
   ok(await page.locator('#sync-needs-words').isVisible(), '  Account says sync needs an account code');
   ok((await page.locator('#rotate-words').textContent()).includes('Generate My Account Code'), '  and offers Generate My Account Code');

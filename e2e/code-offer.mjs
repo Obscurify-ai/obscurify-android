@@ -49,7 +49,28 @@ try {
   await page.locator('.drawer .foot .account').click();
   ok(await page.locator('#sync-upgrade').isVisible().catch(() => false) || await page.locator('#rotate-words').isVisible(), '  Account still offers the upgrade');
 
-  // 3. A code account is never asked.
+  // 3. Converting right in the sheet: Generate, write it down, Convert, Done. No other screen.
+  const conv = Array.from({ length: 16 }, () => randomInt(10)).join('');
+  await create(accountKey(conv));
+  ({ page } = await launch(true));
+  await signIn(page, conv);
+  ok(await offered(page), '(another number account, asked)');
+  await page.locator('#code-upgrade-go').click();
+  await page.locator('#code-upgrade .number').waitFor({ timeout: 20000 });
+  const made = (await page.locator('#code-upgrade .number').textContent()).trim();
+  ok(/^[0-9A-Z]{5}(-[0-9A-Z]{5}){3}$/.test(made), 'Generate New Account Code shows the code in the sheet: ' + made);
+  ok(await page.locator('#code-upgrade-convert').isDisabled(), '  Convert waits until it is written down');
+  await page.locator('#code-upgrade-saved input').check();
+  shot('code-offer-generate');
+  await page.locator('#code-upgrade-convert').click();
+  await page.locator('#code-upgrade-done').waitFor({ timeout: 60000 });
+  ok((await page.locator('#code-upgrade h2').textContent()).includes('Encrypted sync is on'), 'Convert switches the account in the sheet');
+  await page.locator('#code-upgrade-done').click();
+  ok(!(await page.locator('#code-upgrade').count()) && await page.locator('#composer').count() > 0, '  Done closes it, still on the chat');
+  const login = (key) => fetch(WEB + '/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account_key: key }) }).then((r) => r.ok);
+  ok(await login(accountKey(made)) && !(await login(accountKey(conv))), '  the new code signs in, the old number no longer does');
+
+  // 4. A code account is never asked.
   const code = newAccountCode();
   await create(accountKey(code));
   ({ page } = await launch(true));
