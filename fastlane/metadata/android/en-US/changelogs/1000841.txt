@@ -1,0 +1,1 @@
+The Encrypted button is now labelled E2EE, and the quick controls in the menu are all the same width. Uncensored DeepSeek V4.1 Flash is available in E2EE mode for Pro, with and without thinking.
