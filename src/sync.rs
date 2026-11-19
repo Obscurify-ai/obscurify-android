@@ -1151,9 +1151,9 @@ pub fn SyncSection() -> Element {
                                 bg_run(async move { set_on(app, false, false).await; busy.set(false) });
                             }
                         } }
-                    "Sync chats between devices"
+                    "Sync encrypted chats between devices"
                 }
-                p { class: "muted", "Encrypted on this phone with a key from your account code. We hold only ciphertext, never the key." }
+                p { class: "muted", "We never store any unencrypted data." }
                 if full() { p { class: "muted", "Sync storage for this account is full: new chats stay on this phone." } }
                 if asking() {
                     p { class: "muted", "Stop syncing? The synced copy is deleted and your other devices stop syncing too. Chats stay on each device." }

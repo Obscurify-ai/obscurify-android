@@ -688,6 +688,115 @@ fn Signup() -> Element {
 
 // ---- account ----
 
+/// "Created 2026-11-19 · 3 requests, $0.12 · $5.00 to private sessions" for a key from `/web/api_keys`.
+fn key_facts(k: &Value) -> String {
+    let mut facts = vec![format!("Created {}", k["created_at"].as_str().unwrap_or_default().get(..10).unwrap_or_default())];
+    let requests = k["requests"].as_i64().unwrap_or(0);
+    if requests > 0 {
+        facts.push(format!("{requests} request{}, {}", if requests == 1 { "" } else { "s" }, usd(k["spent_usd"].as_f64().unwrap_or(0.0))));
+    }
+    let private = k["private_usd"].as_f64().unwrap_or(0.0);
+    if private > 0.0 {
+        facts.push(format!("{} to private sessions", usd(private)));
+    }
+    facts.join(" · ")
+}
+
+/// Named API keys under the Default one: one per tool, each revocable on its
+/// own. The key is shown once, when it's made (`/web/api_keys`).
+#[component]
+fn NamedKeys() -> Element {
+    let app = use_context::<App>();
+    let mut keys = use_signal(Vec::<Value>::new);
+    let mut name = use_signal(String::new);
+    let mut made = use_signal(|| None::<(String, String)>);
+    let mut revoking = use_signal(|| None::<String>);
+    let mut busy = use_signal(|| false);
+    let mut default_key = use_signal(|| None::<Value>);
+    let load = move || bg(async move {
+        if let Ok(v) = api::get("/web/api_keys").await {
+            let all = v["api_keys"].as_array().cloned().unwrap_or_default();
+            default_key.set(all.iter().find(|k| k["kind"] == "default").cloned());
+            keys.set(all.into_iter().filter(|k| k["kind"] != "default").collect());
+        }
+    });
+    use_hook(load);
+    let mut create = move || {
+        let n = name.peek().trim().to_string();
+        if n.is_empty() || *busy.peek() { return }
+        busy.set(true);
+        bg(async move {
+            match api::post("/web/api_keys", json!({"name": n})).await {
+                Ok(v) => {
+                    made.set(Some((v["name"].as_str().unwrap_or_default().to_string(), v["key"].as_str().unwrap_or_default().to_string())));
+                    name.set(String::new());
+                    load();
+                }
+                Err(e) => app.say(e),
+            }
+            busy.set(false);
+        });
+    };
+    let mut revoke = move |id: String| {
+        revoking.set(None);
+        bg(async move {
+            match api::post(&format!("/web/api_keys/{id}/revoke"), json!({})).await {
+                Ok(_) => { app.say("Key revoked; your other keys keep working"); load() }
+                Err(e) => app.say(e),
+            }
+        })
+    };
+    let list: Vec<(String, String, String, String)> = keys.read().iter().map(|k| (
+        k["id"].as_str().unwrap_or_default().to_string(),
+        k["name"].as_str().unwrap_or_default().to_string(),
+        k["masked_key"].as_str().unwrap_or_default().to_string(),
+        key_facts(k),
+    )).collect();
+    rsx! {
+        if let Some(d) = default_key.read().as_ref() {
+            p { class: "muted", id: "default-key-facts", style: "font-size: 12px; margin: 4px 0 8px", "Default key: {key_facts(d)}" }
+        }
+        for (id, key_name, masked, facts) in list {
+            div { class: "api-key", key: "{id}",
+                div { class: "row",
+                    div { class: "grow",
+                        div { class: "api-key-name", "{key_name}" }
+                        div { class: "mono muted", style: "font-size: 12px", "{masked}" }
+                        div { class: "muted api-key-facts", style: "font-size: 12px", "{facts}" }
+                    }
+                    if revoking.read().as_deref() != Some(id.as_str()) {
+                        button { class: "bare", onclick: { let id = id.clone(); move |_| revoking.set(Some(id.clone())) }, "Revoke…" }
+                    }
+                }
+                if revoking.read().as_deref() == Some(id.as_str()) {
+                    div { class: "row",
+                        button { class: "danger", onclick: { let id = id.clone(); move |_| revoke(id.clone()) }, "Revoke key" }
+                        button { class: "bare", onclick: move |_| revoking.set(None), "Cancel" }
+                    }
+                }
+            }
+        }
+        if let Some((n, k)) = made.read().clone() {
+            div { class: "callout", id: "new-api-key",
+                p { "\u{201c}{n}\u{201d}: copy it now, it isn't shown again." }
+                div { class: "row",
+                    div { class: "grow mono", style: "font-size: 13px; word-break: break-all", "{k}" }
+                    button { class: "bare", onclick: { let k = k.clone(); move |_| app.copy(&k, "API key") }, "Copy" }
+                }
+                button { class: "bare", style: "padding-left: 0", onclick: move |_| made.set(None), "Done" }
+            }
+        }
+        div { class: "row new-key", style: "margin-top: 8px",
+            input { r#type: "text", id: "new-key-name", class: "grow", maxlength: "60", placeholder: "Name, such as Claude Code",
+                autocomplete: "off", value: "{name}",
+                oninput: move |e| name.set(e.value()),
+                onkeydown: move |e| if e.key() == Key::Enter { create() } }
+            button { id: "new-key", disabled: *busy.read() || name.read().trim().is_empty(), onclick: move |_| create(), "New API key" }
+        }
+    }
+}
+
+
 #[component]
 fn Account() -> Element {
     let app = use_context::<App>();
@@ -821,7 +930,7 @@ fn Account() -> Element {
                 }
                 // The account code (or, for older accounts, a 16-digit number). A new code is made on
                 // the phone and shown first; only once it's saved does the account switch to it
-                // (the server gets only its login key).
+                // (the server gets only its account key).
                 div { class: "section",
                     h2 { if crate::private::has_code() { "Account code" } else { "Account number" } }
                     if let Some(n) = new_number.read().clone() {
@@ -900,8 +1009,8 @@ fn Account() -> Element {
                     }
                 }
                 sync::SyncSection {}
-                div { class: "section",
-                    h2 { "API key" }
+                div { class: "section", id: "api-keys",
+                    h2 { "API keys" }
                     if let Some(k) = key.read().clone() {
                         div { class: "row",
                             div { class: "grow mono", style: "font-size: 13px", "{k}" }
@@ -926,6 +1035,7 @@ fn Account() -> Element {
                     } else {
                         button { class: "bare", style: "padding-left: 0", onclick: move |_| confirm.set(Some("key")), "Replace key…" }
                     }
+                    NamedKeys {}
                 }
                 if let Some(link) = referral.read()["referral_link"].as_str().filter(|_| !PLAY).map(String::from) {
                     div { class: "section",

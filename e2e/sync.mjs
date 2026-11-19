@@ -202,7 +202,7 @@ try {
   if (!(await page.locator('.drawer .foot .account').isVisible())) await page.locator('.icon', { hasText: '☰' }).click();
   await page.locator('.drawer .foot .account').click();
   await page.locator('#sync-switch').waitFor({ timeout: 15000 });
-  ok(await page.locator('#sync-on').isChecked(), 'Account shows Sync chats between devices, on');
+  ok(await page.locator('#sync-on').isChecked(), 'Account shows Sync encrypted chats between devices, on');
   await page.locator('#sync-switch').scrollIntoViewIfNeeded();
   shot('sync-account');
   await page.locator('#sync-on').uncheck();

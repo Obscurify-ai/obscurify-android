@@ -282,7 +282,7 @@ pub async fn login(number: &str) -> Result<(), String> {
         Err(_) => None,
     };
     // A code never leaves the phone, even when signing in with its key fails: only a 16-digit
-    // number from before login keys is sent as it is, once, to move the account over.
+    // number from before account keys is sent as it is, once, to move the account over.
     let (_, v, session) = match by_key {
         Some(r) => r,
         None if crate::private::kind_of(number) == Some("code") => {
@@ -316,7 +316,7 @@ pub async fn create_account(referral: &str) -> Result<(String, Option<f64>), Str
     Ok((n, credit))
 }
 
-/// Switches the account to a new account code made on the phone: only its login key is sent.
+/// Switches the account to a new account code made on the phone: only its account key is sent.
 /// The old number or code, the old API key and other sessions stop working. Returns the code's seed.
 pub async fn switch_to_code(code: &str) -> Result<[u8; 32], String> {
     let k = crate::private::keys_of(code).await?;

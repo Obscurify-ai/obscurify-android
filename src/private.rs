@@ -32,7 +32,7 @@ pub fn set_chat(id: &str) { *CHAT.lock().unwrap() = id.to_string() }
 /// On: there is a seed from signing in on this phone.
 pub fn on() -> bool { store::load::<Option<String>>(SEED_FILE).is_some() }
 
-/// The login key and seed for an account code or a 16-digit number, kept nowhere. Argon2id is
+/// The account key and seed for an account code or a 16-digit number, kept nowhere. Argon2id is
 /// slow on purpose, so it runs off the UI thread.
 pub async fn keys_of(code_or_number: &str) -> Result<AccountKeys, String> {
     let n = code_or_number.to_string();
@@ -41,7 +41,7 @@ pub async fn keys_of(code_or_number: &str) -> Result<AccountKeys, String> {
     rx.await.map_err(|_| "Could not derive the key".to_string())?.map_err(|e| e.to_string())
 }
 
-/// The login key for the code or number (sent to sign in, instead of it), keeping its seed for
+/// The account key for the code or number (sent to sign in, instead of it), keeping its seed for
 /// the wallet and which kind it was.
 pub async fn keys(code_or_number: &str) -> Result<String, String> {
     let k = keys_of(code_or_number).await?;

@@ -260,6 +260,9 @@ details.thinking > :not(summary) { margin: 8px 12px; }
 .words span { padding: 4px 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .words em { font-style: normal; color: #777; font-size: 12px; display: inline-block; min-width: 2.4em; }
 .field-label { display: block; color: #ddd; font-size: 14px; font-weight: 600; margin: 8px 0 6px; }
+.api-key { border-top: 1px solid var(--border, #222); padding: 8px 0; }
+.api-key-name { font-weight: 600; }
+.new-key input { min-width: 0; }
 .callout { border: 1px solid var(--g); background: rgba(0, 217, 126, .08); border-radius: 12px; padding: 14px 16px; margin: 6px 0 4px; }
 .callout h3 { margin: 0 0 6px; color: var(--g); font-size: 17px; }
 .callout p { margin: 0 0 12px; color: #ddd; line-height: 1.45; }
