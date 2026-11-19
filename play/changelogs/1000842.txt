@@ -1,0 +1,1 @@
+Your chats can now sync between your devices. They're encrypted on the phone, so we never store anything we can read. New accounts get a 20-character account code instead of a 16-digit number; an account with a number can switch to a code in Account to turn sync on. Account also lets you make more API keys, one per tool, revoke each on its own, and see what each one used.
