@@ -52,7 +52,7 @@ const rowsOfLast = async () => {
 
 // 1. The control: renamed, where Verify was; it picks a model that takes encrypted requests.
 await page.locator('.bar .icon').first().click();
-ok((await page.locator('#encrypted').textContent()).trim() === 'Encrypted', 'the quick control says Encrypted');
+ok((await page.locator('#encrypted').textContent()).trim() === 'E2EE', 'the quick control says E2EE');
 ok(!(await page.locator('#verify').count()), 'there is no Verify control any more');
 await page.locator('#encrypted').click();
 await page.waitForSelector('.title.model .verify-mark', { timeout: 5000 });
