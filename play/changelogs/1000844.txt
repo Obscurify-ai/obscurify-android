@@ -1,0 +1,1 @@
+Generate New Account Code now makes your code right in the prompt: write it down, press Convert, and encrypted chat sync is on, without leaving the chat.
