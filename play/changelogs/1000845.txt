@@ -1,0 +1,1 @@
+Switching to an account code no longer signs your other devices out or stops your API keys: other devices just ask for the new code once to keep syncing. Tap any account code or API key to copy it.
