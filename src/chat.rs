@@ -1028,8 +1028,16 @@ fn PrivateSetup() -> Element {
     let mut shown = use_signal(|| false);
     use_hook(move || {
         let may_ask = api::has_session() && !crate::private::on() && !store::load::<bool>(PRIVATE_SETUP_LATER);
+        let signed_in = api::has_session();
         bg(async move {
-            let asks = may_ask && matches!(api::get("/private_setup").await, Ok(v) if v["ask"] == true);
+            let v = if signed_in { api::get("/private_setup").await.ok() } else { None };
+            let asks = may_ask && v.as_ref().is_some_and(|v| v["ask"] == true);
+            // The account got its code on another device since this phone signed in.
+            let new_code = !crate::private::has_code() && v.as_ref().is_some_and(|v| v["new_code"] == true);
+            *crate::NEW_CODE_ELSEWHERE.write() = new_code;
+            if new_code && !asks && !store::load::<bool>(crate::ENTER_CODE_LATER) {
+                *crate::ENTER_CODE.write() = true;
+            }
             *crate::PRIVATE_SETUP_ASKS.write() = Some(asks);
             if asks { shown.set(true) }
         });

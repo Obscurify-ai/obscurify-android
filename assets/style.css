@@ -263,6 +263,8 @@ details.thinking > :not(summary) { margin: 8px 12px; }
 .api-key { border-top: 1px solid var(--border, #222); padding: 8px 0; }
 .api-key-name { font-weight: 600; }
 .new-key input { min-width: 0; }
+.tap-hint { font-size: 12px; text-align: center; margin: 4px 0 10px; }
+.number, #api-key, #new-api-key .mono { cursor: pointer; }
 .callout { border: 1px solid var(--g); background: rgba(0, 217, 126, .08); border-radius: 12px; padding: 14px 16px; margin: 6px 0 4px; }
 .callout h3 { margin: 0 0 6px; color: var(--g); font-size: 17px; }
 .callout p { margin: 0 0 12px; color: #ddd; line-height: 1.45; }

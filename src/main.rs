@@ -522,6 +522,7 @@ fn Root() -> Element {
         }
         if api::has_session() { sync::JoinAsk {} }
         if matches!(screen, Screen::Chat) { CodeUpgrade {} }
+        EnterCode {}
         if let Some(t) = app.toast.read().clone() { div { class: "toast", "{t}" } }
     }
 }
@@ -536,6 +537,12 @@ const CODE_OFFER_SEEN: &str = "code-offer-seen.json";
 /// Whether the private-sessions setup ([`chat::PrivateSetup`]) asks on this launch: `None` until it
 /// knows. The upgrade waits for a `Some(false)`, so the two sheets never stack.
 pub static PRIVATE_SETUP_ASKS: GlobalSignal<Option<bool>> = Signal::global(|| None);
+/// The account got its account code on another device since this phone signed in (GET
+/// /private_setup `new_code`): ask for it here ([`EnterCode`]), never offer to make another.
+pub static NEW_CODE_ELSEWHERE: GlobalSignal<bool> = Signal::global(|| false);
+/// The "enter your account code" sheet is open.
+pub static ENTER_CODE: GlobalSignal<bool> = Signal::global(|| false);
+pub const ENTER_CODE_LATER: &str = "enter-code-later.json";
 /// Signing in with a number offers the upgrade, unless this phone already showed it.
 pub fn offer_code() { *OFFER_CODE.write() = !store::load::<bool>(CODE_OFFER_SEEN) }
 /// "Generate New Account Code" was chosen: Account opens with a new code to save and convert.
@@ -552,7 +559,7 @@ fn CodeUpgrade() -> Element {
     let mut busy = use_signal(|| false);
     let mut done = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
-    let showing = *OFFER_CODE.read() && api::has_session() && *PRIVATE_SETUP_ASKS.read() == Some(false)
+    let showing = *OFFER_CODE.read() && api::has_session() && *PRIVATE_SETUP_ASKS.read() == Some(false) && !*NEW_CODE_ELSEWHERE.read()
         && (!crate::private::has_code() || *done.read());
     if !showing {
         return rsx! {};
@@ -611,14 +618,13 @@ fn CodeUpgrade() -> Element {
                     if let Some(e) = error.read().clone() { p { class: "err", "{e}" } }
                     div { class: "row end", style: "border: 0",
                         button { class: "bare", id: "code-upgrade-cancel", disabled: *busy.read(), onclick: close, "Cancel" }
-                        button { onclick: { let c = c.clone(); move |_| app.copy(&c, "Account code") }, "Copy" }
                         button { class: "go", id: "code-upgrade-convert", disabled: !*saved.read() || *busy.read(), onclick: convert,
                             if *busy.read() { "Converting…" } else { "Convert" } }
                     }
                 },
                 (Some(c), true) => rsx! {
                     h2 { "Encrypted sync is on" }
-                    p { class: "muted", "Sign in with this account code from now on. Your old number, your old API key and your other signed-in devices no longer work." }
+                    p { class: "muted", "Sign in with this account code from now on; your old number no longer works. Devices already signed in stay signed in: enter the code there once to sync them. Your API keys keep working." }
                     Words { text: c.clone() }
                     div { class: "row end", style: "border: 0",
                         button { class: "go", id: "code-upgrade-done", onclick: close, "Done" }
@@ -629,10 +635,65 @@ fn CodeUpgrade() -> Element {
     }
 }
 
+/// The account got its code on another device: enter it once here (a sign-in with it) to sync on
+/// this phone. Opened once on its own, and from Account's "Enter My Account Code".
+#[component]
+fn EnterCode() -> Element {
+    let mut app = use_context::<App>();
+    let mut typed = use_signal(String::new);
+    let mut error = use_signal(|| None::<String>);
+    let mut busy = use_signal(|| false);
+    if !*ENTER_CODE.read() || !api::has_session() || crate::private::has_code() {
+        return rsx! {};
+    }
+    let close = move |_| { store::save(ENTER_CODE_LATER, &true); *ENTER_CODE.write() = false };
+    let sign_in = move |_| {
+        let code = typed.peek().trim().to_string();
+        if crate::private::kind_of(&code) != Some("code") {
+            error.set(Some("That isn't a valid account code: check each character.".into()));
+            return
+        }
+        busy.set(true);
+        error.set(None);
+        bg(async move {
+            match api::login(&code).await {
+                Ok(()) => {
+                    *ENTER_CODE.write() = false;
+                    *NEW_CODE_ELSEWHERE.write() = false;
+                    *sync::REFRESH.write() += 1;
+                    app.refresh_balance();
+                    app.say("Signed in with your account code".to_string());
+                }
+                Err(e) => { crate::private::forget(); error.set(Some(e)) }
+            }
+            busy.set(false);
+        });
+    };
+    rsx! {
+        div { class: "veil" }
+        div { class: "sheet", id: "enter-code",
+            h2 { "This account has an account code" }
+            p { class: "muted", "It was made on another device. Enter it once on this phone to sync your chats here too. You stay signed in either way." }
+            label { class: "field-label", r#for: "enter-code-input", "Account code" }
+            input { class: "field mono", id: "enter-code-input", autocapitalize: "characters", spellcheck: "false", autocomplete: "off",
+                value: "{typed}", oninput: move |e| typed.set(e.value()) }
+            if let Some(e) = error() { p { class: "err", "{e}" } }
+            div { class: "row end",
+                button { class: "bare", id: "enter-code-later", onclick: close, "Not now" }
+                button { class: "go", id: "enter-code-go", disabled: busy(), onclick: sign_in, if busy() { "Signing in…" } else { "Sign in" } }
+            }
+        }
+    }
+}
+
 /// An account code (or number) in a box, big enough to copy down.
 #[component]
 fn Words(text: String) -> Element {
-    rsx! { div { class: "number mono", "{text}" } }
+    let app = use_context::<App>();
+    rsx! {
+        div { class: "number mono", title: "Tap to copy", onclick: { let t = text.clone(); move |_| app.copy(&t, "Account code") }, "{text}" }
+        p { class: "muted tap-hint", "Tap the code to copy it." }
+    }
 }
 
 #[component]
@@ -705,7 +766,6 @@ fn Signup() -> Element {
                 p { class: "muted", "Write it down. Lose it and the account is gone." }
                 if let Some(c) = *credit.read() { p { class: "ok", "{usd(c)} of starter credit is on your balance." } }
                 Words { text: n.clone() }
-                button { onclick: { let n = n.clone(); move |_| app.copy(&n, "Account code") }, "Copy" }
                 label { class: "check",
                     input { r#type: "checkbox", onchange: move |e| saved.set(e.checked()) }
                     "I have saved my account code"
@@ -848,10 +908,9 @@ fn NamedKeys() -> Element {
         if let Some((n, k)) = made.read().clone() {
             div { class: "callout", id: "new-api-key",
                 p { "\u{201c}{n}\u{201d}: copy it now, it isn't shown again." }
-                div { class: "row",
-                    div { class: "grow mono", style: "font-size: 13px; word-break: break-all", "{k}" }
-                    button { class: "bare", onclick: { let k = k.clone(); move |_| app.copy(&k, "API key") }, "Copy" }
-                }
+                div { class: "grow mono", style: "font-size: 13px; word-break: break-all", title: "Tap to copy",
+                    onclick: { let k = k.clone(); move |_| app.copy(&k, "API key") }, "{k}" }
+                p { class: "muted tap-hint", "Tap the key to copy it." }
                 button { class: "bare", style: "padding-left: 0", onclick: move |_| made.set(None), "Done" }
             }
         }
@@ -1006,7 +1065,7 @@ fn Account() -> Element {
                         div { class: "info center", id: "new-words",
                             if *switched.read() {
                                 p { style: "color: #fff; font-weight: 600", "Your account code" }
-                                p { class: "muted", "Done. Sign in with this account code from now on; the old number or code and your other sessions no longer work." }
+                                p { class: "muted", "Done. Sign in with this account code from now on; the old one no longer works. Devices already signed in stay signed in (enter the code there once to sync them), and your API keys keep working." }
                             } else {
                                 p { style: "color: #fff; font-weight: 600", "Your new account code" }
                                 p { class: "muted", if crate::private::has_code() { "Write it down. It replaces your current account code when you press Switch." } else { "Write it down. It replaces your account number when you press Convert." } }
@@ -1014,7 +1073,6 @@ fn Account() -> Element {
                             Words { text: n.clone() }
                             if *switched.read() {
                                 div { class: "row", style: "justify-content: center; border: 0",
-                                    button { onclick: { let n = n.clone(); move |_| app.copy(&n, "Account code") }, "Copy" }
                                     button { class: "go", onclick: move |_| { new_number.set(None); switched.set(false) }, "I've Saved It" }
                                 }
                             } else {
@@ -1024,7 +1082,6 @@ fn Account() -> Element {
                                 }
                                 div { class: "row end", style: "border: 0",
                                     button { class: "bare", onclick: move |_| new_number.set(None), "Cancel" }
-                                    button { onclick: { let n = n.clone(); move |_| app.copy(&n, "Account code") }, "Copy" }
                                     button { class: "go", id: "switch-words", disabled: !*words_saved.read() || *switching.read(), onclick: {
                                         let n = n.clone();
                                         move |_| {
@@ -1064,16 +1121,25 @@ fn Account() -> Element {
                         }
                     } else if new_number.read().is_none() {
                         // A 16-digit number: the reason to convert, up front.
-                        div { class: "callout", id: "sync-upgrade",
-                            h3 { "Enable encrypted chat sync" }
-                            p { "Your chats on every device you sign in on, encrypted so only you can read them. Convert your account number to an account code to turn it on. "
-                                a { onclick: move |_| crate::open_url(&format!("{}/blog/account_codes", api::BASE)), "How this works" }
+                        if *NEW_CODE_ELSEWHERE.read() {
+                            // The account got its code on another device: enter it, never make another.
+                            div { class: "callout", id: "sync-upgrade",
+                                h3 { "Sync on this phone" }
+                                p { "This account has an account code, made on another device. Enter it once here to sync your chats on this phone too." }
+                                button { class: "go", id: "enter-code-open", onclick: move |_| *ENTER_CODE.write() = true, "Enter My Account Code" }
                             }
-                            button { class: "go", id: "rotate-words", onclick: move |_| {
-                                words_saved.set(false);
-                                switched.set(false);
-                                new_number.set(Some(crate::private::new_code()));
-                            }, "Generate My Account Code" }
+                        } else {
+                            div { class: "callout", id: "sync-upgrade",
+                                h3 { "Enable encrypted chat sync" }
+                                p { "Your chats on every device you sign in on, encrypted so only you can read them. Convert your account number to an account code to turn it on. "
+                                    a { onclick: move |_| crate::open_url(&format!("{}/blog/account_codes", api::BASE)), "How this works" }
+                                }
+                                button { class: "go", id: "rotate-words", onclick: move |_| {
+                                    words_saved.set(false);
+                                    switched.set(false);
+                                    new_number.set(Some(crate::private::new_code()));
+                                }, "Generate My Account Code" }
+                            }
                         }
                     }
                 }
@@ -1081,10 +1147,9 @@ fn Account() -> Element {
                 div { class: "section", id: "api-keys",
                     h2 { "API keys" }
                     if let Some(k) = key.read().clone() {
-                        div { class: "row",
-                            div { class: "grow mono", style: "font-size: 13px", "{k}" }
-                            button { class: "bare", onclick: { let k = k.clone(); move |_| app.copy(&k, "API key") }, "Copy" }
-                        }
+                        div { class: "mono", id: "api-key", style: "font-size: 13px; word-break: break-all", title: "Tap to copy",
+                            onclick: { let k = k.clone(); move |_| app.copy(&k, "API key") }, "{k}" }
+                        p { class: "muted tap-hint", "Tap the key to copy it." }
                     } else {
                         button { onclick: move |_| bg(async move {
                             match api::post("/tokens", json!({})).await { Ok(v) => key.set(v["token"].as_str().map(String::from)), Err(e) => app.say(e) }

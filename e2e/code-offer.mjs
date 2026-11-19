@@ -65,12 +65,41 @@ try {
   await page.locator('#code-upgrade-convert').click();
   await page.locator('#code-upgrade-done').waitFor({ timeout: 60000 });
   ok((await page.locator('#code-upgrade h2').textContent()).includes('Encrypted sync is on'), 'Convert switches the account in the sheet');
+  ok(/stay signed in/.test(await page.locator('#code-upgrade p').first().textContent()) && /API keys keep working/.test(await page.locator('#code-upgrade p').first().textContent()), '  it says other devices stay signed in and API keys keep working');
+  ok(!(await page.locator('#code-upgrade button', { hasText: /^Copy$/ }).count()), '  no separate Copy button: tapping the code copies it');
   await page.locator('#code-upgrade-done').click();
   ok(!(await page.locator('#code-upgrade').count()) && await page.locator('#composer').count() > 0, '  Done closes it, still on the chat');
   const login = (key) => fetch(WEB + '/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account_key: key }) }).then((r) => r.ok);
   ok(await login(accountKey(made)) && !(await login(accountKey(conv))), '  the new code signs in, the old number no longer does');
 
-  // 4. A code account is never asked.
+  // 4. The account gets its code on another device: this phone stays signed in, asks for the code
+  //    (never offers to make another), and syncs once it's entered. Tapping a code copies it.
+  const other = Array.from({ length: 16 }, () => randomInt(10)).join('');
+  await create(accountKey(other));
+  ({ page } = await launch(true));
+  await signIn(page, other);
+  await offered(page);
+  await page.locator('#code-upgrade-later').click();
+  // "Another device": signs in with the number and converts it.
+  const signInWeb = await fetch(WEB + '/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account_key: accountKey(other) }) });
+  const cookie = (signInWeb.headers.getSetCookie() || []).map((c) => c.split(';')[0]).find((c) => c.startsWith('session='));
+  const elsewhere = newAccountCode();
+  const rotated = await fetch(WEB + '/account_number/rotate', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ account_key: accountKey(elsewhere) }) });
+  ok(rotated.ok, '(another device converted the account: ' + elsewhere + ')');
+  ({ page } = await launch(false));
+  await page.locator('#enter-code').waitFor({ timeout: 20000 });
+  ok(await page.locator('#composer').count() > 0 && !(await page.locator('#code-upgrade').count()), 'this phone stays signed in and asks for the code, without offering to make another');
+  shot('enter-code');
+  await page.locator('#enter-code-input').fill(elsewhere.toLowerCase());
+  await page.locator('#enter-code-go').click();
+  await page.locator('#enter-code').waitFor({ state: 'detached', timeout: 60000 });
+  ok(true, '  entering it signs in with it here');
+  if (!(await page.locator('.drawer .foot .account').isVisible())) await page.locator('.icon', { hasText: '☰' }).click();
+  await page.locator('.drawer .foot .account').click();
+  await page.locator('#sync-on').waitFor({ timeout: 20000 });
+  ok(await page.locator('#sync-on').isChecked(), '  and this phone syncs');
+
+  // 5. A code account is never asked.
   const code = newAccountCode();
   await create(accountKey(code));
   ({ page } = await launch(true));
