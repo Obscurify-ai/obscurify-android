@@ -1,6 +1,6 @@
 [package]
 name = "obscurify"
-version = "0.8.45"
+version = "0.8.46"
 edition = "2024"
 license = "GPL-3.0-only"
 description = "Obscurify for Android: private AI chat, paid for with unlinkable vouchers"
@@ -8,7 +8,7 @@ repository = "https://github.com/Obscurify-ai/obscurify-android"
 
 # Android versionCode: 1000000 + major*10000 + minor*100 + patch. Bump it with the version.
 [package.metadata.android]
-version-code = 1000845
+version-code = 1000846
 
 [features]
 # The Google Play build (`./build.sh play`): its own app, ai.obscurify.play, with no payments in the
@@ -40,7 +40,7 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 obscurify-tee-verify = { git = "https://github.com/Obscurify-ai/tee-verify", rev = "e2a87ede406dbc78e24d069d6c66cbd804c00f55" }
 bytes = "1"
 # Private sessions: blind-voucher wallet derived from the account number.
-unlinkable-inference = "0.1.2"
+unlinkable-inference = "0.1.4"
 # Transaction history in the phone's time zone.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 iana-time-zone = "0.1"
