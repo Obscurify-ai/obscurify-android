@@ -48,7 +48,7 @@ await page.locator('.bar .icon', { hasText: '←' }).click();
 // Drawer: no Tor, no API or website pages that sell plans; the legal links stay.
 await page.locator('.bar .icon', { hasText: '☰' }).click();
 ok(await page.locator('#tor').count() === 0, 'drawer: no Tor');
-ok(await page.locator('.foot .api, .foot details.more').count() === 0, 'drawer: no API or More info links');
+ok(await page.locator('.foot a[href$="/api-docs"], .foot .social, .foot details.more').count() === 0, 'drawer: no API, social or More info links');
 const legal = await page.locator('.foot .legal a').allTextContents();
 ok(legal.includes('Support') && legal.includes('Privacy') && legal.includes('Terms'), 'drawer: ' + legal.join(', '));
 

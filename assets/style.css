@@ -107,14 +107,14 @@ a { color: var(--g); text-decoration: none; }
 .drawer .foot { border-top: 1px solid var(--l); padding: 14px 16px calc(14px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 12px; }
 .drawer .foot .account { display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 12px 14px; border: 1px solid var(--g); border-radius: 8px; color: var(--g); font-size: 16px; }
 .drawer .foot .account .bal { color: var(--t); font-variant-numeric: tabular-nums; }
-.drawer .foot .api { text-align: center; color: var(--m); font: 13px ui-monospace, 'Roboto Mono', monospace; text-decoration: none; }
-.drawer .foot .api span { color: var(--g); }
 .drawer .foot .more summary { list-style: none; text-align: center; color: var(--m); font-size: 14px; padding: 2px 0; }
 .drawer .foot .more summary::-webkit-details-marker { display: none; }
 .drawer .foot .more summary::after { content: ' \25BE'; }
 .drawer .foot .more[open] summary::after { content: ' \25B4'; }
 .drawer .foot .more .links { justify-content: center; margin: 10px 0 0; }
-.drawer .foot .legal { display: flex; justify-content: center; gap: 14px; font-size: 13px; }
+.drawer .foot .legal { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px 10px; font-size: 13px; }
+.drawer .foot .legal .social { display: flex; gap: 10px; }
+.drawer .foot .legal .social a { display: flex; }
 .drawer .foot .legal a { color: var(--m); }
 
 /* model picker */
