@@ -837,6 +837,10 @@ async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>>
             }
             return Some(Ok(r));
         }
+        // A Pro model refused to a session from before a plan upgrade: it is replaced, ask again.
+        if status == 403 && attempt < 3 && crate::private::not_on_plan(&secret).await {
+            continue;
+        }
         match status {
             402 => crate::private::ran_out(&secret, attempt).await,
             401 => crate::private::expired(&secret).await,
@@ -866,7 +870,9 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
             if (200..300).contains(&status) {
                 return Ok(v);
             }
+            let replaced = status == 403 && reply.is_none() && attempt < 3 && crate::private::not_on_plan(&secret).await;
             match status {
+                _ if replaced => {}
                 402 if reply.is_none() && attempt < 3 => crate::private::ran_out(&secret, attempt).await,
                 401 if reply.is_none() && attempt < 3 => crate::private::expired(&secret).await,
                 _ => return Err(format!("{status}\u{1}{}", error_text(status, &v, &text))),

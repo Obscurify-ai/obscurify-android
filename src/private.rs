@@ -155,6 +155,20 @@ pub async fn ran_out(secret: &str, attempt: u32) {
     }
 }
 
+/// The server refused a model to this session (403, not on the plan). True when the session was
+/// opened with a lower plan's pass than the account has now (passes got before an upgrade): the
+/// chat gets a new session with the current plan's pass, so ask again. False: show the error.
+pub async fn not_on_plan(secret: &str) -> bool {
+    if let Some(mut g) = ready().await
+        && let Some(m) = g.as_mut()
+    {
+        let retry = m.not_on_plan(secret).await.unwrap_or(false);
+        save(m);
+        return retry;
+    }
+    false
+}
+
 /// The server no longer takes this session (401): the chat gets a new one next time.
 pub async fn expired(secret: &str) {
     if let Some(mut g) = ready().await
