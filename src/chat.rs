@@ -74,6 +74,10 @@ pub struct Suggest {
     pub name: String,
     #[serde(default)]
     pub locked: bool,
+    /// Asked on a private session, which doesn't tell the server the account's plan: go by
+    /// the plan this app knows.
+    #[serde(default)]
+    pub private: bool,
 }
 
 /// What a reply that was refused with no text says, as on the web.
@@ -1209,7 +1213,7 @@ fn MsgView(i: usize, m: Msg, last: bool, #[props(default)] live: bool) -> Elemen
             // the Play build: it suggests uncensored models.
             if !live && !PLAY && let Some(s) = m.suggest.clone() {
                 div { class: "refusal-suggestion",
-                    if s.locked {
+                    if if s.private { !app.access.read().as_ref().is_some_and(|a| a.uncensored) } else { s.locked } {
                         button { class: "go", onclick: move |_| app.screen.set(Screen::Account), "Uncensored models need Pro" }
                     } else {
                         button { class: "go", onclick: { let id = s.model.clone(); move |_| ask_instead(app, i, &id) },

@@ -155,14 +155,15 @@ pub async fn ran_out(secret: &str, attempt: u32) {
     }
 }
 
-/// The server refused a model to this session (403, not on the plan). True when the session was
-/// opened with a lower plan's pass than the account has now (passes got before an upgrade): the
-/// chat gets a new session with the current plan's pass, so ask again. False: show the error.
-pub async fn not_on_plan(secret: &str) -> bool {
+/// The server asked this chat's session for a pass (a 403 with `x-pass-required: <label>`):
+/// proof the account's plan gives what the request needs (a frontier or uncensored model,
+/// free-model tokens), which says nothing of which account. True when one was shown: ask
+/// again. False (the plan doesn't give it): show the error.
+pub async fn needs_pass(secret: &str, label: &str) -> bool {
     if let Some(mut g) = ready().await
         && let Some(m) = g.as_mut()
     {
-        let retry = m.not_on_plan(secret).await.unwrap_or(false);
+        let retry = m.needs_pass(secret, label).await.unwrap_or(false);
         save(m);
         return retry;
     }

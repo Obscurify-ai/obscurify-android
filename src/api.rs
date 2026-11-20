@@ -28,6 +28,8 @@ pub fn base() -> String {
 /// A paid Pro plan's mirrors: other addresses of the same server, for networks that block
 /// obscurify.ai. They come only from the server (`GET /api/mirrors`) and are kept on the phone.
 const MIRRORS_FILE: &str = "mirrors.json";
+/// The response header of a 403 that asks a private session for a pass: the pass's label.
+const PASS_REQUIRED: &str = "x-pass-required";
 
 /// The mirror this run moved to after obscurify.ai couldn't be reached. The next run tries
 /// obscurify.ai first again.
@@ -824,7 +826,10 @@ async fn post_chat(body: &Value) -> Result<reqwest::Response, String> {
 /// A chat request on this chat's private session (private.rs): its secret, no cookie, no CSRF.
 /// Tops the session up when it runs out. `None`: private sessions are off; use the cookie.
 async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>> {
-    for attempt in 0..4 {
+    let mut passes = 0;
+    let mut none: Vec<String> = Vec::new();
+    let mut attempt = 0;
+    while attempt < 4 {
         let secret = crate::private::secret(None).await?;
         let r = match client().post(url("/web/chat/completions")).bearer_auth(&secret).json(body).go().await {
             Ok(r) => r,
@@ -837,15 +842,26 @@ async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>>
             }
             return Some(Ok(r));
         }
-        // A Pro model refused to a session from before a plan upgrade: it is replaced, ask again.
-        if status == 403 && attempt < 3 && crate::private::not_on_plan(&secret).await {
-            continue;
+        // The server wants a pass for this request (a model on a plan, a free model): the
+        // session shows one and asks again. A few in a row at most (a long free-model request
+        // can take more than one). With none to show, the same once more: the server may
+        // serve it another way (the guest model past its free tokens is charged).
+        if status == 403 && passes < 8 && let Some(label) = header(&r, PASS_REQUIRED) {
+            if crate::private::needs_pass(&secret, &label).await {
+                passes += 1;
+                continue;
+            }
+            if !none.contains(&label) {
+                none.push(label);
+                continue;
+            }
         }
         match status {
             402 => crate::private::ran_out(&secret, attempt).await,
             401 => crate::private::expired(&secret).await,
             _ => return Some(Err(chat_error(status, &r.text().await.unwrap_or_default()))),
         }
+        attempt += 1;
     }
     Some(Err(error_text(402, &Value::Null, "")))
 }
@@ -862,17 +878,30 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
     if let Some(mut secret) = private {
         // The server holds a reply's (or paid tool's) worst case first: a 402 tops this chat's
         // session up, more each time, and asks again, as post_private does.
-        for attempt in 0..4 {
+        let mut passes = 0;
+        let mut none: Vec<String> = Vec::new();
+        let mut attempt = 0;
+        while attempt < 4 {
             let r = client().post(url(path)).timeout(Duration::from_secs(timeout)).bearer_auth(&secret).json(body).go().await.map_err(|_| offline())?;
             let status = r.status().as_u16();
+            let wanted = header(&r, PASS_REQUIRED);
             let text = r.text().await.map_err(|_| offline())?;
             let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
             if (200..300).contains(&status) {
                 return Ok(v);
             }
-            let replaced = status == 403 && reply.is_none() && attempt < 3 && crate::private::not_on_plan(&secret).await;
+            // A pass the request needs (see `post_private`): shown, then the same again.
+            if status == 403 && reply.is_none() && passes < 8 && let Some(label) = wanted {
+                if crate::private::needs_pass(&secret, &label).await {
+                    passes += 1;
+                    continue;
+                }
+                if !none.contains(&label) {
+                    none.push(label);
+                    continue;
+                }
+            }
             match status {
-                _ if replaced => {}
                 402 if reply.is_none() && attempt < 3 => crate::private::ran_out(&secret, attempt).await,
                 401 if reply.is_none() && attempt < 3 => crate::private::expired(&secret).await,
                 _ => return Err(format!("{status}\u{1}{}", error_text(status, &v, &text))),
@@ -881,6 +910,7 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
                 Some(s) => secret = s,
                 None => break,
             }
+            attempt += 1;
         }
         return Err(format!("402\u{1}{}", error_text(402, &Value::Null, "")));
     }
