@@ -155,7 +155,7 @@ impl Default for Settings {
 }
 
 #[derive(Clone, PartialEq, Default)]
-struct Model { id: String, name: String, prompt: f64, completion: f64, tools: bool, context: u64, categories: Vec<String>, e2ee: bool, created: i64 }
+struct Model { id: String, name: String, prompt: f64, completion: f64, tools: bool, context: u64, categories: Vec<String>, e2ee: bool, created: i64, images: bool }
 
 /// What the account's plan lets it chat with, from `/account_tier`.
 #[derive(Clone, Copy, PartialEq)]
@@ -208,6 +208,11 @@ impl App {
         self.say(format!("{what} copied"));
     }
     fn save_settings(&self) { store::save("settings.json", &*self.settings.peek()) }
+    /// Does the selected model take images? Models the list doesn't name decide for themselves.
+    fn takes_images(&self) -> bool {
+        let model = self.settings.peek().model.clone();
+        self.models.peek().iter().find(|m| m.id == model).is_none_or(|m| m.images)
+    }
     fn model_name(&self, id: &str) -> String {
         self.models.peek().iter().find(|m| m.id == id).map(|m| m.name.clone()).unwrap_or_else(|| id.rsplit('/').next().unwrap_or(id).to_string())
     }
@@ -400,6 +405,8 @@ fn Root() -> Element {
                 prompt: m["pricing"]["prompt"].as_f64().unwrap_or(0.0),
                 completion: m["pricing"]["completion"].as_f64().unwrap_or(0.0),
                 tools: m["tools"].as_bool().unwrap_or(true),
+                // Takes images; a server from before the field says nothing: assume it does.
+                images: m["images"].as_bool().unwrap_or(true),
                 context: m["context_length"].as_u64().unwrap_or(0),
                 // Specialist use cases (Writing, Security, ...) the server tags models with.
                 categories: m["categories"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(String::from)).collect(),
@@ -501,6 +508,10 @@ fn Root() -> Element {
             } else if let Some(name) = v["doc"]["name"].as_str() {
                 read_doc(app, name.to_string(), v["doc"]["data"].as_str().unwrap_or("").to_string())
             } else if let Some(imgs) = v["images"].as_array() {
+                if !app.takes_images() {
+                    app.say(chat::IMAGES_NOT_SUPPORTED);
+                    continue;
+                }
                 let mut a = app.attach.write();
                 a.extend(imgs.iter().filter_map(|i| i.as_str().map(String::from)));
                 a.truncate(4);

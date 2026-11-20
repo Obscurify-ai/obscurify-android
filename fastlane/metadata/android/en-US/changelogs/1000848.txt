@@ -1,0 +1,1 @@
+Photos go only to models that can read them: on a text-only model the app says so instead of sending an image the model can't see.

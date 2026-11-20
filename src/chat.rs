@@ -859,6 +859,9 @@ fn provider(m: &Model) -> String {
     m.name.split_once(": ").map_or_else(|| m.id.split('/').next().unwrap_or("").to_string(), |(p, _)| p.to_string())
 }
 
+/// Said when images meet a model that can't read them (the model list's `images` is false).
+pub const IMAGES_NOT_SUPPORTED: &str = "This model does not support images.";
+
 // ---- views ----
 
 #[component]
@@ -883,6 +886,11 @@ pub fn ChatView() -> Element {
     let n = c.messages.len();
 
     let mut do_send = move || {
+        // Images attached for a model that can't read them: nothing is sent, the text stays.
+        if !app.attach.peek().is_empty() && !app.takes_images() {
+            app.say(IMAGES_NOT_SUPPORTED);
+            return;
+        }
         let t = text.peek().clone();
         js("const c = document.getElementById('composer'); c.value = ''; c.style.height = ''");
         text.set(String::new());
