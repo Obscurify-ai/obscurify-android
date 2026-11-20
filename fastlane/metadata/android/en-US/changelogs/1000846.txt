@@ -1,0 +1,1 @@
+Private chats now share one wallet across every device signed in with your account code, so a phone and a browser can both chat on the same balance. Small balances work too: even less than a dollar is spent privately, spread over as many chats as you like.
