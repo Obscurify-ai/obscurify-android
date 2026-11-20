@@ -5023,7 +5023,7 @@ dependencies = [
 
 [[package]]
 name = "obscurify"
-version = "0.8.46"
+version = "0.8.47"
 dependencies = [
  "aes-gcm",
  "arti-client",
@@ -9277,9 +9277,9 @@ dependencies = [
 
 [[package]]
 name = "unlinkable-inference"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39215fe75f6b32bd47a7b399bbe92cdf721a6e2fe275e637e7d5e22df1cbe12e"
+checksum = "65bb4e8aa438afa6c096b8f1412f99a2f6d7dd974a36766802e264a3498f6aed"
 dependencies = [
  "anyhow",
  "argon2",

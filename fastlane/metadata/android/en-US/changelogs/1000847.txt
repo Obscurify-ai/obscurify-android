@@ -1,0 +1,1 @@
+An idle app on an empty balance now checks for money far less often, saving battery and data.
