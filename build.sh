@@ -35,6 +35,13 @@ arch=${1:-}
 # release has the same one and F-Droid can read it.
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 code=$(sed -n 's/^version-code = \([0-9]*\)/\1/p' Cargo.toml | head -1)
+# A version bump on main is released automatically (GitHub + Play), and the release refuses one
+# without its store changelog and Signals Tony. Fail here first, before anything is pushed.
+changelog=fastlane/metadata/android/en-US/changelogs/$code.txt
+if [ ! -s "$changelog" ]; then
+  echo "no changelog for $version: write $changelog (what changed, for the Play store) before building" >&2
+  exit 1
+fi
 
 gen=target/dx/obscurify/release/android/app
 # The two apps share dx's generated project: start it afresh when switching, so neither keeps the
