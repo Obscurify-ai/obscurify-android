@@ -1,0 +1,1 @@
+Obscurify.ai's X and Reddit links now sit on their own row in the menu, right above More info.

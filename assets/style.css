@@ -113,8 +113,8 @@ a { color: var(--g); text-decoration: none; }
 .drawer .foot .more[open] summary::after { content: ' \25B4'; }
 .drawer .foot .more .links { justify-content: center; margin: 10px 0 0; }
 .drawer .foot .legal { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px 10px; font-size: 13px; }
-.drawer .foot .legal .social { display: flex; gap: 10px; }
-.drawer .foot .legal .social a { display: flex; }
+.drawer .foot .social { display: flex; justify-content: center; gap: 24px; }
+.drawer .foot .social a { display: flex; color: var(--m); padding: 4px; }
 .drawer .foot .legal a { color: var(--m); }
 
 /* model picker */

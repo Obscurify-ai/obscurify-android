@@ -31,8 +31,8 @@ ok(!(await page.locator('.foot .more .links').isVisible()) && await page.locator
 {
   const first = page.locator('.foot .legal a').first();
   ok((await first.textContent()) === 'API docs' && (await first.getAttribute('href')).endsWith('/api-docs') && await first.isVisible(), 'API docs is first on the legal line, next to Privacy');
-  const social = await page.locator('.foot .legal .social a').evaluateAll((a) => a.map((x) => x.href));
-  ok(social.length === 2 && social[0] === 'https://x.com/obscurifyai' && social[1] === 'https://www.reddit.com/r/ObscurifyAI/', 'X and Reddit on the legal line: ' + social.join(' '));
+  const social = await page.locator('.foot .social a').evaluateAll((a) => a.map((x) => x.href));
+  ok(social.length === 2 && social[0] === 'https://x.com/obscurifyai' && social[1] === 'https://www.reddit.com/r/ObscurifyAI/', 'X and Reddit above More info: ' + social.join(' '));
   const [l, d] = await Promise.all(['.foot .legal', '.drawer'].map((s) => page.locator(s).boundingBox()));
   ok(l.x >= d.x && l.x + l.width <= d.x + d.width + 1, 'the legal line fits in the drawer');
 }
