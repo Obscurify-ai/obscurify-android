@@ -109,6 +109,7 @@ BTC_RPC_PASSWORD=… node top-ups.mjs  # BTC top-up paid while the app is closed
 adb reverse tcp:8097 tcp:8097 && node eth-top-ups.mjs  # against obscurify tests/e2e/eth-stack.sh: Ethereum → ETH/USDC/USDT and networks (no USDT on Base), USDC on Base paid with the app closed, added on relaunch
 node card.mjs                     # image picker and a vision model; Stripe test-card blind voucher
 ACCOUNT=… PLAN=casual node plans.mjs  # models the plan can use first, the rest under "Upgrade to use"
+adb reverse tcp:8099 tcp:8099 && DB=… [CATALOG=…] node plan-offers.mjs  # the Account screen lists this account's plans (asked with its key) and buying one charges exactly the price shown
 ACCOUNT=… node agent.mjs             # Long runs, compaction, errors back to the model, background work (scripted replies, through flaky-proxy.mjs)
 ACCOUNT=… node code.mjs              # Code Mode: Python, a chart, a paid tool, a page full screen, the sandbox sealed off
 node flaky-proxy.mjs & ACCOUNT=… node switches.mjs  # Tools and Code switches: on by default, a lookup is a direct web_search, code off, tools off (code can't reach them), both off is plain chat

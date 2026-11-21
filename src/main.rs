@@ -968,7 +968,8 @@ fn Account() -> Element {
         bg(async move {
             if let Ok(v) = api::get("/account_tier").await { tier.set(v) }
             if !PLAY {
-                if let Ok(v) = api::public("GET", "/available_tiers", None).await { tiers.set(v) }
+                // With the account's key: the plans and prices are this account's.
+                if let Ok(v) = api::get("/available_tiers").await { tiers.set(v) }
                 if let Ok(v) = api::get("/referral_info").await { referral.set(v) }
             }
             mine.set(private::spending().await);
@@ -979,8 +980,13 @@ fn Account() -> Element {
     use_hook(load);
 
     let change_tier = move |t: String| {
+        // The plan shown: the server refuses, charging nothing, if that's no longer the price.
+        let plan_id = tiers.peek()["tiers"].as_array().into_iter().flatten()
+            .find(|x| x["tier"].as_str() == Some(t.as_str()))
+            .map(|x| x["plan_id"].clone())
+            .unwrap_or(Value::Null);
         bg(async move {
-            match api::post("/change_tier", json!({"tier": t, "payment_method": "balance"})).await {
+            match api::post("/change_tier", json!({"tier": t, "payment_method": "balance", "plan_id": plan_id})).await {
                 Ok(v) => { app.say(v["message"].as_str().unwrap_or("Plan changed").to_string()); load() }
                 Err(e) => app.say(e),
             }
@@ -1016,7 +1022,7 @@ fn Account() -> Element {
                     if !t.is_null() {
                         // The plan list below marks the current plan; the Play
                         // build has no list, so it names the plan here.
-                        if PLAY { p { "{tier_name(&current)}" } }
+                        if PLAY { p { "{t[\"plan_name\"].as_str().unwrap_or(tier_name(&current))}" } }
                         if t["included_credit"].as_f64().unwrap_or(0.0) > 0.0 {
                             p { class: "muted", "{usd(t[\"credit_used\"].as_f64().unwrap_or(0.0))} of {usd(t[\"included_credit\"].as_f64().unwrap_or(0.0))} included usage used" }
                         }
@@ -1032,10 +1038,12 @@ fn Account() -> Element {
                             let up = fee > now_fee;
                             let bal = app.balance.read().unwrap_or(0.0);
                             let asking = plan_ask.read().as_deref() == Some(id.as_str());
-                            let name = tier_name(&id);
+                            let name = x["name"].as_str().unwrap_or(tier_name(&id)).to_string();
                             let pay = id.clone();
                             let credit = x["included_credit"].as_f64().unwrap_or(0.0);
                             let what = match id.as_str() {
+                                // Plans that sell usage only (every model open): the server words them.
+                                _ if x["all_models"].as_bool() == Some(true) => x["description"].as_str().unwrap_or("").to_string(),
                                 "casual" => format!("Frontier models, {} of usage included", usd(credit)),
                                 "pro" => format!("API access, frontier and uncensored models, {} of usage included", usd(credit)),
                                 _ => "Pay only for what you use".to_string(),
@@ -1043,7 +1051,7 @@ fn Account() -> Element {
                             rsx! {
                                 div { class: "row",
                                     div { class: "grow",
-                                        div { class: if on { "ok" } else { "" }, "{tier_name(&id)} · {usd(fee)}/mo" }
+                                        div { class: if on { "ok" } else { "" }, "{name} · {usd(fee)}/mo" }
                                         div { class: "muted", "{what}" }
                                     }
                                     if on { span { class: "ok", "Current" } }
