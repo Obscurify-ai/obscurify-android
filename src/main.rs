@@ -689,7 +689,7 @@ fn CodeUpgrade() -> Element {
 /// this phone. Opened once on its own, and from Account's "Enter My Account Code".
 #[component]
 fn EnterCode() -> Element {
-    let mut app = use_context::<App>();
+    let app = use_context::<App>();
     let mut typed = use_signal(String::new);
     let mut error = use_signal(|| None::<String>);
     let mut busy = use_signal(|| false);
@@ -974,7 +974,7 @@ fn NamedKeys() -> Element {
             }
         })
     };
-    let mut set_limit = move || {
+    let set_limit = move || {
         let Some((id, amount)) = limiting.peek().clone() else { return };
         let amount = amount.trim().trim_start_matches('$').to_string();
         bg(async move {
