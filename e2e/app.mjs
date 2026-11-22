@@ -46,7 +46,7 @@ btc('-named', 'sendtoaddress', `address=${addr}`, 'amount=0.001', 'fee_rate=10')
 btc('generatetoaddress', '1', btc('getnewaddress'));
 await page.getByText('Done').click();
 // Vouchers: polled every 10 s; then "Add now" skips the random delay.
-await page.waitForSelector('text=waiting to be added', { timeout: 120000 });
+await page.waitForSelector('.row.held', { timeout: 120000 });
 ok(true, 'vouchers collected from the paid order');
 shot('vouchers');
 await page.getByText('Add now').click();

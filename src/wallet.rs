@@ -52,6 +52,9 @@ pub struct Order {
     pub funded_cents: i64,
     #[serde(default)]
     pub available_cents: i64,
+    /// A payment has been seen and is waiting to confirm.
+    #[serde(default)]
+    pub confirming: bool,
     #[serde(default)]
     pub last_poll: i64,
     #[serde(default)]
@@ -118,6 +121,9 @@ pub struct TopUp {
     pub amounts: Value,
     #[serde(default)]
     pub open: bool,
+    /// A payment has been seen and is waiting to confirm.
+    #[serde(default)]
+    pub confirming: bool,
     #[serde(default)]
     pub network: Option<String>,
     #[serde(default)]
@@ -134,6 +140,13 @@ impl TopUp {
     pub fn pending_plan(&self) -> Option<&str> {
         self.plan.as_deref().filter(|_| self.plan_state.as_deref() == Some("pending"))
     }
+    /// Has money in it that isn't all on the balance yet: seen, or part of the amount asked for.
+    /// One opened and never paid isn't listed; the server watches it all the same.
+    pub fn in_progress(&self) -> bool {
+        self.confirming || self.pending_plan().is_some() && self.credited_cents > 0
+            || self.open && self.credited_cents > 0 && self.amount_cents.is_some_and(|a| self.credited_cents < a)
+    }
+    pub fn short(&self) -> bool { self.amount_cents.is_some_and(|a| self.credited_cents < a) }
     pub fn applied(&self) -> bool { self.plan_state.as_deref() == Some("applied") }
 
     pub fn crypto(&self) -> bool { self.payment_method != "card" }
@@ -182,8 +195,14 @@ pub struct Voucher {
 impl Order {
     pub fn crypto(&self) -> bool { self.method != "card" }
     /// Card payments finish in minutes; crypto keeps counting late and repeat payments for a day.
+    /// Money seen on it is waited for, however slowly it confirms.
     fn stale(&self, now: i64) -> bool {
-        now - self.created > if self.crypto() { 24 * 60 * MIN } else { 30 * MIN }
+        now - self.created > if self.confirming { 7 * 24 * 60 * MIN } else if self.crypto() { 24 * 60 * MIN } else { 30 * MIN }
+    }
+    /// A blind order with money in it that isn't vouchers yet. One opened and never paid isn't
+    /// listed, but `tick` goes on watching it, so leaving it can't lose a payment.
+    pub fn in_progress(&self) -> bool {
+        !self.done && !self.to_account && (self.confirming || self.available_cents > 0)
     }
 }
 
@@ -264,11 +283,15 @@ fn parse_order(v: &Value, method: &str, amount_cents: Option<i64>, to_account: b
 
 /// Polls open orders and turns whatever they've received into vouchers. Polls each order every
 /// 10 s for its first 10 minutes, then once a minute (`force` polls now). Returns true if anything changed.
+///
+/// The wallet is read again after every wait for the network: a payment opened meanwhile is in the
+/// file but not in an older copy, and saving that copy would forget it.
 pub async fn tick(w: &mut Wallet, force: bool) -> Result<bool, String> {
     let now = store::now();
     let mut changed = false;
-    for i in 0..w.orders.len() {
-        let o = &w.orders[i];
+    let ids: Vec<String> = w.orders.iter().map(|o| o.id.clone()).collect();
+    for id in ids {
+        let Some(o) = w.orders.iter().find(|o| o.id == id) else { continue };
         let pending = w.batches.iter().any(|b| b.order_id == o.id);
         if o.to_account || (o.done && !pending) {
             continue;
@@ -277,21 +300,24 @@ pub async fn tick(w: &mut Wallet, force: bool) -> Result<bool, String> {
         if !force && !pending && now - o.last_poll < every {
             continue;
         }
-        match api::public("GET", &format!("/vouchers/orders/{}", o.id), None).await {
+        let r = api::public("GET", &format!("/vouchers/orders/{id}"), None).await;
+        *w = Wallet::load();
+        let Some(o) = w.orders.iter_mut().find(|o| o.id == id) else { continue };
+        match r {
             Ok(v) => {
-                let o = &mut w.orders[i];
                 o.status = v["status"].as_str().unwrap_or("").to_string();
                 o.funded_cents = v["funded_cents"].as_i64().unwrap_or(0);
                 o.available_cents = v["available_cents"].as_i64().unwrap_or(0);
+                o.confirming = v["confirming"].as_bool().unwrap_or(false);
                 o.last_poll = now;
             }
-            Err(e) if api::status_of(&e).0 == 404 => w.orders[i].done = true,
+            Err(e) if api::status_of(&e).0 == 404 => o.done = true,
             Err(e) => return Err(api::msg(e)),
         }
         changed = true;
         w.save();
-        collect(w, i).await?;
-        let o = &mut w.orders[i];
+        collect(w, &id).await?;
+        let Some(o) = w.orders.iter_mut().find(|o| o.id == id) else { continue };
         let funded_card = !o.crypto() && o.funded_cents > 0;
         if o.available_cents == 0 && (funded_card || o.status == "expired" || o.stale(now)) {
             o.done = true;
@@ -302,17 +328,14 @@ pub async fn tick(w: &mut Wallet, force: bool) -> Result<bool, String> {
 }
 
 /// Signs everything the order has available: first any batch saved but never answered, then new ones.
-async fn collect(w: &mut Wallet, i: usize) -> Result<(), String> {
-    if w.orders[i].to_account {
-        return Ok(());
-    }
-    let id = w.orders[i].id.clone();
+async fn collect(w: &mut Wallet, id: &str) -> Result<(), String> {
     let mut keys: Option<Vec<Value>> = None;
     loop {
-        if let Some(b) = w.batches.iter().position(|b| b.order_id == id) {
-            let batch = w.batches[b].clone();
+        if let Some(batch) = w.batches.iter().find(|b| b.order_id == id).cloned() {
             let body = json!({"vouchers": batch.items.iter().map(|it| json!({"denomination_cents": it.cents, "key_id": it.key_id, "blinded_message": it.blinded})).collect::<Vec<_>>()});
-            match api::public("POST", &format!("/vouchers/orders/{id}/sign"), Some(body)).await {
+            let r = api::public("POST", &format!("/vouchers/orders/{id}/sign"), Some(body)).await;
+            *w = Wallet::load();
+            match r {
                 Ok(v) => {
                     let sigs: Vec<&str> = v["blind_signatures"].as_array().map(|a| a.iter().filter_map(|s| s.as_str()).collect()).unwrap_or_default();
                     let now = store::now();
@@ -322,13 +345,15 @@ async fn collect(w: &mut Wallet, i: usize) -> Result<(), String> {
                             Err(e) => eprintln!("voucher {} didn't verify: {e}", it.key_id),
                         }
                     }
-                    w.batches.remove(b);
-                    w.orders[i].available_cents = v["available_cents"].as_i64().unwrap_or(0);
+                    w.batches.retain(|b| *b != batch);
+                    if let Some(o) = w.orders.iter_mut().find(|o| o.id == id) {
+                        o.available_cents = v["available_cents"].as_i64().unwrap_or(0);
+                    }
                     w.save();
                 }
                 // The keys changed before this batch was signed: blind again with the new ones.
                 Err(e) if api::status_of(&e).0 == 409 => {
-                    w.batches.remove(b);
+                    w.batches.retain(|b| *b != batch);
                     w.save();
                     keys = None;
                 }
@@ -336,16 +361,17 @@ async fn collect(w: &mut Wallet, i: usize) -> Result<(), String> {
             }
             continue;
         }
-        let available = w.orders[i].available_cents;
-        if available <= 0 {
+        let Some(available) = w.orders.iter().find(|o| o.id == id && !o.to_account).map(|o| o.available_cents).filter(|a| *a > 0) else {
             return Ok(());
-        }
+        };
         if keys.is_none() {
             let v = api::public("GET", "/vouchers/keys", None).await.map_err(api::msg)?;
+            *w = Wallet::load();
             keys = Some(v["keys"].as_array().cloned().unwrap_or_default());
+            continue;
         }
         let items = blind_batch(keys.as_ref().unwrap(), available)?;
-        w.batches.push(Batch { order_id: id.clone(), items });
+        w.batches.push(Batch { order_id: id.to_string(), items });
         w.save();
     }
 }
@@ -398,6 +424,7 @@ pub async fn redeem(w: &mut Wallet, all: bool) -> Result<f64, String> {
     let mut credited = 0.0;
     for chunk in due.chunks(20) {
         let v = api::post("/vouchers/redeem", json!({"vouchers": chunk})).await?;
+        *w = Wallet::load();
         let results = v["results"].as_array().cloned().unwrap_or_default();
         for (code, r) in chunk.iter().zip(results) {
             match r["status"].as_str() {

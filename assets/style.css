@@ -130,6 +130,15 @@ h2.group { font-size: 13px; font-weight: 500; text-transform: uppercase; letter-
 .seg { display: flex; border: 1px solid var(--l); border-radius: 8px; overflow: hidden; }
 .seg button { flex: 1; border: 0; border-radius: 0; padding: 10px 4px; font-size: 14px; color: var(--m); }
 .seg button.on { color: #000; background: var(--g); }
+/* Payment method: three to a row, then two, so every name has room. */
+.methods { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; border: 0; border-radius: 0; overflow: visible; }
+.methods button { grid-column: span 2; min-height: 48px; padding: 10px 6px; border: 1px solid var(--l); border-radius: 8px; font-size: 15px; color: var(--t); white-space: nowrap; }
+.methods button:nth-child(n+4) { grid-column: span 3; }
+.methods button.on { border-color: var(--g); font-weight: 600; }
+.stack h2 + .methods, .stack h2 + .toggles { margin-top: -10px; }
+.stack .toggles + h2, .stack .methods + h2 { margin-top: 8px; }
+.paid { border: 1px solid var(--g); border-radius: 8px; padding: 12px 14px; margin-top: 12px; color: var(--g); }
+.paid .muted { margin-top: 4px; }
 .qr { background: #fff; padding: 12px; border-radius: 8px; width: 220px; margin: 0 auto; }
 .qr svg { display: block; width: 100%; height: auto; }
 .toast { position: fixed; left: 16px; right: 16px; bottom: 90px; padding: 12px; border: 1px solid var(--g); border-radius: 8px; background: #000; color: var(--g); z-index: 20; text-align: center; font-size: 14px; }

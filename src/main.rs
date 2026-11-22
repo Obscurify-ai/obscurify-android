@@ -1070,7 +1070,7 @@ fn Account() -> Element {
                         if !PLAY { button { class: "go", onclick: move |_| { let mut s = app.screen; s.set(Screen::Funds) }, "Add funds" } }
                     }
                     if w.held_cents() > 0 && !PLAY {
-                        p { class: "muted", "{cents(w.held_cents())} in blind vouchers is waiting to be added to your balance." }
+                        p { class: "muted", "{cents(w.held_cents())} received and waiting to be added to your balance." }
                     }
                     // Play allows saying where to pay, as plain text: no link, no button.
                     if PLAY { p { class: "muted", "Add funds and change plans on the website, obscurify.ai." } }
@@ -1751,7 +1751,7 @@ fn Funds() -> Element {
                         app.say("Paid. It goes on your balance in a moment.");
                         app.refresh_top_ups()
                     } else {
-                        app.say("Paid. Collecting your vouchers…");
+                        app.say("Paid. It goes on your balance within the hour.");
                         app.work_wallet(true)
                     }
                 }
@@ -1779,9 +1779,10 @@ fn Funds() -> Element {
             div { class: "scroll",
                 if order.is_none() || buying {
                     div { class: "section stack",
-                        div { class: "seg",
+                        h2 { "Payment method" }
+                        div { class: "seg methods",
                             for (id, label) in METHODS {
-                                button { class: if m == id { "on" } else { "" }, onclick: move |_| { method.set(id); restart() }, "{label}" }
+                                button { class: if m == id { "on" } else { "" }, "aria-pressed": if m == id { "true" } else { "false" }, onclick: move |_| { method.set(id); restart() }, "{label}" }
                             }
                         }
                         if m == "EVM" {
@@ -1808,6 +1809,7 @@ fn Funds() -> Element {
                             }
                         }
                         if let Some(p) = plan.clone() {
+                            h2 { "Length" }
                             div { class: "toggles plan-term",
                                 for (key, label, price) in [("monthly", "1 month", p.month), ("annual", "12 months", p.year)] {
                                     if price > 0.0 {
@@ -1820,6 +1822,7 @@ fn Funds() -> Element {
                             if order.is_none() && *busy.read() { p { class: "muted", "Setting up the payment…" } }
                             if order.is_none() { if let Some(e) = error.read().clone() { p { class: "err", "{e}" } } }
                         } else {
+                            h2 { "Amount" }
                             div { class: "toggles",
                                 for v in ["5", "10", "20", "50", "100"] {
                                     button { class: if *amount.read() == v { "chip on" } else { "chip" }, onclick: move |_| amount.set(v.to_string()), "${v}" }
@@ -1900,16 +1903,51 @@ fn Funds() -> Element {
                                 }
                             }
                             if o.to_account {
-                                if let Some(t) = top_ups.iter().find(|t| t.order_id == o.id && t.credited_cents > 0) {
-                                    p { class: "ok", style: "margin-top: 12px", "Added {cents(t.credited_cents)} to your balance" }
+                                {
+                                    let t = top_ups.iter().find(|t| t.order_id == o.id);
+                                    let added = t.map_or(0, |t| t.credited_cents);
+                                    let on = o.plan.as_deref().map(tier_name);
+                                    rsx! {
+                                        if added > 0 {
+                                            div { class: "paid", "Added {cents(added)} to your balance" }
+                                        } else if t.is_some_and(|t| t.confirming) {
+                                            div { class: "paid",
+                                                "Payment seen"
+                                                p { class: "muted",
+                                                    {match on {
+                                                        Some(p) => format!("{p} switches on when it confirms. You can close the app."),
+                                                        None => "It goes on your balance when it confirms. You can close the app.".to_string(),
+                                                    }} }
+                                            }
+                                        } else {
+                                            p { class: "muted", style: "margin-top: 12px",
+                                                {match on {
+                                                    Some(p) => format!("Pay within 1 hour. {p} switches on when the payment confirms. You can close the app."),
+                                                    None => "Pay within 1 hour. It goes on your balance when the payment confirms. You can close the app.".to_string(),
+                                                }} }
+                                        }
+                                    }
                                 }
-                                p { class: "muted", style: "margin-top: 12px",
-                                    {match &o.plan {
-                                        Some(p) => format!("Pay within 1 hour. {} switches on when the payment confirms. You can close the app.", tier_name(p)),
-                                        None => "Pay within 1 hour. It goes on your balance when the payment confirms. You can close the app.".to_string(),
-                                    }} }
                             } else {
-                                p { class: "muted", style: "margin-top: 12px", "Pay within 1 hour. Then open the app again so it can collect your blind vouchers and add them." }
+                                {
+                                    let now = w.orders.iter().find(|x| x.id == o.id);
+                                    let got = now.map_or(0, |x| x.funded_cents);
+                                    rsx! {
+                                        if got > 0 {
+                                            div { class: "paid",
+                                                "{cents(got)} received"
+                                                p { class: "muted", "It goes on your balance within the hour while the app is open." }
+                                            }
+                                        } else if now.is_some_and(|x| x.confirming) {
+                                            div { class: "paid",
+                                                "Payment seen"
+                                                p { class: "muted", "Open the app again once it confirms, so it goes on your balance." }
+                                            }
+                                        } else {
+                                            p { class: "muted", style: "margin-top: 12px", "Pay within 1 hour. Then open the app again so it goes on your balance." }
+                                        }
+                                    }
+                                }
                             }
                         } else {
                             div { id: "stripe", style: "min-height: 120px" }
@@ -1921,26 +1959,33 @@ fn Funds() -> Element {
                     }
                 }
                 {
-                    // Only payments still waiting; finished ones are deposits in the
-                    // Account screen's transactions (tap one for how it was paid).
-                    let orders: Vec<_> = w.orders.iter().rev().filter(|o| !o.done && !o.to_account).cloned().collect();
-                    let waiting: Vec<_> = top_ups.iter().filter(|t| t.open && (t.credited_cents == 0 || t.amount_cents.is_some_and(|a| t.credited_cents < a))).cloned().collect();
+                    // Only payments with money in them: one opened and left unpaid isn't listed (it's
+                    // still watched), and finished ones are deposits in the Account screen's
+                    // transactions (tap one for how it was paid).
+                    let orders: Vec<_> = w.orders.iter().rev().filter(|o| o.in_progress()).cloned().collect();
+                    let waiting: Vec<_> = top_ups.iter().filter(|t| t.in_progress()).cloned().collect();
+                    let held = w.held_cents();
+                    let refused = w.vouchers.iter().any(|v| v.invalid);
                     let showing = order.as_ref().map(|o| o.id.clone());
                     rsx! {
-                        if !orders.is_empty() || !waiting.is_empty() {
+                        if !orders.is_empty() || !waiting.is_empty() || !w.vouchers.is_empty() {
                             div { class: "section payments",
                                 h2 { "In progress" }
                                 for t in waiting {
                                     div { class: "row",
                                         div { class: "grow",
                                             div { {t.pending_plan().map(|p| format!("{} · ", tier_name(p))).unwrap_or_default()} {method_name(&t.payment_method)} {t.order().network_label().map(|l| format!(" on {l}")).unwrap_or_default()} " · " {t.amount_cents.map(cents).unwrap_or("any amount".into())} }
-                                            div { class: if t.credited_cents > 0 { "ok" } else { "muted" },
-                                                {if t.credited_cents > 0 { format!("Added {} to your balance", cents(t.credited_cents)) }
-                                                 else if t.open { "Waiting for payment. You can close the app.".to_string() }
-                                                 else { "No payment received".to_string() }}
+                                            div { class: "ok",
+                                                {match t.pending_plan() {
+                                                    Some(p) if t.confirming => format!("Payment seen. {} switches on when it confirms.", tier_name(p)),
+                                                    _ if t.confirming => "Payment seen. It goes on your balance when it confirms.".to_string(),
+                                                    Some(p) if t.short() => format!("Added {} to your balance. {} switches on when the rest arrives.", cents(t.credited_cents), tier_name(p)),
+                                                    Some(p) => format!("Paid. Switching {} on…", tier_name(p)),
+                                                    None => format!("Added {} to your balance", cents(t.credited_cents)),
+                                                }}
                                             }
                                         }
-                                        if t.open && t.crypto() && !t.order().addresses.is_empty() && showing.as_deref() != Some(&t.order_id) {
+                                        if t.open && t.short() && !t.confirming && t.crypto() && !t.order().addresses.is_empty() && showing.as_deref() != Some(&t.order_id) {
                                             button { class: "bare", onclick: { let o = t.order(); move |_| open.set(Some(o.clone())) }, "Show address" }
                                         }
                                     }
@@ -1948,31 +1993,29 @@ fn Funds() -> Element {
                                 for o in orders {
                                     div { class: "row",
                                         div { class: "grow",
-                                            div { "Blind voucher · " {method_name(&o.method)} {o.network_label().map(|l| format!(" on {l}")).unwrap_or_default()} " · " {o.amount_cents.map(cents).unwrap_or("any amount".into())} }
-                                            div { class: "muted", {if o.funded_cents > 0 { format!("{} received. Keep the app open.", cents(o.funded_cents)) } else { "Waiting for payment. Open the app again after paying.".to_string() }} }
-                                        }
-                                        if o.crypto() && showing.as_deref() != Some(&o.id) {
-                                            button { class: "bare", onclick: { let o = o.clone(); move |_| open.set(Some(o.clone())) }, "Show address" }
+                                            div { {method_name(&o.method)} {o.network_label().map(|l| format!(" on {l}")).unwrap_or_default()} " · " {o.amount_cents.map(cents).unwrap_or("any amount".into())} }
+                                            div { class: "ok", {if o.available_cents > 0 { format!("{} received. Keep the app open.", cents(o.available_cents)) } else { "Payment seen. Open the app again once it confirms.".to_string() }} }
                                         }
                                     }
                                 }
+                                if held > 0 {
+                                    div { class: "row held",
+                                        div { class: "grow",
+                                            div { "{cents(held)} received" }
+                                            div { class: "ok", "Goes on your balance within the hour while the app is open." }
+                                        }
+                                        button { class: "go", onclick: move |_| bg(async move {
+                                            let mut w = Wallet::load();
+                                            match wallet::redeem(&mut w, true).await { Ok(c) => { app.say(format!("{} added", usd(c))); app.refresh_balance() } Err(e) => app.say(e) }
+                                            let mut ws = app.wallet; ws.set(w);
+                                        }), "Add now" }
+                                    }
+                                }
+                                if refused { p { class: "err", "Some blind vouchers were refused. Copy them and contact support." } }
+                                if !w.vouchers.is_empty() {
+                                    button { class: "bare", style: "padding-left: 0", onclick: { let c = w.codes(); move |_| app.copy(&c, "Voucher codes") }, "Copy voucher codes" }
+                                }
                             }
-                        }
-                    }
-                }
-                if !w.vouchers.is_empty() {
-                    div { class: "section",
-                        h2 { "Vouchers" }
-                        p { "{cents(w.held_cents())} blind voucher" }
-                        p { class: "muted", "Added within the hour while the app is open." }
-                        if w.vouchers.iter().any(|v| v.invalid) { p { class: "err", "Some vouchers were refused. Copy them and contact support." } }
-                        div { class: "row",
-                            button { class: "go", onclick: move |_| bg(async move {
-                                let mut w = Wallet::load();
-                                match wallet::redeem(&mut w, true).await { Ok(c) => { app.say(format!("{} added", usd(c))); app.refresh_balance() } Err(e) => app.say(e) }
-                                let mut ws = app.wallet; ws.set(w);
-                            }), "Add now" }
-                            button { onclick: { let c = w.codes(); move |_| app.copy(&c, "Voucher codes") }, "Copy codes" }
                         }
                     }
                 }

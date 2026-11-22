@@ -55,7 +55,7 @@ const zip = stripe.locator('input[name="postalCode"]');
 if (await zip.count()) await zip.fill('33101');
 shot('card');
 await page.locator('button.go', { hasText: 'Pay $3.00' }).click();
-await page.waitForSelector('text=waiting to be added', { timeout: 120000 });
+await page.waitForSelector('.row.held', { timeout: 120000 });
 ok(true, 'card payment turned into vouchers');
 await page.getByText('Add now').click();
 await page.waitForSelector('.toast', { timeout: 30000 });

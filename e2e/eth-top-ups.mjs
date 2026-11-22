@@ -55,8 +55,7 @@ ok(/^0x[0-9a-fA-F]{40}$/.test(addr), 'address shown: ' + addr);
 ok(await page.getByText('Send 10 USDC on Base').count() === 1, 'says how much, of what, on which network');
 ok(await page.getByText('Same address works on Ethereum.').count() === 1, 'says the address works on Ethereum too');
 ok(await page.locator('.qr svg').count() === 1, 'QR code drawn');
-await page.locator('.payments', { hasText: 'USDC on Base' }).waitFor({ timeout: 30000 });
-ok(true, 'listed under In progress as USDC on Base');
+ok(await page.locator('.payments').count() === 0, 'not listed while unpaid');
 shot('eth-address');
 
 adb('shell', 'am', 'force-stop', PKG);
