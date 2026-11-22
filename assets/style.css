@@ -132,6 +132,9 @@ h2.group { font-size: 13px; font-weight: 500; text-transform: uppercase; letter-
 .seg button.on { color: #000; background: var(--g); }
 /* Payment method: three to a row, then two, so every name has room. */
 .methods { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; border: 0; border-radius: 0; overflow: visible; }
+.methods button, .evm-tokens .chip { display: flex; align-items: center; justify-content: center; gap: 7px; }
+.ico { display: inline-flex; flex: none; }
+.evm-tokens .ico svg { width: 14px; height: 14px; }
 .methods button { grid-column: span 2; min-height: 48px; padding: 10px 6px; border: 1px solid var(--l); border-radius: 8px; font-size: 15px; color: var(--t); white-space: nowrap; }
 .methods button:nth-child(n+4) { grid-column: span 3; }
 .methods button.on { border-color: var(--g); font-weight: 600; }
