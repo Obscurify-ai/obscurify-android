@@ -1,0 +1,32 @@
+Obscurify to prywatny i anonimowy czat AI, który łączy ponad 300 modeli sztucznej inteligencji w jednym miejscu. Zadawaj pytania, pisz, tłumacz, czytaj dokumenty, szukaj w sieci i uruchamiaj kod, a model zmieniaj, kiedy tylko chcesz. Nie potrzebujesz e-maila, numeru telefonu ani hasła. Zacznij od razu jako gość albo utwórz kod konta na swoim telefonie.
+
+Aplikacja jest po angielsku, a modele AI odpowiadają po polsku, gdy piszesz do nich po polsku.
+
+NAJWAŻNIEJSZE MODELE AI W JEDNEJ APLIKACJI
+Rozmawiaj z modelami OpenAI (GPT), Anthropic (Claude), Google (Gemini), DeepSeek, Qwen, Meta (Llama), Mistral, xAI (Grok), Moonshot (Kimi), Z.ai (GLM) i wieloma otwartymi modelami. Przeszukuj pełną listę, przeglądaj kategorie (Frontier, Reasoning, Cheap, Writing, Code tools, Translation, Documents, Zero retention i inne), zapisuj ulubione i zmieniaj model w trakcie rozmowy. Zacznij od darmowych modeli, nawet jako gość.
+
+ANONIMOWOŚĆ OD PODSTAW
+• Bez e-maila, numeru telefonu i hasła. Twoje konto to 20-znakowy kod konta utworzony na telefonie.
+• Goście mogą rozmawiać bez zakładania konta.
+• Twoje czaty są zapisane na telefonie. Synchronizacja między Twoimi telefonami a stroną jest szyfrowana end-to-end kluczem wyprowadzonym z Twojego kodu konta, więc serwer przechowuje tylko zaszyfrowane dane.
+• Czaty tymczasowe ("Temp") nigdy nie są zapisywane na telefonie, a "Wipe" usuwa wszystkie czaty, na telefonie i w synchronizacji.
+• Wybieraj modele "Zero retention" od dostawców, których polityką jest nieprzechowywanie Twoich zapytań.
+• Bez reklam.
+
+SZYFROWANY CZAT AI
+Tryb "Encrypted" łączy się z modelami działającymi w enklawach poufnego przetwarzania (TEE). Zanim cokolwiek zostanie wysłane, telefon sprawdza atestację enklawy i szyfruje wiadomość dla niej, więc serwer Obscurify przekazuje ją dalej, nie mogąc jej odczytać. Przy każdej odpowiedzi widać, czy wszystkie kontrole wypadły pomyślnie.
+
+ASYSTENT AI, KTÓRY ZAŁATWIA SPRAWY
+• Wyszukiwanie w sieci
+• Dołączaj zdjęcia, pliki PDF, Word, Excel, PowerPoint, CSV oraz pliki tekstowe i z kodem. Dokumenty są odczytywane na telefonie i wysyłane jako tekst, więc każdy model może z nich korzystać.
+• Kod: asystent uruchamia Pythona i JavaScript na Twoim telefonie, żeby liczyć, analizować dane i rysować wykresy, oraz tworzy małe strony, które otworzysz na pełnym ekranie
+• Długie odpowiedzi i zadania wieloetapowe działają dalej w tle, z powiadomieniem, i przetrwają utratę połączenia
+• Odpowiedzi na żywo, zwijane rozumowanie, kopiowanie, edycja, ponawianie i zatrzymywanie
+
+MAŁA, SZYBKA APLIKACJA
+Obscurify to mała natywna aplikacja o minimalistycznym czarnym wyglądzie.
+
+BEZPIECZEŃSTWO I KONTROLA
+Zgłoś dowolną odpowiedź bezpośrednio w aplikacji. Usuń konto w aplikacji w dowolnej chwili.
+
+Aby korzystać z Obscurify, musisz mieć co najmniej 18 lat.

@@ -1,0 +1,32 @@
+Obscurify ist ein privater, anonymer KI-Chat mit mehr als 300 KI-Modellen an einem Ort. Stell Fragen, schreib Texte, übersetze, lies Dokumente, durchsuche das Web und führe Code aus, und wechsle das Modell, wann immer du willst. Du brauchst keine E-Mail, keine Telefonnummer und kein Passwort. Chatte sofort als Gast oder erstelle einen Kontocode auf deinem Handy.
+
+Die App ist auf Englisch, und die KI-Modelle antworten auf Deutsch, wenn du ihnen auf Deutsch schreibst.
+
+DIE WICHTIGSTEN KI-MODELLE IN EINER APP
+Chatte mit Modellen von OpenAI (GPT), Anthropic (Claude), Google (Gemini), DeepSeek, Qwen, Meta (Llama), Mistral, xAI (Grok), Moonshot (Kimi), Z.ai (GLM) und vielen offenen Modellen. Durchsuche die ganze Liste, stöbere nach Kategorie (Frontier, Reasoning, Cheap, Writing, Code tools, Translation, Documents, Zero retention und mehr), speichere Favoriten und wechsle das Modell mitten im Gespräch. Starte mit den kostenlosen Modellen, auch als Gast.
+
+ANONYM VON GRUND AUF
+• Keine E-Mail, keine Telefonnummer, kein Passwort. Dein Konto ist ein 20-stelliger Kontocode, der auf deinem Handy erstellt wird.
+• Gäste können ganz ohne Konto chatten.
+• Deine Chats werden auf deinem Handy gespeichert. Die Synchronisierung zwischen deinen Handys und der Website ist Ende-zu-Ende-verschlüsselt, mit einem Schlüssel aus deinem Kontocode. Der Server speichert also nur verschlüsselte Daten.
+• Temporäre Chats ("Temp") werden nie auf deinem Handy gespeichert, und "Wipe" löscht alle Chats, auf dem Handy und in der Synchronisierung.
+• Wähle "Zero retention"-Modelle von Anbietern, deren Richtlinie es ist, deine Eingaben nicht zu speichern.
+• Keine Werbung.
+
+VERSCHLÜSSELTER KI-CHAT
+Der Modus "Encrypted" kommuniziert mit Modellen, die in Confidential-Computing-Enklaven (TEE) laufen. Bevor etwas gesendet wird, prüft das Handy die Attestierung der Enklave und verschlüsselt deine Nachricht für sie. Der Server von Obscurify leitet sie weiter, ohne sie lesen zu können. Jede Antwort zeigt, ob alle Prüfungen bestanden wurden.
+
+EIN KI-ASSISTENT, DER ANPACKT
+• Websuche
+• Hänge Fotos, PDFs, Word, Excel, PowerPoint, CSV sowie Text- oder Code-Dateien an. Dokumente werden auf deinem Handy gelesen und als Text gesendet, damit jedes Modell sie nutzen kann.
+• Code: Der Assistent führt Python und JavaScript auf deinem Handy aus, um zu rechnen, Daten zu analysieren und Diagramme zu zeichnen, und baut kleine Seiten, die du im Vollbild öffnen kannst
+• Lange Antworten und mehrstufige Aufgaben laufen im Hintergrund weiter, mit einer Benachrichtigung, und überstehen einen Verbindungsabbruch
+• Live gestreamte Antworten, einklappbares Reasoning, Kopieren, Bearbeiten, Wiederholen und Stoppen
+
+EINE KLEINE, SCHNELLE APP
+Obscurify ist eine kleine native App mit minimalistischem schwarzem Design.
+
+SICHERHEIT UND KONTROLLE
+Melde jede Antwort direkt in der App. Lösche dein Konto jederzeit in der App.
+
+Du musst mindestens 18 Jahre alt sein, um Obscurify zu nutzen.

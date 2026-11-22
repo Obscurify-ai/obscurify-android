@@ -37,7 +37,12 @@ release key, which never goes to Google. Upload key certificate SHA-256:
 retake them with `PKG=ai.obscurify.play ACCOUNT=… node e2e/play-screenshots.mjs`, never showing
 uncensored models, prices to buy, or crypto). The listing text is plain text, written for Play
 search: keep "Private AI Chat" in the title, say only what the Play build does, and leave out
-uncensored, "no filter", payments, prices and other apps' names. `node tools/play-listing.mjs`
+uncensored, "no filter", payments, prices and other apps' names. Translated listings live in
+`listing/<locale>/` (Play language codes; es-US is a copy of es-419). They use the local search
+term in the title and short description ("chat IA", "KI-Chat", "ИИ-чат"…), carry exactly the English
+claims, say the app itself is in English, and keep on-screen names (Temp, Wipe, Encrypted, the
+categories) in English; they use the default listing's images. Change a claim in English and every
+translation changes with it. `node tools/play-listing.mjs`
 shows how the live listing differs from these files, and `--push` sends the text to Play review
 (the service account has "Manage store presence" for this app since 2026-11-21). `data-safety.csv` is the Data safety form, entered
 with Play Console's CSV import. A feature that collects something new needs that form updated by hand

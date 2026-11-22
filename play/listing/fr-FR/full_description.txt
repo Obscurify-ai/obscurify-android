@@ -1,0 +1,32 @@
+Obscurify est une application de chat IA privée et anonyme qui réunit plus de 300 modèles d'intelligence artificielle. Posez des questions, rédigez, traduisez, lisez des documents, cherchez sur le web et exécutez du code, et changez de modèle quand vous voulez. Pas besoin d'e-mail, de numéro de téléphone ni de mot de passe. Discutez tout de suite en tant qu'invité, ou créez un code de compte sur votre téléphone.
+
+L'application est en anglais, et les modèles d'IA vous répondent en français quand vous leur écrivez en français.
+
+LES GRANDS MODÈLES D'IA DANS UNE SEULE APPLICATION
+Discutez avec des modèles d'OpenAI (GPT), Anthropic (Claude), Google (Gemini), DeepSeek, Qwen, Meta (Llama), Mistral, xAI (Grok), Moonshot (Kimi), Z.ai (GLM) et de nombreux modèles ouverts. Cherchez dans la liste complète, parcourez par catégorie (Frontier, Reasoning, Cheap, Writing, Code tools, Translation, Documents, Zero retention et plus), gardez vos favoris et changez de modèle en pleine conversation. Commencez avec les modèles gratuits, même en tant qu'invité.
+
+ANONYME DÈS LA CONCEPTION
+• Ni e-mail, ni numéro de téléphone, ni mot de passe. Votre compte est un code de 20 caractères créé sur votre téléphone.
+• Les invités peuvent discuter sans créer de compte.
+• Vos conversations sont stockées sur votre téléphone. La synchronisation entre vos téléphones et le site web est chiffrée de bout en bout avec une clé dérivée de votre code de compte : le serveur ne garde que du texte chiffré.
+• Les conversations temporaires ("Temp") ne sont jamais enregistrées sur votre téléphone, et "Wipe" supprime toutes les conversations, sur le téléphone et dans la synchronisation.
+• Choisissez des modèles "Zero retention", servis par des fournisseurs dont la politique est de ne pas conserver vos messages.
+• Aucune publicité.
+
+CHAT IA CHIFFRÉ
+Le mode "Encrypted" communique avec des modèles qui tournent dans des enclaves d'informatique confidentielle (TEE). Avant tout envoi, le téléphone vérifie l'attestation de l'enclave et chiffre votre message pour elle : le serveur d'Obscurify le transmet sans pouvoir le lire. Chaque réponse indique si toutes les vérifications ont réussi.
+
+UN ASSISTANT IA QUI AGIT
+• Recherche web
+• Joignez des photos, PDF, Word, Excel, PowerPoint, CSV et fichiers texte ou code. Les documents sont lus sur votre téléphone et envoyés sous forme de texte, pour que n'importe quel modèle puisse les utiliser.
+• Code : l'assistant exécute du Python et du JavaScript sur votre téléphone pour calculer, analyser des données et tracer des graphiques, et crée de petites pages à ouvrir en plein écran
+• Les longues réponses et les tâches en plusieurs étapes continuent en arrière-plan, avec une notification, et résistent à une coupure de connexion
+• Réponses en direct, raisonnement repliable, copier, modifier, réessayer et arrêter
+
+UNE APPLICATION LÉGÈRE ET RAPIDE
+Obscurify est une petite application native au design noir minimaliste.
+
+SÉCURITÉ ET CONTRÔLE
+Signalez n'importe quelle réponse depuis l'application. Supprimez votre compte depuis l'application à tout moment.
+
+Vous devez avoir 18 ans ou plus pour utiliser Obscurify.

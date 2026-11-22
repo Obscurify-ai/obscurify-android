@@ -1,0 +1,32 @@
+Obscurify adalah aplikasi chat AI yang pribadi dan anonim, dengan lebih dari 300 model kecerdasan buatan di satu tempat. Ajukan pertanyaan, tulis, terjemahkan, baca dokumen, cari di web, dan jalankan kode, lalu ganti model kapan saja. Kamu tidak perlu email, nomor telepon, atau kata sandi. Langsung chat sebagai tamu, atau buat kode akun di ponselmu.
+
+Tampilan aplikasi berbahasa Inggris, dan model AI menjawab dalam bahasa Indonesia saat kamu menulis dalam bahasa Indonesia.
+
+MODEL AI TERPENTING DALAM SATU APLIKASI
+Chat dengan model dari OpenAI (GPT), Anthropic (Claude), Google (Gemini), DeepSeek, Qwen, Meta (Llama), Mistral, xAI (Grok), Moonshot (Kimi), Z.ai (GLM), dan banyak model terbuka. Cari di daftar lengkap, jelajahi per kategori (Frontier, Reasoning, Cheap, Writing, Code tools, Translation, Documents, Zero retention, dan lainnya), simpan favorit, dan ganti model di tengah percakapan. Mulai dengan model gratis, bahkan sebagai tamu.
+
+ANONIM SEJAK AWAL
+• Tanpa email, nomor telepon, atau kata sandi. Akunmu adalah kode akun 20 karakter yang dibuat di ponselmu.
+• Tamu bisa chat tanpa membuat akun sama sekali.
+• Chatmu disimpan di ponselmu. Sinkronisasi antara ponselmu dan situs web dienkripsi end-to-end dengan kunci dari kode akunmu, jadi server hanya menyimpan data terenkripsi.
+• Chat sementara ("Temp") tidak pernah disimpan di ponselmu, dan "Wipe" menghapus semua chat, di ponsel dan di sinkronisasi.
+• Pilih model "Zero retention", dilayani penyedia yang kebijakannya adalah tidak menyimpan pesanmu.
+• Tanpa iklan.
+
+CHAT AI TERENKRIPSI
+Mode "Encrypted" terhubung dengan model yang berjalan di dalam enklave komputasi rahasia (TEE). Sebelum apa pun dikirim, ponsel memeriksa atestasi enklave dan mengenkripsi pesanmu untuknya, sehingga server Obscurify sendiri meneruskannya tanpa bisa membacanya. Setiap jawaban menunjukkan apakah semua pemeriksaan lolos.
+
+ASISTEN AI YANG BEKERJA
+• Pencarian web
+• Lampirkan foto, PDF, Word, Excel, PowerPoint, CSV, serta file teks atau kode. Dokumen dibaca di ponselmu dan dikirim sebagai teks, sehingga setiap model bisa memakainya.
+• Kode: asisten menjalankan Python dan JavaScript di ponselmu untuk menghitung, menganalisis data, dan menggambar grafik, serta membuat halaman kecil yang bisa dibuka layar penuh
+• Jawaban panjang dan tugas bertahap tetap berjalan di latar belakang dengan notifikasi, dan tetap aman saat koneksi terputus
+• Jawaban langsung mengalir, penalaran yang bisa dilipat, salin, edit, coba lagi, dan hentikan
+
+APLIKASI KECIL DAN CEPAT
+Obscurify adalah aplikasi native kecil dengan desain hitam minimalis.
+
+KEAMANAN DAN KENDALI
+Laporkan jawaban apa pun langsung dari aplikasi. Hapus akunmu dari aplikasi kapan saja.
+
+Kamu harus berusia 18 tahun atau lebih untuk menggunakan Obscurify.

@@ -1,0 +1,32 @@
+Obscurify, 300'den fazla yapay zeka modelini tek bir yerde sunan gizli ve anonim bir yapay zeka sohbet uygulamasıdır. Soru sorun, yazı yazın, çeviri yapın, belge okuyun, web'de arama yapın ve kod çalıştırın; modeli istediğiniz an değiştirin. E-posta, telefon numarası veya şifre gerekmez. Hemen misafir olarak sohbet edin ya da telefonunuzda bir hesap kodu oluşturun.
+
+Uygulamanın arayüzü İngilizcedir; Türkçe yazdığınızda yapay zeka modelleri size Türkçe yanıt verir.
+
+EN ÖNEMLİ YAPAY ZEKA MODELLERİ TEK UYGULAMADA
+OpenAI (GPT), Anthropic (Claude), Google (Gemini), DeepSeek, Qwen, Meta (Llama), Mistral, xAI (Grok), Moonshot (Kimi), Z.ai (GLM) ve birçok açık modelle sohbet edin. Tüm listede arama yapın, kategorilere göz atın (Frontier, Reasoning, Cheap, Writing, Code tools, Translation, Documents, Zero retention ve daha fazlası), favorilerinizi kaydedin ve sohbetin ortasında model değiştirin. Misafir olarak bile ücretsiz modellerle başlayın.
+
+TASARIMI GEREĞİ ANONİM
+• E-posta, telefon numarası veya şifre yok. Hesabınız, telefonunuzda oluşturulan 20 karakterlik bir hesap kodudur.
+• Misafirler hiç hesap açmadan sohbet edebilir.
+• Sohbetleriniz telefonunuzda saklanır. Telefonlarınız ve web sitesi arasındaki senkronizasyon, hesap kodunuzdan türetilen bir anahtarla uçtan uca şifrelenir; sunucu yalnızca şifreli veriyi tutar.
+• Geçici sohbetler ("Temp") telefonunuza asla kaydedilmez; "Wipe" ise telefondaki ve senkronizasyondaki tüm sohbetleri siler.
+• Politikası isteklerinizi saklamamak olan sağlayıcıların sunduğu "Zero retention" modellerini seçin.
+• Reklam yok.
+
+ŞİFRELİ YAPAY ZEKA SOHBETİ
+"Encrypted" modu, gizli bilişim enklavlarında (TEE) çalışan modellerle konuşur. Herhangi bir şey gönderilmeden önce telefon, enklavın doğrulamasını (attestation) doğrular ve mesajınızı ona özel olarak şifreler; böylece Obscurify'ın kendi sunucusu mesajı okuyamadan iletir. Her yanıt, tüm kontrollerin geçip geçmediğini gösterir.
+
+İŞ GÖREN BİR YAPAY ZEKA ASİSTANI
+• Web araması
+• Fotoğraf, PDF, Word, Excel, PowerPoint, CSV ve metin ya da kod dosyaları ekleyin. Belgeler telefonunuzda okunur ve metin olarak gönderilir, böylece her model bunları kullanabilir.
+• Kod: asistan hesaplama yapmak, veri analiz etmek ve grafik çizmek için telefonunuzda Python ve JavaScript çalıştırır, tam ekran açabileceğiniz küçük sayfalar oluşturur
+• Uzun yanıtlar ve çok adımlı görevler arka planda bir bildirimle devam eder ve bağlantı kopsa da kaybolmaz
+• Anlık akan yanıtlar, katlanabilir akıl yürütme, kopyalama, düzenleme, yeniden deneme ve durdurma
+
+KÜÇÜK VE HIZLI BİR UYGULAMA
+Obscurify, minimalist siyah tasarımlı küçük bir yerel uygulamadır.
+
+GÜVENLİK VE KONTROL
+Herhangi bir yanıtı uygulamanın içinden bildirin. Hesabınızı istediğiniz zaman uygulamadan silin.
+
+Obscurify'ı kullanmak için 18 yaşında veya daha büyük olmalısınız.

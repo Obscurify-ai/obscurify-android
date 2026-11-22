@@ -1,0 +1,32 @@
+Obscurify là ứng dụng chat AI riêng tư và ẩn danh, tập hợp hơn 300 mô hình trí tuệ nhân tạo ở một nơi. Đặt câu hỏi, viết, dịch, đọc tài liệu, tìm kiếm trên web và chạy code, rồi đổi mô hình bất cứ lúc nào. Bạn không cần email, số điện thoại hay mật khẩu. Trò chuyện ngay với tư cách khách, hoặc tạo mã tài khoản trên điện thoại của bạn.
+
+Giao diện ứng dụng bằng tiếng Anh, và các mô hình AI trả lời bằng tiếng Việt khi bạn viết bằng tiếng Việt.
+
+CÁC MÔ HÌNH AI LỚN TRONG MỘT ỨNG DỤNG
+Chat với các mô hình của OpenAI (GPT), Anthropic (Claude), Google (Gemini), DeepSeek, Qwen, Meta (Llama), Mistral, xAI (Grok), Moonshot (Kimi), Z.ai (GLM) và nhiều mô hình mở. Tìm trong danh sách đầy đủ, duyệt theo danh mục (Frontier, Reasoning, Cheap, Writing, Code tools, Translation, Documents, Zero retention và nhiều danh mục khác), lưu mục yêu thích và đổi mô hình ngay giữa cuộc trò chuyện. Bắt đầu với các mô hình miễn phí, kể cả khi là khách.
+
+ẨN DANH NGAY TỪ THIẾT KẾ
+• Không email, số điện thoại hay mật khẩu. Tài khoản của bạn là một mã tài khoản 20 ký tự được tạo trên điện thoại.
+• Khách có thể chat mà không cần tạo tài khoản.
+• Các cuộc trò chuyện được lưu trên điện thoại của bạn. Đồng bộ giữa các điện thoại của bạn và trang web được mã hóa đầu cuối bằng khóa lấy từ mã tài khoản, nên máy chủ chỉ giữ dữ liệu đã mã hóa.
+• Chat tạm thời ("Temp") không bao giờ được lưu trên điện thoại, và "Wipe" xóa mọi cuộc trò chuyện, trên điện thoại lẫn trong đồng bộ.
+• Chọn các mô hình "Zero retention", do những nhà cung cấp có chính sách không lưu tin nhắn của bạn phục vụ.
+• Không quảng cáo.
+
+CHAT AI ĐƯỢC MÃ HÓA
+Chế độ "Encrypted" làm việc với các mô hình chạy bên trong vùng tính toán bảo mật (TEE). Trước khi gửi bất cứ thứ gì, điện thoại kiểm tra chứng thực (attestation) của vùng đó và mã hóa tin nhắn dành riêng cho nó, nên chính máy chủ của Obscurify chỉ chuyển tiếp mà không thể đọc. Mỗi câu trả lời cho biết mọi bước kiểm tra có đạt hay không.
+
+TRỢ LÝ AI LÀM ĐƯỢC VIỆC
+• Tìm kiếm web
+• Đính kèm ảnh, PDF, Word, Excel, PowerPoint, CSV và tệp văn bản hoặc code. Tài liệu được đọc trên điện thoại và gửi dưới dạng văn bản, nên mọi mô hình đều dùng được.
+• Code: trợ lý chạy Python và JavaScript trên điện thoại của bạn để tính toán, phân tích dữ liệu và vẽ biểu đồ, và tạo các trang nhỏ mở được toàn màn hình
+• Câu trả lời dài và tác vụ nhiều bước tiếp tục chạy nền kèm thông báo, và không mất khi rớt kết nối
+• Câu trả lời hiển thị trực tiếp, phần suy luận thu gọn được, sao chép, sửa, thử lại và dừng
+
+ỨNG DỤNG NHỎ GỌN, NHANH
+Obscurify là ứng dụng gốc nhỏ gọn với thiết kế tối giản màu đen.
+
+AN TOÀN VÀ KIỂM SOÁT
+Báo cáo bất kỳ câu trả lời nào ngay trong ứng dụng. Xóa tài khoản trong ứng dụng bất cứ lúc nào.
+
+Bạn phải từ 18 tuổi trở lên để sử dụng Obscurify.

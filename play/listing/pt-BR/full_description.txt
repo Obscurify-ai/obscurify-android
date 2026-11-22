@@ -1,0 +1,32 @@
+Obscurify é um app de chat de IA privado e anônimo com mais de 300 modelos de inteligência artificial em um só lugar. Faça perguntas, escreva, traduza, leia documentos, pesquise na web e execute código, e troque de modelo quando quiser. Você não precisa de email, número de telefone nem senha. Converse como convidado na hora ou crie um código de conta no seu celular.
+
+O app está em inglês, e os modelos de IA respondem em português quando você escreve em português.
+
+OS PRINCIPAIS MODELOS DE IA EM UM SÓ APP
+Converse com modelos da OpenAI (GPT), Anthropic (Claude), Google (Gemini), DeepSeek, Qwen, Meta (Llama), Mistral, xAI (Grok), Moonshot (Kimi), Z.ai (GLM) e muitos modelos abertos. Pesquise a lista completa, navegue por categoria (Frontier, Reasoning, Cheap, Writing, Code tools, Translation, Documents, Zero retention e mais), salve favoritos e troque de modelo no meio de uma conversa. Comece com os modelos gratuitos, mesmo como convidado.
+
+ANÔNIMO DESDE A CONCEPÇÃO
+• Sem email, número de telefone ou senha. Sua conta é um código de 20 caracteres criado no seu celular.
+• Convidados podem conversar sem criar conta nenhuma.
+• Suas conversas ficam salvas no seu celular. A sincronização entre seus celulares e o site é criptografada de ponta a ponta com uma chave gerada a partir do seu código de conta, então o servidor guarda apenas texto cifrado.
+• Conversas temporárias ("Temp") nunca são salvas no seu celular, e "Wipe" apaga todas as conversas, no celular e na sincronização.
+• Escolha modelos "Zero retention", servidos por provedores cuja política é não guardar suas mensagens.
+• Sem anúncios.
+
+CHAT DE IA CRIPTOGRAFADO
+O modo "Encrypted" conversa com modelos que rodam dentro de enclaves de computação confidencial (TEE). Antes de qualquer envio, o celular verifica a atestação do enclave e criptografa sua mensagem para ele, assim o próprio servidor do Obscurify a repassa sem conseguir lê-la. Cada resposta mostra se todas as verificações passaram.
+
+UM ASSISTENTE DE IA QUE FAZ COISAS
+• Pesquisa na web
+• Anexe fotos, PDFs, Word, Excel, PowerPoint, CSV e arquivos de texto ou código. Os documentos são lidos no seu celular e enviados como texto, para que qualquer modelo possa usá-los.
+• Código: o assistente executa Python e JavaScript no seu celular para calcular, analisar dados e desenhar gráficos, e cria pequenas páginas que você abre em tela cheia
+• Respostas longas e tarefas de várias etapas continuam em segundo plano, com uma notificação, e sobrevivem a uma queda de conexão
+• Respostas em tempo real, raciocínio recolhível, copiar, editar, tentar de novo e parar
+
+UM APP PEQUENO E RÁPIDO
+Obscurify é um app nativo e leve com um design preto minimalista.
+
+SEGURANÇA E CONTROLE
+Denuncie qualquer resposta dentro do app. Exclua sua conta pelo app a qualquer momento.
+
+Você precisa ter 18 anos ou mais para usar o Obscurify.
