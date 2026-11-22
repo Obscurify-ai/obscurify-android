@@ -642,6 +642,7 @@ fn run_with(mut app: App, follow: Option<String>) {
         let chat_id = app.conv.peek().id.clone();
         crate::private::set_chat(&chat_id);
         let mut checked: Option<Checked> = None;
+        let mut cost = 0.0;
         loop {
             let force = resent;
             let mut shown = app.live.peek().clone().unwrap_or_default();
@@ -668,6 +669,9 @@ fn run_with(mut app: App, follow: Option<String>) {
             app.live.set(Some(fresh));
             let mut overflow = false;
             let mut body = json!({"model": model, "messages": api_history(&app.conv.peek(), &model, false), "stream": true});
+            if crate::private::on() {
+                body["stream_options"] = json!({"include_usage": true});
+            }
             if web_search {
                 body["web_search"] = json!(true);
             }
@@ -714,6 +718,7 @@ fn run_with(mut app: App, follow: Option<String>) {
                             let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
                             refused |= refusal(&v);
                             at_length |= v["choices"][0]["finish_reason"] == "length";
+                            cost += v["usage"]["cost"].as_f64().unwrap_or(0.0);
                             if let Some(s) = suggestion(&v) { msg.suggest = Some(s) }
                             if !v["error"].is_null() {
                                 let e = v["error"]["message"].as_str().or(v["error"].as_str()).unwrap_or("The model returned an error");
@@ -772,7 +777,7 @@ fn run_with(mut app: App, follow: Option<String>) {
         if let Some((receipt, route, raw, sealed)) = checked {
             crate::tee::check(app, chat_id, model, receipt, route, raw, sealed);
         }
-        app.refresh_balance();
+        app.after_reply(cost, encrypted);
     });
 }
 

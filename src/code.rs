@@ -867,6 +867,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
         let mut history = vec![json!({"role": "system", "content": setup.system})];
         history.extend(chat::api_history(&app.conv.peek(), &model, true));
         msg.spent = t.spent;
+        let spent_before = t.spent;
         let context = app.models.peek().iter().find(|m| m.id == model).map(|m| m.context).filter(|c| *c > 0).unwrap_or(DEFAULT_CONTEXT);
         let mut drawn = 0i64;
         let mut show = move |m: &Msg| {
@@ -1092,7 +1093,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
         app.live.set(None);
         js("document.body.dataset.working = 0; const f = document.getElementById('follow'); if (f) f.hidden = true; window.android && android.keepAwake && android.keepAwake(false); window.android && android.working && android.working(false)");
         chat::save_chat(app);
-        app.refresh_balance();
+        app.after_reply(t.spent - spent_before, false);
     });
 }
 

@@ -218,6 +218,19 @@ impl App {
     fn model_name(&self, id: &str) -> String {
         self.models.peek().iter().find(|m| m.id == id).map(|m| m.name.clone()).unwrap_or_else(|| id.rsplit('/').next().unwrap_or(id).to_string())
     }
+    /// After a reply: its cost comes off the balance shown. A private reply asks the server
+    /// nothing: the account's own requests right after each reply would tie the two together by
+    /// timing and address (the next refresh, on opening the account screen or the app, is exact).
+    /// A reply paid by the account itself (encrypted, or private chats off) refreshes as before.
+    fn after_reply(mut self, cost: f64, by_account: bool) {
+        if by_account || !private::on() {
+            return self.refresh_balance();
+        }
+        if cost <= 0.0 { return }
+        let now = *self.balance.peek();
+        self.balance.set(now.map(|b| (b - cost).max(0.0)));
+        bg(async move { private::note_cost(cost).await });
+    }
     /// Balance, and what the plan unlocks (the model picker lists the rest last).
     fn refresh_balance(mut self) {
         if !api::has_session() { return }
@@ -225,7 +238,7 @@ impl App {
             code::load(self).await;
             api::refresh_mirrors().await;
             if let Ok(v) = api::get("/get_user_balance").await {
-                // Plus what this phone holds for private chats: still the customer's money.
+                // Plus what this phone's wallet holds: still the customer's money.
                 let held = private::spending().await["prepaid_millicents"].as_i64().unwrap_or(0) as f64 / 100_000.0;
                 self.balance.set(v["balance"].as_f64().map(|b| b + held))
             }
@@ -861,16 +874,13 @@ fn Signup() -> Element {
 
 // ---- account ----
 
-/// "Created 2026-11-19 · 3 requests, $0.12 · $5.00 to private sessions" for a key from `/web/api_keys`.
-fn key_facts(k: &Value) -> String {
+/// "Created 2026-11-19 · $5.12 used" for a key from `/web/api_keys`.
+/// `held`: what this phone's wallet took with the key and still holds.
+fn key_facts(k: &Value, held: f64) -> String {
     let mut facts = vec![format!("Created {}", k["created_at"].as_str().unwrap_or_default().get(..10).unwrap_or_default())];
-    let requests = k["requests"].as_i64().unwrap_or(0);
-    if requests > 0 {
-        facts.push(format!("{requests} request{}, {}", if requests == 1 { "" } else { "s" }, usd(k["spent_usd"].as_f64().unwrap_or(0.0))));
-    }
-    let private = k["private_usd"].as_f64().unwrap_or(0.0);
-    if private > 0.0 {
-        facts.push(format!("{} to private sessions", usd(private)));
+    let used = k["spent_usd"].as_f64().unwrap_or(0.0) + k["private_usd"].as_f64().unwrap_or(0.0) - held;
+    if used > 0.0 {
+        facts.push(format!("{} used", usd(used)));
     }
     facts.join(" · ")
 }
@@ -886,9 +896,12 @@ fn NamedKeys() -> Element {
     let mut revoking = use_signal(|| None::<String>);
     let mut busy = use_signal(|| false);
     let mut default_key = use_signal(|| None::<Value>);
+    let mut held = use_signal(|| 0.0);
     let load = move || bg(async move {
         if let Ok(v) = api::get("/web/api_keys").await {
             let all = v["api_keys"].as_array().cloned().unwrap_or_default();
+            // This phone's wallet takes its money with the Default key; what it holds isn't used yet.
+            held.set(held_in(&private::spending().await));
             default_key.set(all.iter().find(|k| k["kind"] == "default").cloned());
             keys.set(all.into_iter().filter(|k| k["kind"] != "default").collect());
         }
@@ -923,11 +936,11 @@ fn NamedKeys() -> Element {
         k["id"].as_str().unwrap_or_default().to_string(),
         k["name"].as_str().unwrap_or_default().to_string(),
         k["masked_key"].as_str().unwrap_or_default().to_string(),
-        key_facts(k),
+        key_facts(k, 0.0),
     )).collect();
     rsx! {
         if let Some(d) = default_key.read().as_ref() {
-            p { class: "muted", id: "default-key-facts", style: "font-size: 12px; margin: 4px 0 8px", "Default key: {key_facts(d)}" }
+            p { class: "muted", id: "default-key-facts", style: "font-size: 12px; margin: 4px 0 8px", "Default key: {key_facts(d, *held.read())}" }
         }
         for (id, key_name, masked, facts) in list {
             div { class: "api-key", key: "{id}",
@@ -976,7 +989,7 @@ fn Account() -> Element {
     let mut tiers = use_signal(|| Value::Null);
     let mut referral = use_signal(|| Value::Null);
     let mut tx_rev = use_signal(|| 0u32);
-    // What this phone's private chats cost (the server can't list them).
+    // What this phone's wallet holds: counted as used by the server, not used yet.
     let mut mine = use_signal(|| Value::Null);
     let mut refill = use_signal(|| Value::Null);
     let mut key = use_signal(|| None::<String>);
@@ -1325,25 +1338,20 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
         let (v, off, per, poff, _, mine) = (view(), offset(), period(), p_offset(), rev(), mine());
         async move {
             let q = |s: &str| s.replace('+', "%2B");
-            // One row before the page too (when there is one): it bounds which of
-            // this device's private chats belong on this page.
-            let limit = |page: i64, o: i64| (page + (o > 0) as i64, (o - 1).max(0));
-            let spent = private_spent(&mine);
+            let held = held_in(&mine);
             if per.is_some() || v == "all" {
                 let o = if per.is_some() { poff } else { off };
-                let (l, st) = limit(PAGE, o);
-                let mut url = format!("/transactions?limit={l}&offset={st}");
+                let mut url = format!("/transactions?all=true&limit={PAGE}&offset={o}");
                 if let Some(p) = &per {
                     url += &format!("&from={}&to={}", q(p["from"].as_str().unwrap_or("")), q(p["to"].as_str().unwrap_or("")));
                 }
                 let mut d = api::get(&url).await?;
-                merge_private_charges(&mut d, per.as_ref(), o, &spent);
+                if o == 0 { cut_charges(&mut d, per.as_ref().map_or(held, |p| p["cut"].as_f64().unwrap_or(0.0))) }
                 Ok::<Value, String>(d)
             } else {
                 let tz = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into());
-                let (l, st) = limit(PERIODS, off);
-                let mut d = api::get(&format!("/transactions/summary?period={v}&tz={}&limit={l}&offset={st}", q(&tz))).await?;
-                merge_private_periods(&mut d, v, off, &spent);
+                let mut d = api::get(&format!("/transactions/summary?all=true&period={v}&tz={}&limit={PERIODS}&offset={off}", q(&tz))).await?;
+                if off == 0 { cut_periods(&mut d, held) }
                 Ok(d)
             }
         }
@@ -1429,7 +1437,6 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
                     let rows = d["transactions"].as_array().cloned().unwrap_or_default();
                     let total = d["total"].as_i64().unwrap_or(0);
                     let server_rows = d["server_rows"].as_i64().unwrap_or(rows.len() as i64);
-                    let has_private = server_rows < rows.len() as i64;
                     let off = if period().is_some() { p_offset() } else { offset() };
                     let mut page = move |o: i64| if period().is_some() { p_offset.set(o) } else { offset.set(o) };
                     rsx! {
@@ -1457,8 +1464,7 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
                         }
                         div { class: "pager",
                             span { class: "muted grow",
-                                if has_private { {plural(rows.len() as i64, "charge")} }
-                                else if total > 0 { "{off + 1}–{off + rows.len() as i64} of {total}" }
+                                if total > 0 { "{off + 1}–{off + rows.len() as i64} of {total}" }
                             }
                             if period().is_some() { button { onclick: move |_| period.set(None), "Back" } }
                             button { disabled: off == 0, onclick: move |_| page((off - PAGE).max(0)), "Newer" }
@@ -1471,93 +1477,48 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
     }
 }
 
-// ---- private chats in the history ----
-// The server can't list them (they're paid from money this phone holds for them,
-// which it can't tie to the account); this phone keeps what each one cost.
+// ---- money the wallet here still holds ----
+// The server counts money moved into the wallet as used (all=true); what this phone still holds
+// isn't yet, so it comes off the newest usage.
 
-fn private_spent(mine: &Value) -> Vec<(i64, f64)> {
-    mine["spent"].as_array().map(|a| a.iter().map(|e| (e["at"].as_i64().unwrap_or(0), e["millicents"].as_i64().unwrap_or(0) as f64 / 100_000.0)).collect()).unwrap_or_default()
-}
+/// Dollars this phone's wallet holds.
+fn held_in(mine: &Value) -> f64 { mine["prepaid_millicents"].as_i64().unwrap_or(0) as f64 / 100_000.0 }
 
 fn num(v: &Value) -> f64 { v.as_str().and_then(|s| s.parse().ok()).or(v.as_f64()).unwrap_or(0.0) }
 
-/// What a period cost: the account's charges plus this device's private chats.
-fn spent_in(p: &Value) -> f64 { num(&p["spent"]) + p["private_usd"].as_f64().unwrap_or(0.0) }
+/// What a period cost, without what isn't used yet.
+fn spent_in(p: &Value) -> f64 { (num(&p["spent"]) - p["cut"].as_f64().unwrap_or(0.0)).max(0.0) }
 
 fn period_detail(p: &Value) -> Vec<String> {
     let plural = |k: i64, w: &str| format!("{k} {w}{}", if k == 1 { "" } else { "s" });
     let mut d = vec![];
-    let chats = p["private_chats"].as_i64().unwrap_or(0);
-    if chats > 0 { d.push(plural(chats, "private chat")) }
     let reqs = p["requests"].as_i64().unwrap_or(0);
-    if reqs > 0 { d.push(plural(reqs, "request")) }
+    // Wallet money pays for requests nobody can count.
+    if reqs > 0 && num(&p["wallet"]) == 0.0 { d.push(plural(reqs, "request")) }
     if num(&p["plan"]) != 0.0 { d.push(format!("plan {}", usd(num(&p["plan"])))) }
     d
 }
 
-/// The local period (day, week from Monday, month) holding Unix time `at`: (start date, from, to).
-fn local_period(view: &str, at: i64) -> Option<(String, String, String)> {
-    use chrono::{Datelike, Duration, Months, TimeZone};
-    let day = chrono::Local.timestamp_opt(at, 0).single()?.date_naive();
-    let start = match view {
-        "week" => day - Duration::days(day.weekday().num_days_from_monday() as i64),
-        "month" => day.with_day(1)?,
-        _ => day,
-    };
-    let end = match view { "week" => start + Duration::days(7), "month" => start.checked_add_months(Months::new(1))?, _ => start + Duration::days(1) };
-    let at_midnight = |d: chrono::NaiveDate| chrono::Local.from_local_datetime(&d.and_hms_opt(0, 0, 0)?).earliest().map(|t| t.to_rfc3339());
-    Some((start.format("%Y-%m-%d").to_string(), at_midnight(start)?, at_midnight(end)?))
+/// Takes up to `left` dollars off the newest periods' wallet money.
+fn cut_periods(d: &mut Value, mut left: f64) {
+    for p in d["periods"].as_array_mut().into_iter().flatten() {
+        let cut = left.min(num(&p["wallet"]));
+        if cut > 0.0 { p["cut"] = json!(cut); left -= cut }
+    }
 }
 
-/// Adds this device's private chats to a page of `/transactions/summary` (fetched with one extra
-/// row before the page when `off > 0`).
-fn merge_private_periods(d: &mut Value, view: &str, off: i64, spent: &[(i64, f64)]) {
-    let has_more = d["has_more"].as_bool().unwrap_or(false);
-    let mut periods = d["periods"].as_array().cloned().unwrap_or_default();
-    let upper = if off > 0 { Some(if periods.is_empty() { String::new() } else { periods.remove(0)["date"].as_str().unwrap_or("").to_string() }) } else { None };
-    let lower = if has_more { periods.last().and_then(|p| p["date"].as_str()).map(str::to_string) } else { None };
-    let mut mine: std::collections::BTreeMap<String, (String, String, f64, i64)> = Default::default();
-    for &(at, usd) in spent {
-        if let Some((date, from, to)) = local_period(view, at) {
-            let e = mine.entry(date).or_insert((from, to, 0.0, 0));
-            e.2 += usd;
-            e.3 += 1;
-        }
-    }
-    for (date, (from, to, usd, chats)) in mine {
-        if upper.as_ref().is_some_and(|u| date >= *u) || lower.as_ref().is_some_and(|l| date < *l) { continue }
-        let i = match periods.iter().position(|p| p["date"] == date.as_str()) {
-            Some(i) => i,
-            None => {
-                periods.push(json!({"date": date, "from": from, "to": to, "spent": "0", "added": "0", "requests": 0, "plan": "0", "wallet": "0"}));
-                periods.len() - 1
-            }
-        };
-        periods[i]["private_usd"] = json!(usd);
-        periods[i]["private_chats"] = json!(chats);
-    }
-    periods.sort_by(|a, b| b["date"].as_str().cmp(&a["date"].as_str()));
-    d["periods"] = Value::Array(periods);
-}
-
-/// Adds this device's private chats to a page of `/transactions` (fetched with one extra row
-/// before the page when `off > 0`), as "Private chat" charges.
-fn merge_private_charges(d: &mut Value, period: Option<&Value>, off: i64, spent: &[(i64, f64)]) {
-    let total = d["total"].as_i64().unwrap_or(0);
-    let mut rows = d["transactions"].as_array().cloned().unwrap_or_default();
-    let ts = |v: &Value| chrono::DateTime::parse_from_rfc3339(v.as_str().unwrap_or("")).map(|t| t.timestamp()).ok();
-    let upper = if off > 0 { if rows.is_empty() { i64::MIN } else { ts(&rows.remove(0)["created_at"]).unwrap_or(i64::MAX) } } else { i64::MAX };
-    let lower = if off + (rows.len() as i64) < total { rows.last().and_then(|r| ts(&r["created_at"])).unwrap_or(i64::MIN) } else { i64::MIN };
-    let from = period.and_then(|p| ts(&p["from"])).unwrap_or(i64::MIN).max(lower);
-    let to = period.and_then(|p| ts(&p["to"])).unwrap_or(i64::MAX).min(upper);
-    let server_rows = rows.len();
-    for &(at, usd) in spent.iter().filter(|(at, _)| *at >= from && *at < to) {
-        let when = chrono::DateTime::from_timestamp(at, 0).map(|t| t.to_rfc3339()).unwrap_or_default();
-        rows.push(json!({"created_at": when, "label": "Private chat", "amount": format!("{}", -usd)}));
-    }
-    rows.sort_by_key(|r| std::cmp::Reverse(ts(&r["created_at"]).unwrap_or(0)));
-    d["transactions"] = Value::Array(rows);
-    d["server_rows"] = json!(server_rows);
+/// The same for a list of charges; one that isn't used at all yet isn't listed.
+fn cut_charges(d: &mut Value, mut left: f64) {
+    let Some(rows) = d["transactions"].as_array_mut() else { return };
+    let total = rows.len();
+    rows.retain_mut(|t| {
+        if !matches!(t["transaction_type"].as_str(), Some("voucher_withdrawal" | "free_to_wallet")) { return true }
+        let used = -num(&t["amount"]);
+        let cut = left.min(used);
+        if cut > 0.0 { left -= cut; t["amount"] = json!((cut - used).to_string()) }
+        used - cut > 0.000005
+    });
+    d["server_rows"] = json!(total);
 }
 
 fn capitalize(s: &str) -> String {

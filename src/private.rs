@@ -265,8 +265,18 @@ pub async fn tick() {
     }
 }
 
-/// What this device's private chats cost, for the account's history, as JSON:
-/// `{spent: [{at, millicents}], prepaid_millicents}`. `Null` when private sessions are off.
+/// A reply in the current chat said it cost this much (dollars): what its session still holds,
+/// as far as this phone knows.
+pub async fn note_cost(usd: f64) {
+    let chat = CHAT.lock().unwrap().clone();
+    if let Some(m) = state().lock().await.as_mut() {
+        m.note_cost(&chat, (usd * 100_000.0).round() as i64);
+        save(m);
+    }
+}
+
+/// What this phone's wallet holds and has spent, from what the phone keeps (no request names a
+/// session): `{spent: [{at, millicents}], prepaid_millicents}`. `Null` when private sessions are off.
 /// Read-only: uses the running manager if there is one, else reads the saved state without
 /// starting anything (no restore, no top-up from the account).
 pub async fn spending() -> Value {
