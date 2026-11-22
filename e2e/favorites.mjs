@@ -4,11 +4,11 @@
 //   OBSCURIFY_API=http://127.0.0.1:8093 DEVTOOLS=1 ./build.sh x86_64 && adb install -r <apk>
 //   node e2e/flaky-proxy.mjs &  adb reverse tcp:8093 tcp:8093
 //   ACCOUNT=<funded number> node e2e/favorites.mjs
-import { adb, launch, ok, shot, sleep } from './lib.mjs';
+import { adb, launch, ok, PKG, shot, sleep } from './lib.mjs';
 
-// NO_PROXY=1: against a server without flaky-proxy; the slow /code_mode check is skipped.
+// SKIP_FLAKY=1: against a server without flaky-proxy; the slow /code_mode check is skipped.
 const PROXY = 'http://127.0.0.1:8093';
-const set = (q) => process.env.NO_PROXY ? null : fetch(`${PROXY}/__set?${q}`);
+const set = (q) => process.env.SKIP_FLAKY ? null : fetch(`${PROXY}/__set?${q}`);
 await set('');
 
 let { page } = await launch(true);
@@ -94,6 +94,63 @@ await sleep(500);
 rows = await names();
 ok(rows.join('|') === [a, d, c, b].join('|'), 'order kept after a restart: ' + rows.join(', '));
 ok(await page.locator('.toggles:not(.providers) .chip.on', { hasText: /^Favorites$/ }).count() === 1, 'the picker opens on Favorites');
+await page.locator('.bar .icon', { hasText: '←' }).click();
+
+// Needs adb root (reads and seeds the app's settings).
+const SETTINGS = `/data/data/${PKG}/files/settings.json`;
+const saved = () => JSON.parse(adb('shell', 'cat', SETTINGS)).favorites;
+const ids = saved();
+
+// A favorite no longer offered stays in its place, says so, can't be picked, can be moved and unstarred.
+const seed = async (favorites) => {
+  adb('shell', 'am', 'force-stop', PKG);
+  const v = JSON.stringify({ ...JSON.parse(adb('shell', 'cat', SETTINGS)), favorites });
+  adb('shell', `echo ${Buffer.from(v).toString('base64')} | base64 -d > ${SETTINGS}`);
+  ({ page } = await launch(false));
+  await page.locator('.title.model').click();
+  await page.locator('.drawer .pick').first().waitFor();
+  await sleep(1500);
+};
+await seed(['gone/model', ...ids]);
+rows = await names();
+ok(rows[0] === 'gone/model' && rows.length === 5, 'a favorite no longer offered is listed in its place: ' + rows.join(', '));
+ok((await page.locator('.drawer .pick').first().innerText()).includes('No longer offered'), 'and says so');
+ok(await badged() === 1, 'new chats skip it');
+await page.locator('.drawer .pick .grow').first().click();
+await sleep(300);
+ok(await page.locator('.drawer .title', { hasText: 'Model' }).count() === 1, 'and it is not picked');
+await drag(0, 2);
+ok(saved().indexOf('gone/model') === 2, 'it can be dragged: ' + saved().join(', '));
+// The row is aria-disabled (it can't be picked), which Playwright takes to cover its star.
+await page.locator('.drawer .pick').nth(2).locator('.star').click({ force: true });
+await sleep(400);
+ok(saved().join() === ids.join(), 'and unstarred');
+const prov = (await names())[0].split(':')[0];
+await page.locator('.toggles.providers .chip', { hasText: prov }).first().click();
+await sleep(300);
+ok((await names()).every((n) => n.startsWith(prov)), 'a provider narrows the favorites: ' + (await names()).join(', '));
+
+// Twenty favorites: held at the bottom edge, the list scrolls and the row lands last.
+const all = JSON.parse(await page.evaluate(async (u) => (await (await fetch(u)).text()), process.env.API_MODELS || 'http://127.0.0.1:8242/v1/models').catch(async () => await (await fetch(process.env.API_MODELS || 'http://127.0.0.1:8242/v1/models')).text())).data.filter((m) => !m.decisions);
+const many = all.slice(0, 20).map((m) => m.id);
+await seed(many);
+ok((await names()).length === 20, 'twenty listed');
+{
+  const list = await page.locator('.drawer .scroll').boundingBox();
+  const h = await page.locator('.drawer .handle').first().boundingBox();
+  const x = String(Math.round((h.x + h.width / 2) * dpr)), at = (y) => String(Math.round(y * dpr) + bar);
+  const ev = (kind, y) => adb('shell', 'input', 'touchscreen', 'motionevent', kind, x, at(y));
+  ev('DOWN', h.y + h.height / 2);
+  ev('MOVE', h.y + 120);
+  ev('MOVE', list.y + list.height - 25);
+  await sleep(6000);
+  shot('favorites-scroll');
+  ev('UP', list.y + list.height - 25);
+  await sleep(600);
+  const after = saved();
+  ok(after.join() === [...many.slice(1), many[0]].join(), 'a long list scrolls while dragging: lands at ' + (after.indexOf(many[0]) + 1) + ' of 20');
+}
+await seed(ids);
 await page.locator('.bar .icon', { hasText: '←' }).click();
 
 // 3. New chats start on the first favorite (a), even after another model was picked.

@@ -1678,8 +1678,8 @@ fn Report(i: usize, done: EventHandler) -> Element {
 const CATEGORIES: [&str; 17] = ["Favorites", "All", "Free", "Cheap", "Reasoning", "Uncensored", "Roleplay", "Frontier",
     "Zero retention", "TEE", "Writing", "Security", "Legal", "Translation", "Languages", "Code tools", "Documents"];
 
-/// Puts the listed favorites in a new order. Favorites the picker doesn't show (Encrypted on, the
-/// Play build) keep their places.
+/// Puts the listed favorites in a new order. Favorites the picker doesn't show (Encrypted on, a
+/// provider picked, the Play build) keep their places.
 pub fn reorder_favorites(mut app: App, listed: Vec<String>) {
     let current = app.settings.peek().favorites.clone();
     let mut order = listed.iter().filter(|id| current.contains(id));
@@ -1775,11 +1775,11 @@ fn Models() -> Element {
     // Favorites are one list in their own order, dragged by the handle: the ones the plan doesn't
     // include and the ones no longer offered stay in their places, so the order shown is the order
     // new chats follow. (The Play build never names a model it doesn't offer.)
-    let ordering = c == "Favorites" && query.is_empty() && chosen.is_none();
+    let ordering = c == "Favorites" && query.is_empty();
     let listed: Vec<(Model, Option<&'static str>, bool)> = if !ordering { vec![] } else {
         favs.iter().filter_map(|f| match models.iter().find(|m| &m.id == f) {
-            Some(m) => (!encrypted || m.e2ee).then(|| (m.clone(), needs(f), false)),
-            None => (!PLAY && !encrypted && !models.is_empty())
+            Some(m) => ((!encrypted || m.e2ee) && chosen.as_ref().is_none_or(|p| &provider(m) == p)).then(|| (m.clone(), needs(f), false)),
+            None => (!PLAY && !encrypted && chosen.is_none() && !models.is_empty())
                 .then(|| (Model { id: f.clone(), name: f.clone(), ..Default::default() }, None, true)),
         }).collect()
     };
