@@ -66,6 +66,9 @@ pub struct Order {
     /// ETH, USDC and USDT: every network and token the address takes
     #[serde(default)]
     pub accepts: Vec<Accepted>,
+    /// Pays for a plan ("casual", "pro"), which switches on once it's paid in full.
+    #[serde(default)]
+    pub plan: Option<String>,
 }
 
 /// An EVM network an address takes payments on.
@@ -119,9 +122,20 @@ pub struct TopUp {
     pub network: Option<String>,
     #[serde(default)]
     pub accepts: Vec<Accepted>,
+    /// Pays for a plan: "pending", "applied" (it's on) or "cancelled" (the money stayed on the balance).
+    #[serde(default)]
+    pub plan: Option<String>,
+    #[serde(default)]
+    pub plan_state: Option<String>,
 }
 
 impl TopUp {
+    /// The plan this payment still switches on.
+    pub fn pending_plan(&self) -> Option<&str> {
+        self.plan.as_deref().filter(|_| self.plan_state.as_deref() == Some("pending"))
+    }
+    pub fn applied(&self) -> bool { self.plan_state.as_deref() == Some("applied") }
+
     pub fn crypto(&self) -> bool { self.payment_method != "card" }
     /// As an order, to show its address again.
     pub fn order(&self) -> Order {
@@ -134,6 +148,7 @@ impl TopUp {
             to_account: true,
             network: self.network.clone(),
             accepts: self.accepts.clone(),
+            plan: self.pending_plan().map(String::from),
             ..Default::default()
         }
     }
@@ -192,6 +207,20 @@ pub async fn create_top_up(method: &str, amount_cents: Option<i64>, network: Opt
     parse_order(&v, method, amount_cents, true)
 }
 
+/// A payment for a plan: the server works out the amount and switches the plan on once it's paid.
+pub async fn create_plan_payment(method: &str, network: Option<&str>, plan: &str, billing: &str) -> Result<Order, String> {
+    let mut body = order_body(method, None, network);
+    body["plan"] = json!(plan);
+    body["billing"] = json!(billing);
+    let v = api::post("/top_ups", body).await?;
+    // A server that doesn't know plan payments would take the money as credit.
+    if v["plan"].as_str() != Some(plan) {
+        return Err("This server can't take a plan payment. Add funds instead.".into());
+    }
+    let cents = v["amount_cents"].as_i64().ok_or("No amount came back")?;
+    parse_order(&v, method, Some(cents), true)
+}
+
 pub async fn top_ups() -> Result<Vec<TopUp>, String> {
     let v = api::get("/top_ups").await?;
     serde_json::from_value(v["top_ups"].clone()).map_err(|e| e.to_string())
@@ -228,6 +257,7 @@ fn parse_order(v: &Value, method: &str, amount_cents: Option<i64>, to_account: b
         to_account,
         network: v["network"].as_str().map(String::from),
         accepts: serde_json::from_value(v["accepts"].clone()).unwrap_or_default(),
+        plan: v["plan"].as_str().map(String::from),
         ..Default::default()
     })
 }

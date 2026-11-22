@@ -185,6 +185,8 @@ struct App {
     /// The account's recent top-ups (`GET /top_ups`), and what each had credited when last seen.
     top_ups: Signal<Vec<wallet::TopUp>>,
     top_up_seen: Signal<Option<std::collections::BTreeMap<String, i64>>>,
+    /// The plan payments already seen to have switched their plan on.
+    plans_seen: Signal<Option<Vec<String>>>,
     balance: Signal<Option<f64>>,
     toast: Signal<Option<String>>,
     visible: Signal<bool>,
@@ -259,6 +261,7 @@ impl App {
         chat::PLAN_DEFAULT_DONE.store(false, std::sync::atomic::Ordering::SeqCst);
         self.top_ups.set(vec![]);
         self.top_up_seen.set(None);
+        self.plans_seen.set(None);
         self.screen.set(Screen::Login);
     }
 
@@ -276,11 +279,23 @@ impl App {
                 let added: i64 = seen.as_ref().map_or(0, |s| list.iter().map(|t| (t.credited_cents - s.get(&t.order_id).copied().unwrap_or(0)).max(0)).sum());
                 let changed = seen.as_ref() != Some(&now);
                 self.top_up_seen.set(Some(now));
+                // A plan paid for just switched on.
+                let applied: Vec<String> = list.iter().filter(|t| t.applied()).map(|t| t.order_id.clone()).collect();
+                let on = self.plans_seen.peek().as_ref().and_then(|seen| list.iter().find(|t| t.applied() && !seen.contains(&t.order_id)).cloned());
+                let plan_on = on.is_some();
+                self.plans_seen.set(Some(applied));
+                // Its money isn't called credit while its plan is about to switch on.
+                let for_plan = list.iter().any(|t| t.pending_plan().is_some() && t.amount_cents.is_some_and(|a| t.credited_cents + 2 >= a));
                 self.top_ups.set(list);
-                if added > 0 {
+                if let Some(t) = on {
+                    self.say(format!("{} is on", tier_name(t.plan.as_deref().unwrap_or(""))));
+                    if *self.screen.peek() == Screen::Funds && *BUYING.peek() {
+                        self.screen.set(Screen::Account)
+                    }
+                } else if added > 0 && !for_plan {
                     self.say(format!("{} added to your balance", cents(added)))
                 }
-                if changed {
+                if changed || plan_on {
                     self.refresh_balance()
                 }
             }
@@ -380,6 +395,7 @@ fn Root() -> Element {
             docs: Signal::new(vec![]),
             wallet: Signal::new(Wallet::load()),
             top_ups: Signal::new(vec![]),
+            plans_seen: Signal::new(None),
             top_up_seen: Signal::new(None),
             balance: Signal::new(None),
             toast: Signal::new(None),
@@ -558,6 +574,21 @@ pub const ENTER_CODE_LATER: &str = "enter-code-later.json";
 pub fn offer_code() { *OFFER_CODE.write() = !store::load::<bool>(CODE_OFFER_SEEN) }
 /// "Generate New Account Code" was chosen: Account opens with a new code to save and convert.
 pub static START_CONVERT: GlobalSignal<bool> = Signal::global(|| false);
+
+/// A plan the balance doesn't cover: Add funds opens paying for it.
+#[derive(Clone, PartialEq)]
+struct PlanBuy {
+    tier: String,
+    name: String,
+    month: f64,
+    /// Twelve months prepaid; 0 when the plan isn't sold by the year.
+    year: f64,
+    /// Already on a paid plan: what it paid this month comes off the price.
+    paid: bool,
+}
+static BUY_PLAN: GlobalSignal<Option<PlanBuy>> = Signal::global(|| None);
+/// Add funds is showing a plan's payment (leaves for Account once the plan is on).
+static BUYING: GlobalSignal<bool> = Signal::global(|| false);
 
 /// "Enable encrypted sync?" for a phone signed in with a 16-digit number. The whole switch happens
 /// in this sheet: Generate New Account Code makes the code here (never sent), shows it to write down,
@@ -979,16 +1010,41 @@ fn Account() -> Element {
     };
     use_hook(load);
 
+    // The plan list's entry: the version shown (the server refuses, charging nothing, if that's no
+    // longer the price) and what it costs.
+    let listed = move |t: &str| tiers.peek()["tiers"].as_array().into_iter().flatten().find(|x| x["tier"].as_str() == Some(t)).cloned().unwrap_or(Value::Null);
+    // Too little on the balance: straight to paying for the plan.
+    let buy_plan = move |t: &str| {
+        let x = listed(t);
+        *BUY_PLAN.write() = Some(PlanBuy {
+            tier: t.to_string(),
+            name: x["name"].as_str().unwrap_or(tier_name(t)).to_string(),
+            month: x["monthly_fee"].as_f64().unwrap_or(0.0),
+            year: x["annual_fee"].as_f64().unwrap_or(0.0),
+            paid: !matches!(tier.peek()["tier"].as_str(), None | Some("pay_as_you_go")),
+        });
+        let mut s = app.screen;
+        s.set(Screen::Funds)
+    };
     let change_tier = move |t: String| {
-        // The plan shown: the server refuses, charging nothing, if that's no longer the price.
-        let plan_id = tiers.peek()["tiers"].as_array().into_iter().flatten()
-            .find(|x| x["tier"].as_str() == Some(t.as_str()))
-            .map(|x| x["plan_id"].clone())
-            .unwrap_or(Value::Null);
+        let plan_id = listed(&t)["plan_id"].clone();
         bg(async move {
-            match api::post("/change_tier", json!({"tier": t, "payment_method": "balance", "plan_id": plan_id})).await {
+            match api::call("POST", "/change_tier", Some(json!({"tier": t, "payment_method": "balance", "plan_id": plan_id}))).await {
                 Ok(v) => { app.say(v["message"].as_str().unwrap_or("Plan changed").to_string()); load() }
-                Err(e) => app.say(e),
+                Err(e) if api::status_of(&e).0 == 402 => buy_plan(&t),
+                Err(e) => app.say(api::msg(e)),
+            }
+        })
+    };
+    // The server works out what the change charges now, or that the balance doesn't cover it.
+    let mut charged = use_signal(|| 0.0);
+    let ask = move |t: String| {
+        let plan_id = listed(&t)["plan_id"].clone();
+        bg(async move {
+            match api::call("POST", "/change_tier", Some(json!({"tier": t, "payment_method": "balance", "plan_id": plan_id, "preview": true}))).await {
+                Ok(v) => { charged.set(v["charged"].as_f64().unwrap_or(0.0)); plan_ask.set(Some(t)) }
+                Err(e) if api::status_of(&e).0 == 402 => buy_plan(&t),
+                Err(e) => app.say(api::msg(e)),
             }
         })
     };
@@ -1037,6 +1093,7 @@ fn Account() -> Element {
                             let now_fee = tiers.read()["tiers"].as_array().into_iter().flatten().find(|y| y["tier"].as_str() == Some(current.as_str())).and_then(|y| y["monthly_fee"].as_f64()).unwrap_or(0.0);
                             let up = fee > now_fee;
                             let bal = app.balance.read().unwrap_or(0.0);
+                            let cost = *charged.read();
                             let asking = plan_ask.read().as_deref() == Some(id.as_str());
                             let name = x["name"].as_str().unwrap_or(tier_name(&id)).to_string();
                             let pay = id.clone();
@@ -1055,18 +1112,12 @@ fn Account() -> Element {
                                         div { class: "muted", "{what}" }
                                     }
                                     if on { span { class: "ok", "Current" } }
-                                    else { button { onclick: { let i = id.clone(); move |_| plan_ask.set(Some(i.clone())) }, if up { "Upgrade" } else { "Switch" } } }
+                                    else { button { onclick: { let i = id.clone(); move |_| ask(i.clone()) }, if up { "Upgrade" } else { "Switch" } } }
                                 }
-                                if asking && up && bal < fee {
-                                    p { class: "muted", "{name} costs {usd(fee)} a month and your balance is {usd(bal)}." }
+                                if asking {
+                                    p { class: "muted", if cost > 0.0 { "Pay {usd(cost)} from your balance ({usd(bal)}) for {name}? It renews monthly while your balance covers it." } else { "Switch to {name}? Your current plan ends now." } }
                                     div { class: "row", style: "border: 0",
-                                        button { class: "go", onclick: move |_| { plan_ask.set(None); let mut s = app.screen; s.set(Screen::Funds) }, "Add funds" }
-                                        button { class: "bare", onclick: move |_| plan_ask.set(None), "Cancel" }
-                                    }
-                                } else if asking {
-                                    p { class: "muted", if up { "Pay {usd(fee)} from your balance ({usd(bal)}) for {name}? It renews monthly while your balance covers it." } else { "Switch to {name}? Your current plan ends now." } }
-                                    div { class: "row", style: "border: 0",
-                                        button { class: "go", onclick: move |_| { plan_ask.set(None); change_tier(pay.clone()) }, if up { "Pay {usd(fee)}" } else { "Switch" } }
+                                        button { class: "go", onclick: move |_| { plan_ask.set(None); change_tier(pay.clone()) }, if cost > 0.0 { "Pay {usd(cost)}" } else { "Switch" } }
                                         button { class: "bare", onclick: move |_| plan_ask.set(None), "Cancel" }
                                     }
                                 }
@@ -1547,10 +1598,34 @@ fn method_name(m: &str) -> String {
     METHODS.iter().find(|x| x.0 == m).map(|x| x.1).unwrap_or("").to_string()
 }
 
+const NO_CARD_FORM: &str = "The card form didn't load. Check your connection.";
+
+/// Stripe's card form, in `#stripe`.
+async fn card_form(pk: &str, cs: &str) -> bool {
+    document::eval(&format!(r#"
+        if (!window.Stripe) await new Promise((ok, no) => {{ const s = document.createElement('script'); s.src = 'https://js.stripe.com/v3/'; s.onload = ok; s.onerror = no; document.head.appendChild(s); }});
+        // The place for it is drawn by now when Stripe had to load, not when it was already there.
+        for (let i = 0; i < 100 && !document.getElementById('stripe'); i++) await new Promise(r => setTimeout(r, 50));
+        window.obsStripe = Stripe({pk:?});
+        window.obsElements = obsStripe.elements({{ clientSecret: {cs:?}, appearance: {{ theme: 'night', variables: {{ colorPrimary: '#00d97e', colorBackground: '#000000', colorText: '#e6e6e6', colorDanger: '#ff5454', borderRadius: '8px' }} }} }});
+        obsElements.create('payment', {{ wallets: {{ googlePay: 'never', applePay: 'never' }} }}).mount('#stripe');
+        return 1;"#)).join::<u8>().await.is_ok()
+}
+
 #[component]
 fn Funds() -> Element {
     let app = use_context::<App>();
-    let mut method = use_signal(|| "card");
+    // Paying for a plan (opened by Upgrade) or, without one, adding credit.
+    let plan = use_hook(|| BUY_PLAN.write().take());
+    let buying = plan.is_some();
+    use_hook(move || *BUYING.write() = buying);
+    use_drop(|| *BUYING.write() = false);
+    let mut method = use_signal(move || if buying { "XMR" } else { "card" });
+    let mut billing = use_signal(|| "monthly");
+    // Counts plan payments asked for: a slow reply for an earlier choice isn't shown.
+    let mut seq = use_signal(|| 0u32);
+    // Plan payments opened here: going back to a choice shows its payment again.
+    let mut opened = use_signal(std::collections::HashMap::<String, wallet::Order>::new);
     let mut token = use_signal(|| "ETH");
     let mut network = use_signal(|| "ethereum");
     let mut amount = use_signal(|| "20".to_string());
@@ -1570,8 +1645,10 @@ fn Funds() -> Element {
         let net = wallet::is_evm(m).then(|| *network.peek());
         let dollars: Option<f64> = amount.peek().trim().trim_start_matches('$').parse().ok();
         let c = dollars.map(|d| (d * 100.0).round() as i64);
-        if (m == "card" || m == "Lightning") && !matches!(c, Some(50..=1_000_000)) {
-            error.set(Some("Enter an amount from $0.50 to $10,000.".into()));
+        // Card fees eat a tenth of small card payments; crypto costs nothing to take.
+        let least = if m == "card" { 500 } else { 100 };
+        if c.is_some_and(|c| c != 0 && !(least..=1_000_000).contains(&c)) || (c.unwrap_or(0) == 0 && (m == "card" || m == "Lightning")) {
+            error.set(Some(if m == "card" { "Enter an amount from $5 to $10,000. Crypto takes $1 and up.".into() } else { "Enter an amount from $1 to $10,000.".into() }));
             return;
         }
         let is_blind = *blind.peek();
@@ -1599,14 +1676,7 @@ fn Funds() -> Element {
                     card_ready.set(false);
                     open.set(Some(o.clone()));
                     if let (Some(pk), Some(cs)) = (o.publishable_key, o.client_secret) {
-                        let r = document::eval(&format!(r#"
-                            if (!window.Stripe) await new Promise((ok, no) => {{ const s = document.createElement('script'); s.src = 'https://js.stripe.com/v3/'; s.onload = ok; s.onerror = no; document.head.appendChild(s); }});
-                            await new Promise(r => setTimeout(r, 50));
-                            window.obsStripe = Stripe({pk:?});
-                            window.obsElements = obsStripe.elements({{ clientSecret: {cs:?}, appearance: {{ theme: 'night', variables: {{ colorPrimary: '#00d97e', colorBackground: '#000000', colorText: '#e6e6e6', colorDanger: '#ff5454', borderRadius: '8px' }} }} }});
-                            obsElements.create('payment', {{ wallets: {{ googlePay: 'never', applePay: 'never' }} }}).mount('#stripe');
-                            return 1;"#)).join::<u8>().await;
-                        match r { Ok(_) => card_ready.set(true), Err(_) => error.set(Some("The card form didn't load. Check your connection.".into())) }
+                        if card_form(&pk, &cs).await { card_ready.set(true) } else { error.set(Some(NO_CARD_FORM.into())) }
                     }
                 }
                 Err(e) => error.set(Some(e)),
@@ -1615,15 +1685,67 @@ fn Funds() -> Element {
         });
     };
 
+    // Paying for a plan: starts at once, and again with each choice of method, coin, network or term.
+    let start = use_callback({
+        let plan = plan.clone();
+        move |_: ()| {
+            let Some(p) = plan.clone() else { return };
+            let m = if *method.peek() == "EVM" { *token.peek() } else { *method.peek() };
+            let net = wallet::is_evm(m).then(|| *network.peek());
+            let term = *billing.peek();
+            let choice = format!("{m} {} {term}", net.unwrap_or(""));
+            let mine = *seq.peek() + 1;
+            seq.set(mine);
+            open.set(None);
+            card_ready.set(false);
+            error.set(None);
+            busy.set(true);
+            bg(async move {
+                // Lets the last payment leave the screen, so a new card form gets a new place.
+                sleep(60).await;
+                let fresh = opened.peek().get(&choice).filter(|o| store::now() - o.created < 45 * 60_000).cloned();
+                let r = match fresh {
+                    Some(o) => Ok(o),
+                    None => wallet::create_plan_payment(m, net, &p.tier, term).await,
+                };
+                if let Ok(o) = &r {
+                    opened.write().insert(choice, o.clone());
+                }
+                if *seq.peek() != mine {
+                    return;
+                }
+                busy.set(false);
+                match r {
+                    Ok(o) => {
+                        app.refresh_top_ups();
+                        open.set(Some(o.clone()));
+                        if let (Some(pk), Some(cs)) = (o.publishable_key, o.client_secret) {
+                            let ok = card_form(&pk, &cs).await;
+                            if *seq.peek() == mine {
+                                if ok { card_ready.set(true) } else { error.set(Some(NO_CARD_FORM.into())) }
+                            }
+                        }
+                    }
+                    Err(e) => error.set(Some(e)),
+                }
+            });
+        }
+    });
+    use_hook(move || if buying { start.call(()) });
+
     let confirm_card = move |_| {
         busy.set(true);
         bg(async move {
             let r = document::eval("const r = await obsStripe.confirmPayment({ elements: obsElements, confirmParams: { return_url: location.href }, redirect: 'if_required' }); return r.error ? (r.error.message || 'Payment failed') : '';").join::<String>().await;
             match r {
                 Ok(e) if e.is_empty() => {
-                    let to_account = open.peek().as_ref().is_some_and(|o| o.to_account);
+                    let paid = open.peek().clone();
                     open.set(None);
-                    if to_account {
+                    opened.write().clear();
+                    if paid.as_ref().is_some_and(|o| o.plan.is_some()) {
+                        app.say("Paid. Your plan switches on in a moment.");
+                        app.refresh_top_ups()
+                    } else if paid.is_some_and(|o| o.to_account) {
                         app.say("Paid. It goes on your balance in a moment.");
                         app.refresh_top_ups()
                     } else {
@@ -1643,15 +1765,93 @@ fn Funds() -> Element {
     let order = open.read().clone();
     let m = *method.read();
     let is_blind = *blind.read();
+    let restart = move || if buying { start.call(()) };
 
     rsx! {
         div { class: "screen", "data-back": "1",
             div { class: "bar",
                 button { class: "icon", onclick: move |_| { let mut s = app.screen; s.set(Screen::Account) }, "←" }
-                div { class: "title", "Add funds" }
+                div { class: "title", {plan.as_ref().map(|p| p.name.clone()).unwrap_or("Add funds".into())} }
                 div { style: "width: 46px" }
             }
             div { class: "scroll",
+                if order.is_none() || buying {
+                    div { class: "section stack",
+                        div { class: "seg",
+                            for (id, label) in METHODS {
+                                button { class: if m == id { "on" } else { "" }, onclick: move |_| { method.set(id); restart() }, "{label}" }
+                            }
+                        }
+                        if m == "EVM" {
+                            div { class: "toggles evm-tokens",
+                                for t in EVM_TOKENS {
+                                    button { class: if *token.read() == t { "chip on" } else { "chip" },
+                                        onclick: move |_| {
+                                            token.set(t);
+                                            // USDT isn't on Base, ETH isn't on BNB Chain or Tron:
+                                            // move to a network that has it.
+                                            let has = |k: &str| EVM_NETWORKS.iter().any(|n| n.0 == k && n.2.contains(&t));
+                                            if !has(*network.peek()) { network.set("ethereum") }
+                                            restart();
+                                        },
+                                        "{t}" }
+                                }
+                            }
+                            div { class: "toggles evm-networks",
+                                for (key, label, tokens) in EVM_NETWORKS {
+                                    if tokens.contains(&*token.read()) {
+                                        button { class: if *network.read() == key { "chip on" } else { "chip" }, onclick: move |_| { network.set(key); restart() }, "{label}" }
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(p) = plan.clone() {
+                            div { class: "toggles plan-term",
+                                for (key, label, price) in [("monthly", "1 month", p.month), ("annual", "12 months", p.year)] {
+                                    if price > 0.0 {
+                                        button { class: if *billing.read() == key { "chip on" } else { "chip" }, onclick: move |_| { billing.set(key); restart() }, "{label} · {usd(price)}" }
+                                    }
+                                }
+                            }
+                            if p.paid { p { class: "muted", "What your plan has already paid this month comes off the price." } }
+                            p { class: "muted", "{p.name} switches on as soon as the payment confirms. Anything already on your balance stays there." }
+                            if order.is_none() && *busy.read() { p { class: "muted", "Setting up the payment…" } }
+                            if order.is_none() { if let Some(e) = error.read().clone() { p { class: "err", "{e}" } } }
+                        } else {
+                            div { class: "toggles",
+                                for v in ["5", "10", "20", "50", "100"] {
+                                    button { class: if *amount.read() == v { "chip on" } else { "chip" }, onclick: move |_| amount.set(v.to_string()), "${v}" }
+                                }
+                            }
+                            input { class: "field", inputmode: "decimal", value: "{amount}", placeholder: if m == "BTC" || m == "XMR" || m == "EVM" { "Any amount (USD, optional)" } else { "Amount (USD)" },
+                                oninput: move |e| amount.set(e.value()) }
+                            label { class: "check blind-toggle",
+                                input { r#type: "checkbox", checked: is_blind, onchange: move |e| { blind.set(e.checked()); asking.set(false) } }
+                                "Blind voucher"
+                            }
+                            if is_blind {
+                                div { class: "warn", role: "alert",
+                                    p { strong { "Open the app again after paying." } }
+                                    p { "Uninstalling it before the credit is on your balance loses the money. "
+                                        a { href: "#", onclick: move |e| { e.prevent_default(); open_url("https://obscurify.ai/articles/blind_payments") }, "How it works" } }
+                                }
+                            }
+                            if *asking.read() {
+                                p { class: "confirm", "Pay with a blind voucher? Open the app again after paying." }
+                                div { class: "row", style: "border: 0; justify-content: flex-end; padding: 0",
+                                    button { class: "bare", onclick: move |_| asking.set(false), "Cancel" }
+                                    button { class: "go", disabled: *busy.read(), onclick: pay, "Yes, continue" }
+                                }
+                            } else {
+                                button { class: "go", disabled: *busy.read(), onclick: pay, if *busy.read() { "…" } else { "Continue" } }
+                            }
+                            if let Some(e) = error.read().clone() { p { class: "err", "{e}" } }
+                            if !is_blind {
+                                p { class: "muted", "It goes on your balance when the payment confirms, even if you close the app." }
+                            }
+                        }
+                    }
+                }
                 if let Some(o) = order.clone() {
                     div { class: "section",
                         if o.crypto() {
@@ -1701,7 +1901,11 @@ fn Funds() -> Element {
                                 if let Some(t) = top_ups.iter().find(|t| t.order_id == o.id && t.credited_cents > 0) {
                                     p { class: "ok", style: "margin-top: 12px", "Added {cents(t.credited_cents)} to your balance" }
                                 }
-                                p { class: "muted", style: "margin-top: 12px", "Pay within 1 hour. It goes on your balance when the payment confirms. You can close the app." }
+                                p { class: "muted", style: "margin-top: 12px",
+                                    {match &o.plan {
+                                        Some(p) => format!("Pay within 1 hour. {} switches on when the payment confirms. You can close the app.", tier_name(p)),
+                                        None => "Pay within 1 hour. It goes on your balance when the payment confirms. You can close the app.".to_string(),
+                                    }} }
                             } else {
                                 p { class: "muted", style: "margin-top: 12px", "Pay within 1 hour. Then open the app again so it can collect your blind vouchers and add them." }
                             }
@@ -1711,68 +1915,7 @@ fn Funds() -> Element {
                                 {format!("Pay {}", cents(o.amount_cents.unwrap_or(0)))} }
                         }
                         if let Some(e) = error.read().clone() { p { class: "err", "{e}" } }
-                        button { class: "bare", style: "padding-left: 0; margin-top: 8px", onclick: move |_| open.set(None), "Done" }
-                    }
-                } else {
-                    div { class: "section stack",
-                        div { class: "seg",
-                            for (id, label) in METHODS {
-                                button { class: if m == id { "on" } else { "" }, onclick: move |_| method.set(id), "{label}" }
-                            }
-                        }
-                        if m == "EVM" {
-                            div { class: "toggles evm-tokens",
-                                for t in EVM_TOKENS {
-                                    button { class: if *token.read() == t { "chip on" } else { "chip" },
-                                        onclick: move |_| {
-                                            token.set(t);
-                                            // USDT isn't on Base, ETH isn't on BNB Chain or Tron:
-                                            // move to a network that has it.
-                                            let has = |k: &str| EVM_NETWORKS.iter().any(|n| n.0 == k && n.2.contains(&t));
-                                            if !has(*network.peek()) { network.set("ethereum") }
-                                        },
-                                        "{t}" }
-                                }
-                            }
-                            div { class: "toggles evm-networks",
-                                for (key, label, tokens) in EVM_NETWORKS {
-                                    if tokens.contains(&*token.read()) {
-                                        button { class: if *network.read() == key { "chip on" } else { "chip" }, onclick: move |_| network.set(key), "{label}" }
-                                    }
-                                }
-                            }
-                        }
-                        div { class: "toggles",
-                            for v in ["5", "10", "20", "50", "100"] {
-                                button { class: if *amount.read() == v { "chip on" } else { "chip" }, onclick: move |_| amount.set(v.to_string()), "${v}" }
-                            }
-                        }
-                        input { class: "field", inputmode: "decimal", value: "{amount}", placeholder: if m == "BTC" || m == "XMR" || m == "EVM" { "Any amount (USD, optional)" } else { "Amount (USD)" },
-                            oninput: move |e| amount.set(e.value()) }
-                        label { class: "check blind-toggle",
-                            input { r#type: "checkbox", checked: is_blind, onchange: move |e| { blind.set(e.checked()); asking.set(false) } }
-                            "Blind voucher"
-                        }
-                        if is_blind {
-                            div { class: "warn", role: "alert",
-                                p { strong { "Open the app again after paying." } }
-                                p { "Uninstalling it before the credit is on your balance loses the money. "
-                                    a { href: "#", onclick: move |e| { e.prevent_default(); open_url("https://obscurify.ai/articles/blind_payments") }, "How it works" } }
-                            }
-                        }
-                        if *asking.read() {
-                            p { class: "confirm", "Pay with a blind voucher? Open the app again after paying." }
-                            div { class: "row", style: "border: 0; justify-content: flex-end; padding: 0",
-                                button { class: "bare", onclick: move |_| asking.set(false), "Cancel" }
-                                button { class: "go", disabled: *busy.read(), onclick: pay, "Yes, continue" }
-                            }
-                        } else {
-                            button { class: "go", disabled: *busy.read(), onclick: pay, if *busy.read() { "…" } else { "Continue" } }
-                        }
-                        if let Some(e) = error.read().clone() { p { class: "err", "{e}" } }
-                        if !is_blind {
-                            p { class: "muted", "It goes on your balance when the payment confirms, even if you close the app." }
-                        }
+                        if !buying { button { class: "bare", style: "padding-left: 0; margin-top: 8px", onclick: move |_| open.set(None), "Done" } }
                     }
                 }
                 {
@@ -1788,7 +1931,7 @@ fn Funds() -> Element {
                                 for t in waiting {
                                     div { class: "row",
                                         div { class: "grow",
-                                            div { {method_name(&t.payment_method)} {t.order().network_label().map(|l| format!(" on {l}")).unwrap_or_default()} " · " {t.amount_cents.map(cents).unwrap_or("any amount".into())} }
+                                            div { {t.pending_plan().map(|p| format!("{} · ", tier_name(p))).unwrap_or_default()} {method_name(&t.payment_method)} {t.order().network_label().map(|l| format!(" on {l}")).unwrap_or_default()} " · " {t.amount_cents.map(cents).unwrap_or("any amount".into())} }
                                             div { class: if t.credited_cents > 0 { "ok" } else { "muted" },
                                                 {if t.credited_cents > 0 { format!("Added {} to your balance", cents(t.credited_cents)) }
                                                  else if t.open { "Waiting for payment. You can close the app.".to_string() }

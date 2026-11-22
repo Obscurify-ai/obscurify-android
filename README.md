@@ -35,7 +35,7 @@ the website and other phones on the same number (`src/sync.rs`; the server holds
   - Code runs in a WebView of its own with none of the app's bridges. It loads only the server's `/sandbox/` pages, whose CSP gives them an opaque origin and no network, and every other request is refused at the native layer. It talks to the app over one native message port.
   - Code, data and results stay on the phone; only tool calls leave it.
 - **Models.** Search, categories (Free, Cheap, Reasoning, Uncensored, Roleplay, Frontier) and favorites. Models and categories your plan includes come first; the rest are listed last.
-- **Account.** Balance, plans (paid from the balance), API key, referral link and transactions.
+- **Account.** Balance, plans, API key, referral link and transactions. A plan is paid from the balance; when that's too little, Upgrade goes straight to paying for the plan (Monero first, any other coin or card one tap away, 1 or 12 months) and the plan switches on when the payment confirms.
 - **Add funds.** Pay by card, Bitcoin, Lightning or Monero.
   - By default it's a top-up tied to the account: the server puts every confirmed payment on the balance by itself, so you can close the app, and any device lists it under Payments.
   - **Blind voucher** (off each time Add funds opens) makes the payment unlinkable. The app blinds random voucher messages (RFC 9474, RSABSSA-SHA384-PSS-Deterministic), the server signs them blind, and the app unblinds them into voucher codes. Each code is added to the balance at its own random time within the hour, so timing doesn't link the payment to the account either. Orders go out with no cookie or key.
@@ -108,6 +108,7 @@ BTC_RPC_PASSWORD=… node app.mjs   # sign-up, BTC blind voucher, chat, web sear
 BTC_RPC_PASSWORD=… node top-ups.mjs  # BTC top-up paid while the app is closed, added on relaunch; the Blind voucher warning and confirm
 adb reverse tcp:8097 tcp:8097 && node eth-top-ups.mjs  # against obscurify tests/e2e/eth-stack.sh: Ethereum → ETH/USDC/USDT and networks (no USDT on Base), USDC on Base paid with the app closed, added on relaunch
 node card.mjs                     # image picker and a vision model; Stripe test-card blind voucher
+adb reverse tcp:8241 tcp:8241 && node plan-checkout.mjs  # Upgrade with nothing on the balance: straight to paying for the plan, method and term changes, BTC payment switches it on
 ACCOUNT=… PLAN=casual node plans.mjs  # models the plan can use first, the rest under "Upgrade to use"
 adb reverse tcp:8099 tcp:8099 && DB=… [CATALOG=…] node plan-offers.mjs  # the Account screen lists this account's plans (asked with its key) and buying one charges exactly the price shown
 ACCOUNT=… node agent.mjs             # Long runs, compaction, errors back to the model, background work (scripted replies, through flaky-proxy.mjs)
