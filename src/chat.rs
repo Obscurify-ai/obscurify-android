@@ -500,6 +500,12 @@ pub(crate) fn sound_trace(trace: &[Value]) -> Vec<Value> {
     out
 }
 
+/// A reply cut to what its private session had left says so.
+fn balance_ended(msg: &mut Msg) {
+    if !msg.content.is_empty() { msg.content.push_str("\n\n") }
+    msg.content.push_str("*This reply was cut short because your balance ran out. Add funds to keep chatting.*");
+}
+
 /// What one streamed completion asked for besides its text.
 pub(crate) struct Step {
     pub tool_calls: Vec<Value>,
@@ -532,6 +538,7 @@ pub(crate) async fn stream_noting(body: &Value, msg: &mut Msg, stop: &impl Fn() 
     let mut details: Vec<Value> = vec![];
     let mut got_any = false;
     let mut finished = false;
+    let mut at_length = false;
     let mut tokens = None;
     let mut cost = 0.0;
     let mut refused = false;
@@ -548,6 +555,7 @@ pub(crate) async fn stream_noting(body: &Value, msg: &mut Msg, stop: &impl Fn() 
             if data == "[DONE]" { finished = true; break 'read }
             let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
             if v["choices"][0]["finish_reason"].is_string() { finished = true }
+            at_length |= v["choices"][0]["finish_reason"] == "length";
             refused |= refusal(&v);
             if let Some(s) = suggestion(&v) { suggest = Some(s) }
             if v["usage"].is_object() {
@@ -582,6 +590,7 @@ pub(crate) async fn stream_noting(body: &Value, msg: &mut Msg, stop: &impl Fn() 
     if !finished {
         calls.clear();
     }
+    if at_length && calls.is_empty() && resp.rest { balance_ended(msg) }
     msg.suggest = if refused { suggest } else { None };
     Ok(Step { tool_calls: calls, details, cut: !finished, tokens, cost, refused })
 }
@@ -691,6 +700,7 @@ fn run_with(mut app: App, follow: Option<String>) {
                     let mut drawn = store::now();
                     let mut ended = false;
                     let mut refused = false;
+                    let mut at_length = false;
                     'read: while let Some(chunk) = resp.next(&stop).await {
                         if *app.stop.peek() { break }
                         let chunk = match chunk { Ok(c) => c, Err(e) => { if msg.content.is_empty() { msg.error = true; msg.content = e } break } };
@@ -703,6 +713,7 @@ fn run_with(mut app: App, follow: Option<String>) {
                             if data == "[DONE]" { ended = true; break 'read }
                             let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
                             refused |= refusal(&v);
+                            at_length |= v["choices"][0]["finish_reason"] == "length";
                             if let Some(s) = suggestion(&v) { msg.suggest = Some(s) }
                             if !v["error"].is_null() {
                                 let e = v["error"]["message"].as_str().or(v["error"].as_str()).unwrap_or("The model returned an error");
@@ -733,6 +744,7 @@ fn run_with(mut app: App, follow: Option<String>) {
                     // The model's own filter stopped it before it said anything: say so, not a blank reply.
                     if refused && !msg.error && msg.content.trim().is_empty() { msg.content = DECLINED.into() }
                     if !refused || msg.error { msg.suggest = None }
+                    if at_length && resp.rest && !msg.error { balance_ended(&mut msg) }
                     if !overflow && msg.content.is_empty() && msg.reasoning.is_empty() && !*app.stop.peek() {
                         msg.error = true;
                         msg.content = "No answer came back. Try again or pick another model.".into();

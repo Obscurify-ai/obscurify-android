@@ -141,7 +141,8 @@ pub async fn reply_secret(reply: &str) -> Result<Option<String>, String> {
 }
 
 pub const NOT_STARTED: &str = "A private session could not be started, so nothing was sent. Check your connection and try again.";
-pub const NO_FUNDS: &str = "Private chats need at least 10¢ in your account, so nothing was sent. Add funds to keep chatting.";
+const USED_UP: &str = "Your balance is used up, so nothing was sent. Add funds, or pick a free model.";
+const ALL_USED_UP: &str = "Your balance and this month's free usage are used up, so nothing was sent. Add funds to keep chatting.";
 
 /// The session secret to send for the current chat, opening a session. `Ok(None)`: private
 /// sessions aren't on here (signed in without the number); use the signed-in session. `Err`:
@@ -154,23 +155,24 @@ pub async fn secret() -> Result<Option<String>, String> {
     if let Some(s) = open().await? {
         return Ok(Some(s));
     }
-    // The wallet couldn't be filled. Asked once more if the account has a session's 10¢ now (the
-    // wallet waits ten minutes after a refusal; money may have been added since).
-    let (left, text) = funds().await.ok_or(NOT_STARTED)?;
-    if left < 0.1 {
-        return Err(text);
-    }
-    {
-        let mut g = state().lock().await;
-        if let Some(mut v) = store::load::<Option<Value>>(STATE_FILE)
-            && v["refused_at"].as_u64().unwrap_or(0) > 0
-        {
-            v["refused_at"] = json!(0);
-            store::save(STATE_FILE, &v);
-            *g = None;
-        }
+    // No money and no free-model pass, unless money was added since the account last refused a
+    // top-up (the wallet waits ten minutes after one).
+    if !ask_again().await? {
+        return Err(match funds().await {
+            Some((_, text)) if text != USED_UP => text,
+            _ => ALL_USED_UP.into(),
+        });
     }
     open().await?.map(Some).ok_or_else(|| NOT_STARTED.into())
+}
+
+/// The account has money now: the wallet may ask it again at once. False: it has none.
+async fn ask_again() -> Result<bool, String> {
+    if funds().await.ok_or(NOT_STARTED)?.0 < 0.01 {
+        return Ok(false);
+    }
+    if let Some(m) = state().lock().await.as_mut() { m.ask_again() }
+    Ok(true)
 }
 
 async fn open() -> Result<Option<String>, String> {
@@ -183,29 +185,19 @@ async fn open() -> Result<Option<String>, String> {
 }
 
 /// What the account has to fill the wallet with (its balance and what's left of its plan's included
-/// usage, within the plan's weekly and 5-hour limits), and what to say when that's less than a
-/// session's 10¢. `None`: the server couldn't be asked.
+/// usage, within the plan's weekly and 5-hour limits), and what to say when that's used up. `None`: the server couldn't be asked.
 async fn funds() -> Option<(f64, String)> {
     let tier = api::get("/account_tier").await.ok()?;
     let balance = api::get("/get_user_balance").await.ok()?["balance"].as_f64()?;
-    let text = if tier["usage_week"].is_object() || tier["usage_5h"].is_object() { limit_text(&tier) } else { NO_FUNDS.into() };
+    let text = if tier["usage_week"].is_object() || tier["usage_5h"].is_object() { limit_text(&tier) } else { USED_UP.into() };
     Some((tier["credit_available"].as_f64().unwrap_or(0.0) + balance.max(0.0), text))
-}
-
-/// What to say when a session ran out and couldn't be filled; `None`: the account has money, so
-/// the server's own words (the request costs more than that).
-pub async fn unfunded() -> Option<String> {
-    match funds().await {
-        Some((left, text)) if left < 0.1 => Some(text),
-        _ => None,
-    }
 }
 
 /// What to say when the plan's usage and the balance are used up.
 fn limit_text(tier: &Value) -> String {
     for (name, key) in [("weekly", "usage_week"), ("5-hour", "usage_5h")] {
         let w = &tier[key];
-        if w.is_object() && w["limit"].as_f64().unwrap_or(0.0) - w["used"].as_f64().unwrap_or(0.0) < 0.1 {
+        if w.is_object() && w["limit"].as_f64().unwrap_or(0.0) - w["used"].as_f64().unwrap_or(0.0) < 0.01 {
             let at = w["frees_at"].as_str().map(|t| format!(" It starts over {}.", crate::local_time(t))).unwrap_or_default();
             return format!("Your plan's {name} usage is used up.{at} Add balance to keep going now.");
         }
@@ -213,14 +205,35 @@ fn limit_text(tier: &Value) -> String {
     "Your plan's usage for this month is used up. Add balance to keep going now.".into()
 }
 
-/// The session ran out (402): add more to it, more each time.
-pub async fn ran_out(secret: &str, attempt: u32) {
+/// What to say when a request was refused for want of money, with nothing more to add.
+pub async fn refused() -> String {
+    let Some((left, text)) = funds().await else { return NOT_STARTED.into() };
+    let held = spending().await["prepaid_millicents"].as_i64().unwrap_or(0) as f64 / 100_000.0;
+    match ((left + held) * 100.0).floor() as i64 {
+        i64::MIN..1 => text,
+        c @ 1..100 => format!("This needs more than the {c}¢ you have left, so nothing was sent. Pick a cheaper model, or add funds."),
+        c => format!("This needs more than the ${}.{:02} you have left, so nothing was sent. Pick a cheaper model, or add funds.", c / 100, c % 100),
+    }
+}
+
+/// The session ran out (402): add more to it, more each time. False: there is nothing more to
+/// add, so the request goes once more as the rest of the session's money (`REST_HEADER`).
+pub async fn ran_out(secret: &str, attempt: u32) -> bool {
+    if add(secret, attempt).await {
+        return true;
+    }
+    ask_again().await == Ok(true) && add(secret, attempt).await
+}
+
+async fn add(secret: &str, attempt: u32) -> bool {
     if let Some(mut g) = ready().await
         && let Some(m) = g.as_mut()
     {
-        let _ = m.ran_out(secret, attempt).await;
+        let added = m.ran_out(secret, attempt).await.is_ok();
         save(m);
+        return added;
     }
+    false
 }
 
 /// The server asked this chat's session for a pass (a 403 with `x-pass-required: <label>`):
