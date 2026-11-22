@@ -1,10 +1,30 @@
-Obscurify is private AI chat with hundreds of models behind one anonymous account. There's no email, username or password, only a 16-digit account number.
+Obscurify is a private, anonymous AI chat app with more than 300 AI models in one place. Ask questions, write, translate, read documents, search the web and run code, and switch models whenever you like. You don't need an email, phone number or password. Chat as a guest straight away, or make an account code on your phone.
 
-• Chat with leading and open models, with streamed answers, web search and image attachments
-• Your chats are stored on your phone and sync between your devices end-to-end encrypted with your account number: we hold only ciphertext, never the key
-• Search models, browse them by category and keep favorites
-• Free models to start
-• Report any answer from inside the app
-• Delete your account from the app at any time
+ALL THE MAJOR AI MODELS IN ONE APP
+Chat with models from OpenAI (GPT), Anthropic (Claude), Google (Gemini), DeepSeek, Qwen, Meta (Llama), Mistral, xAI (Grok), Moonshot (Kimi), Z.ai (GLM) and many open models. Search the full list, browse by category (Frontier, Reasoning, Cheap, Writing, Code tools, Translation, Documents, Zero retention and more), keep favorites, and change models in the middle of a conversation. Start with the free models, even as a guest.
 
-The app is a small, fast native client. You must be 18 or older to use Obscurify.
+ANONYMOUS BY DESIGN
+• No email, phone number or password. Your account is a 20-character account code made on your phone.
+• Guests can chat without making an account at all.
+• Your chats are stored on your phone. Sync between your phones and the website is end-to-end encrypted with a key from your account code, so the server keeps only ciphertext.
+• Temp chats are never saved, and Wipe clears every chat on the phone in one tap.
+• Choose zero-retention models, whose providers don't keep your prompts.
+• No ads.
+
+ENCRYPTED AI CHAT
+Encrypted mode talks to models running inside confidential-computing enclaves (TEE). Before anything is sent, the phone checks the enclave's attestation and encrypts your message to it, so Obscurify's own server passes it along without being able to read it. Each answer shows whether every check passed.
+
+AN AI ASSISTANT THAT DOES THINGS
+• Web search
+• Attach photos, PDFs, Word, Excel, PowerPoint, CSV and text or code files. Documents are read on your phone and sent as text, so every model can use them.
+• Code: the assistant runs Python and JavaScript on your phone to calculate, analyze data and draw charts, and builds small pages you can open full screen
+• Long answers and multi-step tasks keep going in the background, with a notification, and survive a lost connection
+• Streamed answers, collapsible reasoning, copy, edit, retry and stop
+
+A FAST, SMALL APP
+Obscurify is a small native app with a minimalist black design.
+
+SAFETY AND CONTROL
+Report any answer from inside the app. Delete your account from the app at any time.
+
+You must be 18 or older to use Obscurify.
