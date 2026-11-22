@@ -7,8 +7,8 @@ ANONYMOUS BY DESIGN
 • No email, phone number or password. Your account is a 20-character account code made on your phone.
 • Guests can chat without making an account at all.
 • Your chats are stored on your phone. Sync between your phones and the website is end-to-end encrypted with a key from your account code, so the server keeps only ciphertext.
-• Temp chats are never saved, and Wipe clears every chat on the phone in one tap.
-• Choose zero-retention models, whose providers don't keep your prompts.
+• Temp chats are never saved on your phone, and Wipe deletes every chat, on the phone and in sync.
+• Choose zero-retention models, served by providers whose policy is not to keep your prompts.
 • No ads.
 
 ENCRYPTED AI CHAT
