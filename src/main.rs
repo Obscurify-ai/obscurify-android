@@ -242,6 +242,7 @@ impl App {
     }
     fn signed_in(mut self) {
         self.screen.set(Screen::Chat);
+        bg(sync::tick(self)); // the account's chats, without waiting for the next round (30 s)
         self.refresh_balance();
         self.refresh_top_ups();
     }
@@ -249,6 +250,7 @@ impl App {
         bg(async move { let _ = api::call("POST", "/logout", Some(json!({}))).await; api::forget(); });
         private::forget();
         sync::forget();
+        *sync::LOOKED.write() = false;
         for m in self.convs.peek().iter() {
             store::remove(&format!("chat-{}.json", m.id));
         }

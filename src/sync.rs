@@ -1007,6 +1007,11 @@ async fn run(app: App) {
     push_prefs(app, &k).await;
 }
 
+/// The account's chats may still be on their way until a first round has been had: with no chats
+/// here the list says it's loading them, not that there are none.
+pub static LOOKED: GlobalSignal<bool> = Signal::global(|| false);
+pub fn arriving() -> bool { !*LOOKED.read() && on() && api::has_session() }
+
 static BUSY: AtomicBool = AtomicBool::new(false);
 static AGAIN: AtomicBool = AtomicBool::new(false);
 
@@ -1018,6 +1023,9 @@ pub async fn tick(app: App) {
     }
     run(app).await;
     BUSY.store(false, Ordering::SeqCst);
+    if on() && api::has_session() && !*LOOKED.peek() {
+        *LOOKED.write() = true;
+    }
     if AGAIN.swap(false, Ordering::SeqCst) {
         soon(app);
     }

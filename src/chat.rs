@@ -1525,7 +1525,7 @@ fn Drawer() -> Element {
                 }
             }
             div { class: "scroll", style: "padding: 0",
-                if app.convs.read().is_empty() { p { class: "muted", style: "padding: 16px", "No chats yet" } }
+                if app.convs.read().is_empty() { p { class: "muted", style: "padding: 16px", if crate::sync::arriving() { "Loading chats…" } else { "No chats yet" } } }
                 for m in app.convs.read().clone() {
                     div { key: "{m.id}", class: if m.id == current { "item on" } else { "item" },
                         div { class: "grow", onclick: { let id = m.id.clone(); move |_| {
