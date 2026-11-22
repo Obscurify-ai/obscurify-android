@@ -1545,8 +1545,10 @@ fn Drawer() -> Element {
                 if api::has_session() {
                     button { class: "account", onclick: move |_| { app.overlay.set(Overlay::None); app.screen.set(Screen::Account) },
                         span { "Account" }
-                        if let Some(b) = *app.balance.read() { span { class: "bal", {usd(b)} } }
+                        // A plan with weekly limits shows its usage instead of dollars.
+                        if !app.plan.read()["usage_week"].is_object() && let Some(b) = *app.balance.read() { span { class: "bal", {usd(b)} } }
                     }
+                    crate::UsageBars {}
                 } else {
                     button { class: "account", onclick: move |_| { app.overlay.set(Overlay::None); app.screen.set(Screen::Login) }, span { "Sign in" } }
                 }

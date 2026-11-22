@@ -145,6 +145,53 @@ pub async fn secret(reply: Option<&str>) -> Option<String> {
     s
 }
 
+/// The account's plan has weekly or 5-hour limits (`/account_tier`, as last read).
+static LIMITED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn note_plan(tier: &Value) {
+    LIMITED.store(tier["usage_week"].is_object() || tier["usage_5h"].is_object(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// No session could be opened, or it ran out and the wallet couldn't be filled. A plan with weekly
+/// or 5-hour limits runs out and fills up again every day, so on one the account is asked again now
+/// (the wallet waits ten minutes after a refusal), and failing that the chat is refused here with
+/// which limit it is: it never goes out tied to the account. `Ok(Some)`: a session to use.
+/// `Ok(None)`: not such a plan.
+pub async fn ask_again() -> Result<Option<String>, String> {
+    if !on() { return Ok(None) }
+    let tier = match api::get("/account_tier").await {
+        Ok(t) => { note_plan(&t); t }
+        Err(e) if LIMITED.load(std::sync::atomic::Ordering::Relaxed) => return Err(api::status_of(&e).1.to_string()),
+        Err(_) => return Ok(None),
+    };
+    if !LIMITED.load(std::sync::atomic::Ordering::Relaxed) { return Ok(None) }
+    // Less than a session's 10¢ to be had: nothing to ask for.
+    let balance = api::get("/get_user_balance").await.ok().and_then(|v| v["balance"].as_f64()).unwrap_or(0.0);
+    if tier["credit_available"].as_f64().unwrap_or(0.0) + balance.max(0.0) < 0.1 { return Err(limit_text(&tier)) }
+    {
+        let mut g = state().lock().await;
+        if let Some(mut v) = store::load::<Option<Value>>(STATE_FILE)
+            && v["refused_at"].as_u64().unwrap_or(0) > 0
+        {
+            v["refused_at"] = json!(0);
+            store::save(STATE_FILE, &v);
+            *g = None;
+        }
+    }
+    if let Some(s) = secret(None).await { return Ok(Some(s)) }
+    Err(limit_text(&tier))
+}
+
+fn limit_text(tier: &Value) -> String {
+    for (name, key) in [("weekly", "usage_week"), ("5-hour", "usage_5h")] {
+        let w = &tier[key];
+        if w.is_object() && w["limit"].as_f64().unwrap_or(0.0) - w["used"].as_f64().unwrap_or(0.0) < 0.1 {
+            let at = w["frees_at"].as_str().map(|t| format!(" It starts over {}.", crate::local_time(t))).unwrap_or_default();
+            return format!("Your plan's {name} usage is used up.{at} Add balance to keep going now.");
+        }
+    }
+    "Your plan's usage for this month is used up. Add balance to keep going now.".into()
+}
+
 /// The session ran out (402): add more to it, more each time.
 pub async fn ran_out(secret: &str, attempt: u32) {
     if let Some(mut g) = ready().await

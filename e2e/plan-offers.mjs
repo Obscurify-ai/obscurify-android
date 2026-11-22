@@ -3,7 +3,9 @@
 // a dev server whose database is reachable through the dev Postgres container (to fund the account):
 //   OBSCURIFY_API=http://127.0.0.1:8099 DEVTOOLS=1 ./build.sh x86_64 && adb install -r target/obscurify.apk
 //   adb reverse tcp:8099 tcp:8099 && DB=<dev database> [CATALOG=<plan list>] node e2e/plan-offers.mjs
-// CATALOG puts the new account on another of the server's plan lists first.
+// On a plan list whose plans have weekly limits it also checks the usage bars in the menu, sync (off until
+// a plan that has it), and that a chat past the limit is refused with which limit it is, never sent tied to
+// the account. CATALOG puts the new account on another of the server's plan lists first.
 import { execFileSync } from 'node:child_process';
 import { launch, ok, shot, sleep, wordsOn } from './lib.mjs';
 
@@ -26,6 +28,8 @@ const sql = (q) => execFileSync('docker', ['exec', '-i', 'obscurify-postgres-dev
   const catalog = sql(`SELECT catalog_id FROM users WHERE id = '${id}'`);
   ok(!CATALOG || catalog === CATALOG, `the new account buys from ${catalog}`);
   sql(`UPDATE users SET balance = balance + 400, pro_access_until = NULL WHERE id = '${id}'`);
+  sql(`INSERT INTO transactions (user_id, amount, transaction_type) VALUES ('${id}', 400, 'deposit')`);
+  const synced = sql(`SELECT p.chat_sync FROM users u JOIN plans p ON p.id = u.plan_id WHERE u.id = '${id}'`) === 't';
   const [code, name, fee, weekly] = sql(`SELECT p.code, p.name, p.monthly_fee, COALESCE(p.weekly_credit::text, '') FROM catalog_plans c JOIN plans p ON p.id = c.plan_id WHERE c.catalog_id = '${catalog}' AND c.level = 'casual'`).split('|');
   const price = '$' + Number(fee).toFixed(2);
 
@@ -35,6 +39,7 @@ const sql = (q) => execFileSync('docker', ['exec', '-i', 'obscurify-postgres-dev
   const row = page.locator('.section .row', { hasText: `${name} · ${price}/mo` });
   await row.waitFor({ timeout: 20000 });
   ok(true, `the plan list shows this account's ${name} at ${price}/mo`);
+  ok(synced ? await page.locator('#sync-switch').count() === 1 : /comes with a plan/.test(await page.locator('#sync-plan-off').innerText()), synced ? 'sync is there' : 'sync is off until a plan that has it');
   // The server words each plan from its terms; a weekly limit is part of what it says.
   if (weekly) ok((await row.innerText()).includes(`$${Number(weekly)} of it a week`), `it says ${name}'s weekly limit`);
   shot(`plan-offers-${catalog}`);
@@ -51,6 +56,45 @@ const sql = (q) => execFileSync('docker', ['exec', '-i', 'obscurify-postgres-dev
   ok(Math.abs(before - Number(balance) - Number(fee)) < 0.000001, `charged exactly ${price} (${before} -> ${balance})`);
   await page.waitForSelector('.section .row .ok:has-text("Current")', { timeout: 20000 });
   shot(`plan-offers-${catalog}-bought`);
+  if (weekly) {
+    await page.waitForSelector('#sync-switch', { timeout: 20000 });
+    ok(true, `${name} has sync`);
+    // One chat of included usage: the menu's bar shows its share of the week, no dollars.
+    const back = async () => { await page.locator('.bar .icon').first().click(); await page.waitForSelector('#composer'); };
+    const send = async (text) => { await page.locator('#composer').fill(text); await page.locator('button.send').click(); };
+    await back();
+    await send('Say hi in two words.');
+    for (let i = 0; i < 60 && Number(sql(`SELECT COALESCE(SUM(credit_used), 0) FROM monthly_usage WHERE user_id = '${id}'`)) === 0; i++) await sleep(500);
+    const used = Number(sql(`SELECT week_used FROM usage_windows WHERE user_id = '${id}'`));
+    ok(used >= 0.1 && Number(sql(`SELECT count(*) FROM invoices WHERE user_id = '${id}'`)) === 0, `a private chat took $${used} of included usage, and nothing was billed to the account by name`);
+    await page.locator('.bar .icon').first().click();
+    await page.waitForFunction((t) => [...document.querySelectorAll('.drawer .usage')].some((u) => u.innerText.trim().startsWith(t)), `This week: ${Math.round(100 * used / Number(weekly))}%`, { timeout: 30000 });
+    ok(await page.locator('.drawer .bal').count() === 0, `the menu says ${(await page.locator('.drawer .usage').first().innerText()).trim()}, no dollars`);
+    shot(`plan-offers-${catalog}-menu`);
+    await page.locator('.veil').first().click({ position: { x: 380, y: 400 } });
+
+    // Nothing left: the chat says which limit, and the message is not sent tied to the account.
+    sql(`UPDATE users SET balance = 0 WHERE id = '${id}'; UPDATE usage_windows SET burst_used = 1000000 WHERE user_id = '${id}'`);
+    sql(`UPDATE users SET balance = 0 WHERE is_session; DELETE FROM unlinkable_issued WHERE user_id = '${id}' AND kind <> 'pass'`);
+    // The phone still holds what it withdrew: whatever goes into a session is taken away, until none is left.
+    await page.waitForFunction(() => !document.querySelector('.send.stop'), null, { timeout: 120000 });
+    // A paid model (a free one answers whatever the limits say).
+    await page.locator('.title.model').click();
+    await page.locator('input.search').fill(process.env.PAID_MODEL || 'Claude Sonnet');
+    await page.locator('.drawer .pick:not(.locked)').first().locator('.grow').click();
+    for (let i = 0; i < 5; i++) {
+      sql(`UPDATE users SET balance = 0 WHERE is_session`);
+      const n = await page.locator('.msg.assistant, .msg.err').count();
+      await page.locator('#composer').fill(`Say hi again (${i}).`);
+      await sleep(300);
+      await page.locator('.send').click();
+      await page.waitForFunction((n) => document.querySelectorAll('.msg.assistant, .msg.err').length > n && !document.querySelector('.send.stop'), n, { timeout: 90000 });
+      if (/usage is used up/.test(await page.locator('body').innerText())) break;
+    }
+    ok(/5-hour usage is used up\. It starts over/.test(await page.locator('body').innerText()), 'past the limit the chat says which one and when it starts over');
+    ok(Number(sql(`SELECT count(*) FROM invoices WHERE user_id = '${id}'`)) === 0, 'and nothing was sent tied to the account');
+    shot(`plan-offers-${catalog}-limit`);
+  }
   console.log('all ok');
 }
 process.exit(0);

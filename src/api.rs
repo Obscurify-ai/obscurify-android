@@ -830,7 +830,13 @@ async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>>
     let mut none: Vec<String> = Vec::new();
     let mut attempt = 0;
     while attempt < 4 {
-        let secret = crate::private::secret(None).await?;
+        let secret = match crate::private::secret(None).await {
+            Some(s) => s,
+            None => match crate::private::ask_again().await {
+                Ok(s) => s?,
+                Err(e) => return Some(Err(e)),
+            },
+        };
         let r = match client().post(url("/web/chat/completions")).bearer_auth(&secret).json(body).go().await {
             Ok(r) => r,
             Err(_) => return Some(Err(error_text(0, &Value::Null, ""))),
@@ -863,7 +869,7 @@ async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>>
         }
         attempt += 1;
     }
-    Some(Err(error_text(402, &Value::Null, "")))
+    Some(Err(crate::private::ask_again().await.err().unwrap_or_else(|| error_text(402, &Value::Null, ""))))
 }
 
 /// A signed-in POST to a web endpoint (`/web/...`), which wants the CSRF token as well as the
@@ -873,7 +879,10 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
     let reply = path.strip_prefix("/web/replies/").and_then(|r| r.split('/').next());
     let private = match reply {
         Some(id) => crate::private::secret(Some(id)).await,
-        None => crate::private::secret(None).await,
+        None => match crate::private::secret(None).await {
+            Some(s) => Some(s),
+            None => crate::private::ask_again().await.map_err(|e| format!("402\u{1}{e}"))?,
+        },
     };
     if let Some(mut secret) = private {
         // The server holds a reply's (or paid tool's) worst case first: a 402 tops this chat's
@@ -912,7 +921,7 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
             }
             attempt += 1;
         }
-        return Err(format!("402\u{1}{}", error_text(402, &Value::Null, "")));
+        return Err(format!("402\u{1}{}", crate::private::ask_again().await.err().unwrap_or_else(|| error_text(402, &Value::Null, ""))));
     }
     for attempt in 0..2 {
         let token = csrf().await.map_err(|e| if e == OFFLINE { offline() } else { e })?;
