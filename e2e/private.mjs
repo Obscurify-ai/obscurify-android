@@ -105,7 +105,7 @@ try {
   const pick = async (search, name) => {
     await page.locator('.title.model').click();
     await page.locator('input.search').fill(search);
-    await page.locator('.pick', { hasText: name }).filter({ hasNotText: 'Thinking' }).first().locator('.grow').click();
+    await page.locator('.pick', { hasText: name }).filter({ hasNotText: /Thinking|Pro\b|Mini|Nano|Chat/ }).first().locator('.grow').click();
   };
   const ask = async (text, timeout = 240000) => {
     const before = await page.locator('.msg.assistant, .msg.err').count();
@@ -116,10 +116,10 @@ try {
     return (await page.locator('.msg.assistant, .msg.err').last().textContent()).trim();
   };
 
-  // 2b. A pricey model: the server holds the reply's worst case (about $1 of output), more than a
+  // 2b. A pricey model: the server holds the reply's worst case (about $1 of output on GPT 5.5), more than a
   // new session starts with, so it answers 402 until the app has topped the session up.
   await newChat();
-  await pick('Claude 4.1 Opus', 'Anthropic: Claude 4.1 Opus');
+  await pick('OpenAI: GPT 5.5', 'OpenAI: GPT 5.5');
   let from = seen.length;
   const mango = await ask('Reply with exactly the word: mango');
   ok(/mango/i.test(mango), 'pricey model answered: ' + mango.slice(0, 40));
@@ -173,7 +173,10 @@ try {
   ok(used >= 0 && used < 1, 'what was really used, not the $1 taken: ' + used);
   shot('private-history');
 
-  // 3. Wipe the app (a new phone), sign in with the number.
+  // 3. Wipe the app (a new phone), sign in with the number. The server offers a session back only
+  // 15 minutes after its last use (another phone on the account may be using it), so the wait is
+  // skipped here by making them look that old.
+  sql(`UPDATE unlinkable_sessions SET last_used_at = NOW() - INTERVAL '16 minutes' WHERE secret_hash IN (${hashes})`);
   ({ page } = await launch(true));
   await page.locator('.login input').fill(number);
   await page.getByRole('button', { name: 'Sign In' }).click();

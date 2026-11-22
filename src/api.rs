@@ -826,6 +826,11 @@ async fn post_chat(body: &Value) -> Result<reqwest::Response, String> {
     }
 }
 
+/// How many times a request's session is topped up (each time by more: 10¢, 20¢ ... $3.20) and asked
+/// again, as the website does. With the 10¢ it opens with, up to $6.40: a pricey model's reply ($1
+/// held) to a prompt that fills its context.
+const TOP_UPS: u32 = 6;
+
 /// A chat request on this chat's private session (private.rs): its secret, no cookie, no CSRF.
 /// Tops the session up when it runs out. `None`: private sessions are off; use the cookie.
 async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>> {
@@ -833,7 +838,7 @@ async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>>
     let mut none: Vec<String> = Vec::new();
     let mut attempt = 0;
     let mut rest = false; // nothing more to add: spend what the session has
-    while attempt < 5 {
+    while attempt <= TOP_UPS {
         let secret = match crate::private::secret().await {
             Ok(s) => s?,
             Err(e) => return Some(Err(e)),
@@ -865,8 +870,8 @@ async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>>
         }
         match status {
             402 if rest => break,
-            402 => rest = !crate::private::ran_out(&secret, attempt).await,
-            401 => crate::private::expired(&secret).await,
+            402 if attempt < TOP_UPS => rest = !crate::private::ran_out(&secret, attempt).await,
+            401 if attempt < TOP_UPS => crate::private::expired(&secret).await,
             _ => return Some(Err(chat_error(status, &r.text().await.unwrap_or_default()))),
         }
         attempt += 1;
@@ -896,7 +901,7 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
         let mut passes = 0;
         let mut none: Vec<String> = Vec::new();
         let mut attempt = 0;
-        while attempt < 4 {
+        while attempt <= TOP_UPS {
             let r = client().post(url(path)).timeout(Duration::from_secs(timeout)).bearer_auth(&secret).json(body).go().await.map_err(|_| offline())?;
             let status = r.status().as_u16();
             let wanted = header(&r, PASS_REQUIRED);
@@ -917,8 +922,8 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
                 }
             }
             match status {
-                402 if reply.is_none() && attempt < 3 => { crate::private::ran_out(&secret, attempt).await; }
-                401 if reply.is_none() && attempt < 3 => crate::private::expired(&secret).await,
+                402 if reply.is_none() && attempt < TOP_UPS => { crate::private::ran_out(&secret, attempt).await; }
+                401 if reply.is_none() && attempt < TOP_UPS => crate::private::expired(&secret).await,
                 _ => return Err(format!("{status}\u{1}{}", error_text(status, &v, &text))),
             }
             match crate::private::secret().await {
