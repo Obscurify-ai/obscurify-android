@@ -588,6 +588,8 @@ pub struct ReplyStream {
     /// TEE verification: the receipt that signs these bytes, and the route that answered.
     pub receipt: Option<String>,
     pub route: Option<String>,
+    /// The reply got what its private session had left: if it ends at its length, that is why.
+    pub rest: bool,
     /// Encrypted mode: the key that decrypts each event, and what checking the answer needs.
     pub session: Option<obscurify_tee_verify::e2ee::Session>,
     pub sealed: Option<Sealed>,
@@ -615,6 +617,7 @@ impl ReplyStream {
             id,
             receipt: header(&r, "x-obscurify-tee-receipt"),
             route: header(&r, "x-obscurify-tee-route"),
+            rest: header(&r, unlinkable_inference::protocol::REST_HEADER).is_some(),
             session: None,
             sealed: None,
             broken: None,
@@ -829,12 +832,13 @@ async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>>
     let mut passes = 0;
     let mut none: Vec<String> = Vec::new();
     let mut attempt = 0;
-    while attempt < 4 {
+    let mut rest = false; // nothing more to add: spend what the session has
+    while attempt < 5 {
         let secret = match crate::private::secret().await {
             Ok(s) => s?,
             Err(e) => return Some(Err(e)),
         };
-        let r = match client().post(url("/web/chat/completions")).bearer_auth(&secret).json(body).go().await {
+        let r = match spend_rest(client().post(url("/web/chat/completions")).bearer_auth(&secret), rest).json(body).go().await {
             Ok(r) => r,
             Err(_) => return Some(Err(error_text(0, &Value::Null, ""))),
         };
@@ -860,16 +864,20 @@ async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>>
             }
         }
         match status {
-            402 => crate::private::ran_out(&secret, attempt).await,
+            402 if rest => break,
+            402 => rest = !crate::private::ran_out(&secret, attempt).await,
             401 => crate::private::expired(&secret).await,
             _ => return Some(Err(chat_error(status, &r.text().await.unwrap_or_default()))),
         }
         attempt += 1;
     }
-    Some(Err(match crate::private::unfunded().await {
-        Some(text) => text.to_string(),
-        None => error_text(402, &Value::Null, ""),
-    }))
+    Some(Err(crate::private::refused().await))
+}
+
+/// A request on a session with nothing more to add to it says so: the server then shortens the
+/// reply to what the session can pay for instead of refusing it.
+fn spend_rest(r: reqwest::RequestBuilder, rest: bool) -> reqwest::RequestBuilder {
+    if rest { r.header(unlinkable_inference::protocol::REST_HEADER, "1") } else { r }
 }
 
 /// A signed-in POST to a web endpoint (`/web/...`), which wants the CSRF token as well as the
@@ -909,7 +917,7 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
                 }
             }
             match status {
-                402 if reply.is_none() && attempt < 3 => crate::private::ran_out(&secret, attempt).await,
+                402 if reply.is_none() && attempt < 3 => { crate::private::ran_out(&secret, attempt).await; }
                 401 if reply.is_none() && attempt < 3 => crate::private::expired(&secret).await,
                 _ => return Err(format!("{status}\u{1}{}", error_text(status, &v, &text))),
             }
@@ -920,8 +928,7 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
             }
             attempt += 1;
         }
-        let text = crate::private::unfunded().await.map(String::from).unwrap_or_else(|| error_text(402, &Value::Null, ""));
-        return Err(format!("402\u{1}{text}"));
+        return Err(format!("402\u{1}{}", crate::private::refused().await));
     }
     for attempt in 0..2 {
         let token = csrf().await.map_err(|e| if e == OFFLINE { offline() } else { e })?;

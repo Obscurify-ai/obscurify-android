@@ -141,7 +141,8 @@ pub async fn reply_secret(reply: &str) -> Result<Option<String>, String> {
 }
 
 pub const NOT_STARTED: &str = "A private session could not be started, so nothing was sent. Check your connection and try again.";
-pub const NO_FUNDS: &str = "Private chats need at least 10¢ in your account, so nothing was sent. Add funds to keep chatting.";
+const USED_UP: &str = "Your balance is used up, so nothing was sent. Add funds, or pick a free model.";
+const ALL_USED_UP: &str = "Your balance and this month's free usage are used up, so nothing was sent. Add funds to keep chatting.";
 
 /// The session secret to send for the current chat, opening a session. `Ok(None)`: private
 /// sessions aren't on here (signed in without the number); use the signed-in session. `Err`:
@@ -154,22 +155,21 @@ pub async fn secret() -> Result<Option<String>, String> {
     if let Some(s) = open().await? {
         return Ok(Some(s));
     }
-    // The wallet couldn't be filled. Asked once more if the account has a session's 10¢ now (the
-    // wallet waits ten minutes after a refusal; money may have been added since).
-    if funds().await.ok_or(NOT_STARTED)? < 0.1 {
-        return Err(NO_FUNDS.into());
-    }
-    {
-        let mut g = state().lock().await;
-        if let Some(mut v) = store::load::<Option<Value>>(STATE_FILE)
-            && v["refused_at"].as_u64().unwrap_or(0) > 0
-        {
-            v["refused_at"] = json!(0);
-            store::save(STATE_FILE, &v);
-            *g = None;
-        }
+    // No money and no free-model pass, unless money was added since the account last refused a
+    // top-up (the wallet waits ten minutes after one).
+    if !ask_again().await? {
+        return Err(ALL_USED_UP.into());
     }
     open().await?.map(Some).ok_or_else(|| NOT_STARTED.into())
+}
+
+/// The account has money now: the wallet may ask it again at once. False: it has none.
+async fn ask_again() -> Result<bool, String> {
+    if funds().await.ok_or(NOT_STARTED)? < 0.01 {
+        return Ok(false);
+    }
+    if let Some(m) = state().lock().await.as_mut() { m.ask_again() }
+    Ok(true)
 }
 
 async fn open() -> Result<Option<String>, String> {
@@ -190,23 +190,35 @@ async fn funds() -> Option<f64> {
     Some(credit.max(0.0) + balance.max(0.0))
 }
 
-/// What to say when a session ran out and couldn't be filled; `None`: the account has money, so
-/// the server's own words (the request costs more than that).
-pub async fn unfunded() -> Option<&'static str> {
-    match funds().await {
-        Some(f) if f < 0.1 => Some(NO_FUNDS),
-        _ => None,
+/// What to say when a request was refused for want of money, with nothing more to add.
+pub async fn refused() -> String {
+    let Some(left) = funds().await else { return NOT_STARTED.into() };
+    let held = spending().await["prepaid_millicents"].as_i64().unwrap_or(0) as f64 / 100_000.0;
+    match ((left + held) * 100.0).floor() as i64 {
+        i64::MIN..1 => USED_UP.into(),
+        c @ 1..100 => format!("This needs more than the {c}¢ you have left, so nothing was sent. Pick a cheaper model, or add funds."),
+        c => format!("This needs more than the ${}.{:02} you have left, so nothing was sent. Pick a cheaper model, or add funds.", c / 100, c % 100),
     }
 }
 
-/// The session ran out (402): add more to it, more each time.
-pub async fn ran_out(secret: &str, attempt: u32) {
+/// The session ran out (402): add more to it, more each time. False: there is nothing more to
+/// add, so the request goes once more as the rest of the session's money (`REST_HEADER`).
+pub async fn ran_out(secret: &str, attempt: u32) -> bool {
+    if add(secret, attempt).await {
+        return true;
+    }
+    ask_again().await == Ok(true) && add(secret, attempt).await
+}
+
+async fn add(secret: &str, attempt: u32) -> bool {
     if let Some(mut g) = ready().await
         && let Some(m) = g.as_mut()
     {
-        let _ = m.ran_out(secret, attempt).await;
+        let added = m.ran_out(secret, attempt).await.is_ok();
         save(m);
+        return added;
     }
+    false
 }
 
 /// The server asked this chat's session for a pass (a 403 with `x-pass-required: <label>`):
