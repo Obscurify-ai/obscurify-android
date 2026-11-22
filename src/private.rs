@@ -131,18 +131,72 @@ async fn ready() -> Option<tokio::sync::MutexGuard<'static, Option<Manager>>> {
     Some(g)
 }
 
-/// The session secret to send for the current chat (opening a session), or for held reply
-/// `reply`. `None`: private sessions are off or unavailable; use the signed-in session.
-pub async fn secret(reply: Option<&str>) -> Option<String> {
-    let mut g = ready().await?;
-    let m = g.as_mut()?;
-    if let Some(id) = reply {
-        return m.reply(id);
+/// The session secret for held reply `reply`: `Ok(None)` when it isn't a private one.
+pub async fn reply_secret(reply: &str) -> Result<Option<String>, String> {
+    if !on() || !api::has_session() {
+        return Ok(None);
     }
+    let mut g = ready().await.ok_or(NOT_STARTED)?;
+    Ok(g.as_mut().ok_or(NOT_STARTED)?.reply(reply))
+}
+
+pub const NOT_STARTED: &str = "A private session could not be started, so nothing was sent. Check your connection and try again.";
+pub const NO_FUNDS: &str = "Private chats need at least 10¢ in your account, so nothing was sent. Add funds to keep chatting.";
+
+/// The session secret to send for the current chat, opening a session. `Ok(None)`: private
+/// sessions aren't on here (signed in without the number); use the signed-in session. `Err`:
+/// they are on and none could be had, so the request is not sent at all: never through the
+/// account instead.
+pub async fn secret() -> Result<Option<String>, String> {
+    if !on() || !api::has_session() {
+        return Ok(None);
+    }
+    if let Some(s) = open().await? {
+        return Ok(Some(s));
+    }
+    // The wallet couldn't be filled. Asked once more if the account has a session's 10¢ now (the
+    // wallet waits ten minutes after a refusal; money may have been added since).
+    if funds().await.ok_or(NOT_STARTED)? < 0.1 {
+        return Err(NO_FUNDS.into());
+    }
+    {
+        let mut g = state().lock().await;
+        if let Some(mut v) = store::load::<Option<Value>>(STATE_FILE)
+            && v["refused_at"].as_u64().unwrap_or(0) > 0
+        {
+            v["refused_at"] = json!(0);
+            store::save(STATE_FILE, &v);
+            *g = None;
+        }
+    }
+    open().await?.map(Some).ok_or_else(|| NOT_STARTED.into())
+}
+
+async fn open() -> Result<Option<String>, String> {
+    let mut g = ready().await.ok_or(NOT_STARTED)?;
+    let m = g.as_mut().ok_or(NOT_STARTED)?;
     let chat = CHAT.lock().unwrap().clone();
     let s = m.session(&chat).await.ok();
     save(m);
-    s
+    Ok(s)
+}
+
+/// What the account has to fill the wallet with: its balance and what's left of its plan's
+/// included credit. `None`: the server couldn't be asked.
+async fn funds() -> Option<f64> {
+    let tier = api::get("/account_tier").await.ok()?;
+    let balance = api::get("/get_user_balance").await.ok()?["balance"].as_f64()?;
+    let credit = tier["included_credit"].as_f64().unwrap_or(0.0) - tier["credit_used"].as_f64().unwrap_or(0.0);
+    Some(credit.max(0.0) + balance.max(0.0))
+}
+
+/// What to say when a session ran out and couldn't be filled; `None`: the account has money, so
+/// the server's own words (the request costs more than that).
+pub async fn unfunded() -> Option<&'static str> {
+    match funds().await {
+        Some(f) if f < 0.1 => Some(NO_FUNDS),
+        _ => None,
+    }
 }
 
 /// The session ran out (402): add more to it, more each time.
