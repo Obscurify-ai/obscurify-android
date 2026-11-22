@@ -654,6 +654,12 @@ async fn apply(mut app: App, k: &Keys, id: &str, rev: i64, data: &str) -> bool {
         }
         Some("conv") => {
             let Some(cid) = env["id"].as_str().filter(|c| valid_id(c)).map(String::from) else { return true };
+            // This phone's own upload coming back (or one it already has): nothing new. Merging it with
+            // what the chat has become since made a copy of a chat that synced while it was being
+            // answered, and brought back chats deleted right after they went up.
+            if with_state(|s| s.convs.get(&cid).is_some_and(|r| r.rev == rev)) {
+                return true;
+            }
             if app.conv.peek().id == cid && app.live.peek().is_some() {
                 return false;
             }
@@ -704,10 +710,14 @@ async fn pull(app: App, k: &Keys) -> bool {
             return false;
         }
         if v["rev"].as_i64().unwrap_or(0) < after {
-            // Same store, older revisions (restored from a backup): send everything again.
+            // Same store, older revisions (restored from a backup): send everything again. Their
+            // revisions are forgotten: the same number can be another device's write now.
             with_state(|s| {
                 s.after = 0;
-                for r in s.convs.values_mut().filter(|r| !r.deleted) { r.dirty = true; r.ver += 1; }
+                for r in s.convs.values_mut() {
+                    r.rev = 0;
+                    if !r.deleted { r.dirty = true; r.ver += 1; }
+                }
             });
             continue;
         }
