@@ -1,0 +1,1 @@
+A model that can't answer right now is greyed out in the model list as Unavailable, and comes back by itself when it can.
