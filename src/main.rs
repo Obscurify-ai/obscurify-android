@@ -155,7 +155,7 @@ impl Default for Settings {
 }
 
 #[derive(Clone, PartialEq, Default)]
-struct Model { id: String, name: String, prompt: f64, completion: f64, tools: bool, context: u64, categories: Vec<String>, e2ee: bool, created: i64, images: bool }
+struct Model { id: String, name: String, prompt: f64, completion: f64, tools: bool, context: u64, categories: Vec<String>, e2ee: bool, created: i64, images: bool, available: bool }
 
 /// What the account's plan lets it chat with, from `/account_tier`.
 #[derive(Clone, Copy, PartialEq)]
@@ -423,6 +423,8 @@ fn Root() -> Element {
                 tools: m["tools"].as_bool().unwrap_or(true),
                 // Takes images; a server from before the field says nothing: assume it does.
                 images: m["images"].as_bool().unwrap_or(true),
+                // Can answer right now; the picker greys out one that can't.
+                available: m["available"].as_bool().unwrap_or(true),
                 context: m["context_length"].as_u64().unwrap_or(0),
                 // Specialist use cases (Writing, Security, ...) the server tags models with.
                 categories: m["categories"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(String::from)).collect(),

@@ -260,13 +260,13 @@ pub fn open_on_plan_default(mut app: App) {
     }
 }
 
-/// Listed, offered on this build, not locked for the plan, and takes encrypted requests while
-/// Encrypted is on.
+/// Listed, can answer right now, offered on this build, not locked for the plan, and takes
+/// encrypted requests while Encrypted is on.
 fn usable(app: &App, id: &str) -> bool {
     let settings = app.settings.peek();
     let frontier = app.frontier.peek();
     let uncensored = app.uncensored.peek();
-    app.models.peek().iter().any(|m| m.id == id && offered(m, &uncensored) && (!settings.encrypted || m.e2ee))
+    app.models.peek().iter().any(|m| m.id == id && m.available && offered(m, &uncensored) && (!settings.encrypted || m.e2ee))
         && needs_plan(id, *app.access.peek(), &frontier, &uncensored).is_none()
 }
 
@@ -1694,6 +1694,17 @@ fn needs_plan(id: &str, access: Option<Access>, frontier: &[String], uncensored:
 #[component]
 fn Models() -> Element {
     let mut app = use_context::<App>();
+    // Which models can answer right now, asked again each time the picker opens. The chosen model
+    // is never changed by this.
+    use_future(move || async move {
+        let mut app = app;
+        let Ok(v) = api::public("GET", "/models", None).await else { return };
+        let Some(list) = v["data"].as_array() else { return };
+        let down: std::collections::HashSet<&str> = list.iter().filter(|m| m["available"] == false).filter_map(|m| m["id"].as_str()).collect();
+        if app.models.peek().iter().any(|m| m.available == down.contains(m.id.as_str())) {
+            for m in app.models.write().iter_mut() { m.available = !down.contains(m.id.as_str()) }
+        }
+    });
     let favs = app.settings.read().favorites.clone();
     let encrypting = app.settings.read().encrypted && api::has_session();
     let fav_ok = { let ms = app.models.read(); favs.iter().any(|f| !encrypting || ms.iter().any(|m| &m.id == f && m.e2ee)) };
@@ -1784,16 +1795,17 @@ fn Models() -> Element {
 }
 
 /// A model in the picker. One the plan doesn't include (`needs` names the plan it needs) opens
-/// Account, where the plan can be changed, instead of being chosen. `above`: in the Favorites list,
+/// Account, where the plan can be changed, instead of being chosen. One that can't answer right now
+/// is greyed out and can't be chosen. `above`: in the Favorites list,
 /// the favorite listed above this one; ↑ moves this one in front of it.
 #[component]
 fn ModelRow(m: Model, needs: Option<&'static str>, above: Option<String>) -> Element {
     let mut app = use_context::<App>();
     let current = app.settings.read().model.clone();
     let fav = app.settings.read().favorites.contains(&m.id);
-    let class = format!("pick row{}{}", if m.id == current { " on" } else { "" }, if needs.is_some() { " locked" } else { "" });
+    let class = format!("pick row{}{}", if m.id == current { " on" } else { "" }, if needs.is_some() || !m.available { " locked" } else { "" });
     rsx! {
-        div { class, style: "padding: 10px 16px",
+        div { class, style: "padding: 10px 16px", aria_disabled: (!m.available).then_some("true"),
             div { class: "grow", onclick: { let m = m.clone(); move |_| {
                     if let Some(plan) = needs {
                         if PLAY { return app.say(format!("{} needs the {plan} plan", m.name)) }
@@ -1802,11 +1814,12 @@ fn ModelRow(m: Model, needs: Option<&'static str>, above: Option<String>) -> Ele
                         app.screen.set(Screen::Account);
                         return;
                     }
+                    if !m.available { return app.say(format!("{} is unavailable right now", m.name)) }
                     app.settings.write().model = m.id.clone();
                     app.save_settings();
                     app.overlay.set(Overlay::None);
                 } },
-                div { "{m.name}" }
+                div { "{m.name}" if !m.available { " (Unavailable)" } }
                 div { class: "price", if let Some(plan) = needs { "Needs {plan} · " } {per_million(&m)}
                     for b in privacy_badges(&m) { span { class: "badge", "{b}" } }
                 }
