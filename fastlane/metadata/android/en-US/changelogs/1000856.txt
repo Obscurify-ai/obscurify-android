@@ -1,0 +1,1 @@
+Add funds: payment methods have icons and their own section. Payments you opened but never paid are no longer listed, and Bitcoin shows "Payment seen" before it confirms, then how much was received. A blind payment could be forgotten while the app was checking others; fixed.
