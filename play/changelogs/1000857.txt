@@ -1,0 +1,1 @@
+Chat sync: a chat deleted or edited right after it synced no longer comes back or returns to how it was, and a chat that synced while it was being answered is no longer doubled.
