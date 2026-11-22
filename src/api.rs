@@ -719,7 +719,7 @@ const LOST_FOR: Duration = Duration::from_secs(15 * 60);
 
 async fn follow_from(id: &str, after: usize) -> Result<reqwest::Response, String> {
     let req = client().get(url(&format!("/web/replies/{id}?after={after}")));
-    let req = match crate::private::secret(Some(id)).await {
+    let req = match crate::private::reply_secret(id).await? {
         Some(secret) => req.bearer_auth(secret),
         None => with_session(req),
     };
@@ -830,12 +830,9 @@ async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>>
     let mut none: Vec<String> = Vec::new();
     let mut attempt = 0;
     while attempt < 4 {
-        let secret = match crate::private::secret(None).await {
-            Some(s) => s,
-            None => match crate::private::ask_again().await {
-                Ok(s) => s?,
-                Err(e) => return Some(Err(e)),
-            },
+        let secret = match crate::private::secret().await {
+            Ok(s) => s?,
+            Err(e) => return Some(Err(e)),
         };
         let r = match client().post(url("/web/chat/completions")).bearer_auth(&secret).json(body).go().await {
             Ok(r) => r,
@@ -869,7 +866,10 @@ async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>>
         }
         attempt += 1;
     }
-    Some(Err(crate::private::ask_again().await.err().unwrap_or_else(|| error_text(402, &Value::Null, ""))))
+    Some(Err(match crate::private::unfunded().await {
+        Some(text) => text,
+        None => error_text(402, &Value::Null, ""),
+    }))
 }
 
 /// A signed-in POST to a web endpoint (`/web/...`), which wants the CSRF token as well as the
@@ -878,12 +878,10 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
     // On a private session: the reply's own session for /web/replies/<id>, else this chat's.
     let reply = path.strip_prefix("/web/replies/").and_then(|r| r.split('/').next());
     let private = match reply {
-        Some(id) => crate::private::secret(Some(id)).await,
-        None => match crate::private::secret(None).await {
-            Some(s) => Some(s),
-            None => crate::private::ask_again().await.map_err(|e| format!("402\u{1}{e}"))?,
-        },
-    };
+        Some(id) => crate::private::reply_secret(id).await,
+        None => crate::private::secret().await,
+    }
+    .map_err(|e| format!("402\u{1}{e}"))?;
     if let Some(mut secret) = private {
         // The server holds a reply's (or paid tool's) worst case first: a 402 tops this chat's
         // session up, more each time, and asks again, as post_private does.
@@ -915,13 +913,15 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
                 401 if reply.is_none() && attempt < 3 => crate::private::expired(&secret).await,
                 _ => return Err(format!("{status}\u{1}{}", error_text(status, &v, &text))),
             }
-            match crate::private::secret(None).await {
-                Some(s) => secret = s,
-                None => break,
+            match crate::private::secret().await {
+                Ok(Some(s)) => secret = s,
+                Ok(None) => break,
+                Err(e) => return Err(format!("402\u{1}{e}")),
             }
             attempt += 1;
         }
-        return Err(format!("402\u{1}{}", crate::private::ask_again().await.err().unwrap_or_else(|| error_text(402, &Value::Null, ""))));
+        let text = crate::private::unfunded().await.unwrap_or_else(|| error_text(402, &Value::Null, ""));
+        return Err(format!("402\u{1}{text}"));
     }
     for attempt in 0..2 {
         let token = csrf().await.map_err(|e| if e == OFFLINE { offline() } else { e })?;

@@ -232,7 +232,6 @@ impl App {
                 self.balance.set(v["balance"].as_f64().map(|b| b + held))
             }
             if let Ok(v) = api::get("/account_tier").await {
-                private::note_plan(&v);
                 sync::note_plan(&v);
                 self.plan.set(v.clone());
                 let tier = v["tier"].as_str().unwrap_or("");

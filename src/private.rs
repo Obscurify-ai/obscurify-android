@@ -131,42 +131,35 @@ async fn ready() -> Option<tokio::sync::MutexGuard<'static, Option<Manager>>> {
     Some(g)
 }
 
-/// The session secret to send for the current chat (opening a session), or for held reply
-/// `reply`. `None`: private sessions are off or unavailable; use the signed-in session.
-pub async fn secret(reply: Option<&str>) -> Option<String> {
-    let mut g = ready().await?;
-    let m = g.as_mut()?;
-    if let Some(id) = reply {
-        return m.reply(id);
+/// The session secret for held reply `reply`: `Ok(None)` when it isn't a private one.
+pub async fn reply_secret(reply: &str) -> Result<Option<String>, String> {
+    if !on() || !api::has_session() {
+        return Ok(None);
     }
-    let chat = CHAT.lock().unwrap().clone();
-    let s = m.session(&chat).await.ok();
-    save(m);
-    s
+    let mut g = ready().await.ok_or(NOT_STARTED)?;
+    Ok(g.as_mut().ok_or(NOT_STARTED)?.reply(reply))
 }
 
-/// The account's plan has weekly or 5-hour limits (`/account_tier`, as last read).
-static LIMITED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-pub fn note_plan(tier: &Value) {
-    LIMITED.store(tier["usage_week"].is_object() || tier["usage_5h"].is_object(), std::sync::atomic::Ordering::Relaxed);
-}
+pub const NOT_STARTED: &str = "A private session could not be started, so nothing was sent. Check your connection and try again.";
+pub const NO_FUNDS: &str = "Private chats need at least 10¢ in your account, so nothing was sent. Add funds to keep chatting.";
 
-/// No session could be opened, or it ran out and the wallet couldn't be filled. A plan with weekly
-/// or 5-hour limits runs out and fills up again every day, so on one the account is asked again now
-/// (the wallet waits ten minutes after a refusal), and failing that the chat is refused here with
-/// which limit it is: it never goes out tied to the account. `Ok(Some)`: a session to use.
-/// `Ok(None)`: not such a plan.
-pub async fn ask_again() -> Result<Option<String>, String> {
-    if !on() { return Ok(None) }
-    let tier = match api::get("/account_tier").await {
-        Ok(t) => { note_plan(&t); t }
-        Err(e) if LIMITED.load(std::sync::atomic::Ordering::Relaxed) => return Err(api::status_of(&e).1.to_string()),
-        Err(_) => return Ok(None),
-    };
-    if !LIMITED.load(std::sync::atomic::Ordering::Relaxed) { return Ok(None) }
-    // Less than a session's 10¢ to be had: nothing to ask for.
-    let balance = api::get("/get_user_balance").await.ok().and_then(|v| v["balance"].as_f64()).unwrap_or(0.0);
-    if tier["credit_available"].as_f64().unwrap_or(0.0) + balance.max(0.0) < 0.1 { return Err(limit_text(&tier)) }
+/// The session secret to send for the current chat, opening a session. `Ok(None)`: private
+/// sessions aren't on here (signed in without the number); use the signed-in session. `Err`:
+/// they are on and none could be had, so the request is not sent at all: never through the
+/// account instead.
+pub async fn secret() -> Result<Option<String>, String> {
+    if !on() || !api::has_session() {
+        return Ok(None);
+    }
+    if let Some(s) = open().await? {
+        return Ok(Some(s));
+    }
+    // The wallet couldn't be filled. Asked once more if the account has a session's 10¢ now (the
+    // wallet waits ten minutes after a refusal; money may have been added since).
+    let (left, text) = funds().await.ok_or(NOT_STARTED)?;
+    if left < 0.1 {
+        return Err(text);
+    }
     {
         let mut g = state().lock().await;
         if let Some(mut v) = store::load::<Option<Value>>(STATE_FILE)
@@ -177,10 +170,38 @@ pub async fn ask_again() -> Result<Option<String>, String> {
             *g = None;
         }
     }
-    if let Some(s) = secret(None).await { return Ok(Some(s)) }
-    Err(limit_text(&tier))
+    open().await?.map(Some).ok_or_else(|| NOT_STARTED.into())
 }
 
+async fn open() -> Result<Option<String>, String> {
+    let mut g = ready().await.ok_or(NOT_STARTED)?;
+    let m = g.as_mut().ok_or(NOT_STARTED)?;
+    let chat = CHAT.lock().unwrap().clone();
+    let s = m.session(&chat).await.ok();
+    save(m);
+    Ok(s)
+}
+
+/// What the account has to fill the wallet with (its balance and what's left of its plan's included
+/// usage, within the plan's weekly and 5-hour limits), and what to say when that's less than a
+/// session's 10¢. `None`: the server couldn't be asked.
+async fn funds() -> Option<(f64, String)> {
+    let tier = api::get("/account_tier").await.ok()?;
+    let balance = api::get("/get_user_balance").await.ok()?["balance"].as_f64()?;
+    let text = if tier["usage_week"].is_object() || tier["usage_5h"].is_object() { limit_text(&tier) } else { NO_FUNDS.into() };
+    Some((tier["credit_available"].as_f64().unwrap_or(0.0) + balance.max(0.0), text))
+}
+
+/// What to say when a session ran out and couldn't be filled; `None`: the account has money, so
+/// the server's own words (the request costs more than that).
+pub async fn unfunded() -> Option<String> {
+    match funds().await {
+        Some((left, text)) if left < 0.1 => Some(text),
+        _ => None,
+    }
+}
+
+/// What to say when the plan's usage and the balance are used up.
 fn limit_text(tier: &Value) -> String {
     for (name, key) in [("weekly", "usage_week"), ("5-hour", "usage_5h")] {
         let w = &tier[key];
