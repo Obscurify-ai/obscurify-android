@@ -1,0 +1,1 @@
+Notifications show the Obscurify logo instead of a plain circle.
