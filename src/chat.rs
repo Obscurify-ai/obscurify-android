@@ -1678,6 +1678,18 @@ fn Report(i: usize, done: EventHandler) -> Element {
 const CATEGORIES: [&str; 17] = ["Favorites", "All", "Free", "Cheap", "Reasoning", "Uncensored", "Roleplay", "Frontier",
     "Zero retention", "TEE", "Writing", "Security", "Legal", "Translation", "Languages", "Code tools", "Documents"];
 
+/// Puts the listed favorites in a new order. Favorites the picker doesn't show (Encrypted on, the
+/// Play build) keep their places.
+pub fn reorder_favorites(mut app: App, listed: Vec<String>) {
+    let current = app.settings.peek().favorites.clone();
+    let mut order = listed.iter().filter(|id| current.contains(id));
+    let next: Vec<String> = current.iter().map(|id| if listed.contains(id) { order.next().unwrap_or(id).clone() } else { id.clone() }).collect();
+    if next != current {
+        app.settings.write().favorites = next;
+        app.save_settings();
+    }
+}
+
 /// The plan a model needs that the account doesn't have (uncensored models need Pro, frontier
 /// models Casual or Pro, as the server enforces). Nothing is locked until the plan is known.
 fn needs_plan(id: &str, access: Option<Access>, frontier: &[String], uncensored: &[String]) -> Option<&'static str> {
@@ -1755,15 +1767,25 @@ fn Models() -> Element {
     providers.sort_by_key(|p| p.to_lowercase());
     providers.dedup();
     let chosen = prov.read().clone().filter(|p| providers.contains(p));
-    let (mut usable, locked): (Vec<Model>, Vec<Model>) = shown.into_iter()
+    let (usable, locked): (Vec<Model>, Vec<Model>) = shown.into_iter()
         .filter(|m| chosen.as_ref().is_none_or(|p| &provider(m) == p))
         .cloned()
         .partition(|m| needs(&m.id).is_none());
-    // Favorites keep the order they were starred in, and each after the first can move up a place.
-    let reorder = c == "Favorites" && query.is_empty();
-    if reorder { usable.sort_by_key(|m| favs.iter().position(|f| f == &m.id)) }
-    let above: Vec<Option<String>> = (0..usable.len()).map(|i| (reorder && i > 0).then(|| usable[i - 1].id.clone())).collect();
     let locked: Vec<(Model, &'static str)> = locked.into_iter().map(|m| { let n = needs(&m.id).unwrap_or(""); (m, n) }).collect();
+    // Favorites are one list in their own order, dragged by the handle: the ones the plan doesn't
+    // include and the ones no longer offered stay in their places, so the order shown is the order
+    // new chats follow. (The Play build never names a model it doesn't offer.)
+    let ordering = c == "Favorites" && query.is_empty() && chosen.is_none();
+    let listed: Vec<(Model, Option<&'static str>, bool)> = if !ordering { vec![] } else {
+        favs.iter().filter_map(|f| match models.iter().find(|m| &m.id == f) {
+            Some(m) => (!encrypted || m.e2ee).then(|| (m.clone(), needs(f), false)),
+            None => (!PLAY && !encrypted && !models.is_empty())
+                .then(|| (Model { id: f.clone(), name: f.clone(), ..Default::default() }, None, true)),
+        }).collect()
+    };
+    let new_chats = if ordering { first_usable_favorite(&app) } else { None };
+    let sortable = listed.len() > 1;
+    let (usable, locked) = if ordering { (vec![], vec![]) } else { (usable, locked) };
 
     rsx! {
         div { class: "drawer", "data-back": "1", style: "width: 100%; max-width: none; border: 0",
@@ -1785,10 +1807,11 @@ fn Models() -> Element {
                 }
             }
             div { class: "scroll", style: "padding: 0",
-                if usable.is_empty() && locked.is_empty() { p { class: "muted", style: "padding: 16px", if c == "Favorites" { "Star models to keep them here." } else { "No models" } } }
-                for (m, up) in usable.into_iter().zip(above) { ModelRow { key: "{m.id}", m: m.clone(), needs: None, above: up } }
+                if usable.is_empty() && locked.is_empty() && listed.is_empty() { p { class: "muted", style: "padding: 16px", if c == "Favorites" { "Star models to keep them here." } else { "No models" } } }
+                for (m, n, gone) in listed { ModelRow { key: "fav-{m.id}", m: m.clone(), needs: n, gone, sortable, new_chats: new_chats.as_ref() == Some(&m.id) } }
+                for m in usable { ModelRow { key: "{m.id}", m: m.clone(), needs: None } }
                 if !locked.is_empty() { h2 { class: "group", if PLAY { "Not on your plan" } else { "Upgrade to use" } } }
-                for (m, n) in locked { ModelRow { key: "{m.id}", m: m.clone(), needs: Some(n), above: None } }
+                for (m, n) in locked { ModelRow { key: "{m.id}", m: m.clone(), needs: Some(n) } }
             }
         }
     }
@@ -1796,16 +1819,17 @@ fn Models() -> Element {
 
 /// A model in the picker. One the plan doesn't include (`needs` names the plan it needs) opens
 /// Account, where the plan can be changed, instead of being chosen. One that can't answer right now
-/// is greyed out and can't be chosen. `above`: in the Favorites list,
-/// the favorite listed above this one; ↑ moves this one in front of it.
+/// is greyed out and can't be chosen, and so is a favorite that is no longer offered (`gone`).
+/// `sortable`: in the Favorites list, the row has a handle to drag it by (see BRIDGE).
+/// `new_chats`: the favorite new chats start on.
 #[component]
-fn ModelRow(m: Model, needs: Option<&'static str>, above: Option<String>) -> Element {
+fn ModelRow(m: Model, needs: Option<&'static str>, #[props(default)] gone: bool, #[props(default)] sortable: bool, #[props(default)] new_chats: bool) -> Element {
     let mut app = use_context::<App>();
     let current = app.settings.read().model.clone();
     let fav = app.settings.read().favorites.contains(&m.id);
-    let class = format!("pick row{}{}", if m.id == current { " on" } else { "" }, if needs.is_some() || !m.available { " locked" } else { "" });
+    let class = format!("pick row{}{}", if m.id == current { " on" } else { "" }, if needs.is_some() || gone || !m.available { " locked" } else { "" });
     rsx! {
-        div { class, style: "padding: 10px 16px", aria_disabled: (!m.available).then_some("true"),
+        div { class, style: "padding: 10px 16px", aria_disabled: (gone || !m.available).then_some("true"), "data-fav": sortable.then(|| m.id.clone()),
             div { class: "grow", onclick: { let m = m.clone(); move |_| {
                     if let Some(plan) = needs {
                         if PLAY { return app.say(format!("{} needs the {plan} plan", m.name)) }
@@ -1814,28 +1838,16 @@ fn ModelRow(m: Model, needs: Option<&'static str>, above: Option<String>) -> Ele
                         app.screen.set(Screen::Account);
                         return;
                     }
+                    if gone { return app.say("This model is no longer offered") }
                     if !m.available { return app.say(format!("{} is unavailable right now", m.name)) }
                     app.settings.write().model = m.id.clone();
                     app.save_settings();
                     app.overlay.set(Overlay::None);
                 } },
-                div { "{m.name}" if !m.available { " (Unavailable)" } }
-                div { class: "price", if let Some(plan) = needs { "Needs {plan} · " } {per_million(&m)}
+                div { "{m.name}" if !gone && !m.available { " (Unavailable)" } if new_chats { span { class: "new-chats", "New chats" } } }
+                div { class: "price", if let Some(plan) = needs { "Needs {plan} · " } if gone { "No longer offered" } else { {per_million(&m)} }
                     for b in privacy_badges(&m) { span { class: "badge", "{b}" } }
                 }
-            }
-            if let Some(above) = above {
-                button { class: "bare up", aria_label: "Move {m.name} up",
-                    onclick: { let id = m.id.clone(); move |_| {
-                        let mut s = app.settings.write();
-                        if let Some(i) = s.favorites.iter().position(|f| f == &id) {
-                            s.favorites.remove(i);
-                            let at = s.favorites.iter().position(|f| f == &above).unwrap_or(0);
-                            s.favorites.insert(at, id.clone());
-                        }
-                        drop(s);
-                        app.save_settings();
-                    } }, "↑" }
             }
             button { class: "bare star", style: if fav { "color: var(--g)" } else { "" },
                 onclick: { let id = m.id.clone(); move |_| {
@@ -1844,6 +1856,11 @@ fn ModelRow(m: Model, needs: Option<&'static str>, above: Option<String>) -> Ele
                     drop(s);
                     app.save_settings();
                 } }, if fav { "★" } else { "☆" } }
+            if sortable {
+                button { class: "bare handle", aria_label: "Move {m.name}",
+                    svg { view_box: "0 0 24 24", width: "20", height: "20", path { d: "M4 9h16M4 15h16", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round" } }
+                }
+            }
         }
     }
 }
