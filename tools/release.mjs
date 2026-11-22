@@ -16,9 +16,12 @@
 //   node tools/release.mjs            one run (what the timer does)
 //   node tools/release.mjs --dry-run  say what it would do, build and publish nothing
 //   node tools/release.mjs --check-apk target/obscurify.apk 1000835 | --check-aab target/obscurify-play.aab
+//   node tools/release.mjs --listing  only send play/listing/icon-512.png and feature-graphic.png to Play now
+// Every Play release also sends those two images when they differ from the store's (by SHA-256), so
+// changing the logo in the repo is enough to change it on Play.
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
-import { createSign } from 'node:crypto';
+import { createHash, createSign } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -162,14 +165,14 @@ async function playToken() {
   return j.access_token;
 }
 
-async function play(token, method, path, body, upload) {
+async function play(token, method, path, body, upload, type = 'application/octet-stream') {
   const base = upload ? 'https://androidpublisher.googleapis.com/upload/androidpublisher/v3' : 'https://androidpublisher.googleapis.com/androidpublisher/v3';
   // A dropped connection is tried again (three times, a little later each time), with its cause logged.
   let r;
   for (let attempt = 1; ; attempt++) {
     try {
       r = await fetch(`${base}/applications/${PLAY_PACKAGE}${path}`, {
-        method, headers: { authorization: `Bearer ${token}`, ...(upload ? { 'content-type': 'application/octet-stream' } : body ? { 'content-type': 'application/json' } : {}) },
+        method, headers: { authorization: `Bearer ${token}`, ...(upload ? { 'content-type': type } : body ? { 'content-type': 'application/json' } : {}) },
         body: upload ?? (body ? JSON.stringify(body) : undefined),
         signal: AbortSignal.timeout(upload ? 600_000 : 60_000),
       });
@@ -197,6 +200,24 @@ async function playHas(token, code) {
   }
 }
 
+// The store icon and feature graphic follow the repo: an image Play doesn't have yet replaces its own.
+const LISTING_IMAGES = [['icon', 'play/listing/icon-512.png'], ['featureGraphic', 'play/listing/feature-graphic.png']];
+async function syncListing(token, editId, root) {
+  const changed = [];
+  for (const [type, file] of LISTING_IMAGES) {
+    const data = readFileSync(join(root, file));
+    const sha = createHash('sha256').update(data).digest('hex');
+    const { images = [] } = await play(token, 'GET', `/edits/${editId}/listings/en-US/${type}`);
+    if (images.length === 1 && images[0].sha256 === sha) continue;
+    await play(token, 'DELETE', `/edits/${editId}/listings/en-US/${type}`);
+    const up = await play(token, 'POST', `/edits/${editId}/listings/en-US/${type}?uploadType=media`, null, data, 'image/png');
+    if (up.image?.sha256 !== sha) throw new Error(`Play stored a different ${type} (${up.image?.sha256})`);
+    changed.push(type);
+  }
+  if (changed.length) log('Play listing images updated:', changed.join(', '));
+  return changed;
+}
+
 async function releasePlay(r) {
   const token = await playToken();
   if (await playHas(token, r.code)) return log(`Play already has ${r.code}`);
@@ -211,6 +232,7 @@ async function releasePlay(r) {
     track: 'production',
     releases: [{ name: r.version, versionCodes: [r.code], status: 'completed', releaseNotes: [{ language: 'en-US', text: r.playNotes.slice(0, 500) }] }],
   });
+  await syncListing(token, edit.id, REPO);
   await play(token, 'POST', `/edits/${edit.id}:commit`);
   log(`sent ${r.version} (${r.code}) to Play production review`);
 }
@@ -220,6 +242,15 @@ async function releasePlay(r) {
 // `--check-apk FILE CODE` / `--check-aab FILE`: only run the checks on a built file.
 const at = (flag) => process.argv.indexOf(flag);
 if (at('--check-apk') > 0) { checkApk(process.argv[at('--check-apk') + 1], process.argv[at('--check-apk') + 2]); log('APK checks passed'); process.exit(0); }
+if (process.argv.includes('--listing')) {
+  if (existsSync(HOLD)) { log(`Play held: ${readFileSync(HOLD, 'utf8').trim()}`); process.exit(1); }
+  const token = await playToken();
+  const edit = await play(token, 'POST', '/edits', {});
+  const root = join(import.meta.dirname, '..');
+  if ((await syncListing(token, edit.id, root)).length && !DRY) await play(token, 'POST', `/edits/${edit.id}:commit`);
+  else { await play(token, 'DELETE', `/edits/${edit.id}`).catch(() => {}); log(DRY ? 'dry run: nothing sent' : 'Play listing images already match'); }
+  process.exit(0);
+}
 if (at('--check-aab') > 0) { checkAab(process.argv[at('--check-aab') + 1]); log('bundle checks passed'); process.exit(0); }
 
 const state = load();

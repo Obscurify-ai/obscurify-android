@@ -1,0 +1,1 @@
+New app icon: the Obscurify mark is now a split "o" in green on black, drawn as a vector so it stays sharp on every screen.
