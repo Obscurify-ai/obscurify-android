@@ -73,25 +73,33 @@ const sql = (q) => execFileSync('docker', ['exec', '-i', 'obscurify-postgres-dev
     shot(`plan-offers-${catalog}-menu`);
     await page.locator('.veil').first().click({ position: { x: 380, y: 400 } });
 
-    // Nothing left: the chat says which limit, and the message is not sent tied to the account.
-    sql(`UPDATE users SET balance = 0 WHERE id = '${id}'; UPDATE usage_windows SET burst_used = 1000000 WHERE user_id = '${id}'`);
-    sql(`UPDATE users SET balance = 0 WHERE is_session; DELETE FROM unlinkable_issued WHERE user_id = '${id}' AND kind <> 'pass'`);
-    // The phone still holds what it withdrew: whatever goes into a session is taken away, until none is left.
-    await page.waitForFunction(() => !document.querySelector('.send.stop'), null, { timeout: 120000 });
     // A paid model (a free one answers whatever the limits say).
+    await page.waitForFunction(() => !document.querySelector('.send.stop'), null, { timeout: 120000 });
     await page.locator('.title.model').click();
     await page.locator('input.search').fill(process.env.PAID_MODEL || 'Claude Sonnet');
     await page.locator('.drawer .pick:not(.locked)').first().locator('.grow').click();
-    for (let i = 0; i < 5; i++) {
-      sql(`UPDATE users SET balance = 0 WHERE is_session`);
+    const ask = async (text) => {
       const n = await page.locator('.msg.assistant, .msg.err').count();
-      await page.locator('#composer').fill(`Say hi again (${i}).`);
+      await page.locator('#composer').fill(text);
       await sleep(300);
       await page.locator('.send').click();
       await page.waitForFunction((n) => document.querySelectorAll('.msg.assistant, .msg.err').length > n && !document.querySelector('.send.stop'), n, { timeout: 90000 });
-      if (/usage is used up/.test(await page.locator('body').innerText())) break;
-    }
-    ok(/5-hour usage is used up\. It starts over/.test(await page.locator('body').innerText()), 'past the limit the chat says which one and when it starts over');
+      return (await page.locator('.msg.assistant, .msg.err').last().innerText()).trim();
+    };
+    // Whatever goes into a session is taken away, so the phone has to fill its wallet again.
+    const drain = () => sql(`UPDATE users SET balance = 0 WHERE is_session`);
+    const fromBalance = () => Number(sql(`SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE user_id = '${id}' AND transaction_type = 'voucher_withdrawal'`));
+
+    // The 5 hours used up, money on the balance: the balance pays and the chat goes on.
+    sql(`UPDATE usage_windows SET burst_used = 1000000 WHERE user_id = '${id}'`);
+    let said = '';
+    for (let i = 0; i < 5 && fromBalance() === 0; i++) { drain(); said = await ask(`Say hello (${i}).`); }
+    ok(fromBalance() > 0 && said && !/used up|^Error/.test(said), `past the limit the balance pays ($${fromBalance().toFixed(2)}) and the chat answers: ${said.split('\n')[0].slice(0, 40)}`);
+
+    // Nothing left: the chat says which limit, and the message is not sent tied to the account.
+    sql(`UPDATE users SET balance = 0 WHERE id = '${id}'`);
+    for (let i = 0; i < 6 && !/usage is used up/.test(said); i++) { drain(); said = await ask(`Say hi again (${i}).`); }
+    ok(/5-hour usage is used up\. It starts over/.test(said), 'with no balance the chat says which limit and when it starts over');
     ok(Number(sql(`SELECT count(*) FROM invoices WHERE user_id = '${id}'`)) === 0, 'and nothing was sent tied to the account');
     shot(`plan-offers-${catalog}-limit`);
   }
