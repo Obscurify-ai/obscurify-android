@@ -26,7 +26,7 @@ const sql = (q) => execFileSync('docker', ['exec', '-i', 'obscurify-postgres-dev
   const catalog = sql(`SELECT catalog_id FROM users WHERE id = '${id}'`);
   ok(!CATALOG || catalog === CATALOG, `the new account buys from ${catalog}`);
   sql(`UPDATE users SET balance = balance + 400, pro_access_until = NULL WHERE id = '${id}'`);
-  const [code, name, fee] = sql(`SELECT p.code, p.name, p.monthly_fee FROM catalog_plans c JOIN plans p ON p.id = c.plan_id WHERE c.catalog_id = '${catalog}' AND c.level = 'casual'`).split('|');
+  const [code, name, fee, weekly] = sql(`SELECT p.code, p.name, p.monthly_fee, COALESCE(p.weekly_credit::text, '') FROM catalog_plans c JOIN plans p ON p.id = c.plan_id WHERE c.catalog_id = '${catalog}' AND c.level = 'casual'`).split('|');
   const price = '$' + Number(fee).toFixed(2);
 
   await page.locator('.bar .icon').first().click();
@@ -35,6 +35,8 @@ const sql = (q) => execFileSync('docker', ['exec', '-i', 'obscurify-postgres-dev
   const row = page.locator('.section .row', { hasText: `${name} · ${price}/mo` });
   await row.waitFor({ timeout: 20000 });
   ok(true, `the plan list shows this account's ${name} at ${price}/mo`);
+  // The server words each plan from its terms; a weekly limit is part of what it says.
+  if (weekly) ok((await row.innerText()).includes(`$${Number(weekly)} of it a week`), `it says ${name}'s weekly limit`);
   shot(`plan-offers-${catalog}`);
 
   const before = Number(sql(`SELECT balance FROM users WHERE id = '${id}'`));

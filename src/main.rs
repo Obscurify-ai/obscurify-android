@@ -1084,6 +1084,12 @@ fn Account() -> Element {
                         if t["included_credit"].as_f64().unwrap_or(0.0) > 0.0 {
                             p { class: "muted", "{usd(t[\"credit_used\"].as_f64().unwrap_or(0.0))} of {usd(t[\"included_credit\"].as_f64().unwrap_or(0.0))} included usage used" }
                         }
+                        // Plans that pace their included usage: the weekly and 5-hour windows.
+                        for (label, key) in [("This week", "usage_week"), ("Last 5 hours", "usage_5h")] {
+                            if t[key].is_object() {
+                                p { class: "muted", "{label}: {usd(t[key][\"used\"].as_f64().unwrap_or(0.0))} of {usd(t[key][\"limit\"].as_f64().unwrap_or(0.0))} of it" }
+                            }
+                        }
                         if let Some(d) = t["next_charge_date"].as_str() { p { class: "muted", "Renews {d.get(..10).unwrap_or(d)} from your balance" } }
                         p { class: "muted", "Tokens this period: {t[\"input_tokens_used\"]} in, {t[\"output_tokens_used\"]} out" }
                     }
@@ -1101,8 +1107,8 @@ fn Account() -> Element {
                             let pay = id.clone();
                             let credit = x["included_credit"].as_f64().unwrap_or(0.0);
                             let what = match id.as_str() {
-                                // Plans that sell usage only (every model open): the server words them.
-                                _ if x["all_models"].as_bool() == Some(true) => x["description"].as_str().unwrap_or("").to_string(),
+                                // The server words each plan from its own terms (models, usage, weekly limits).
+                                _ if x["description"].as_str().is_some_and(|d| !d.is_empty()) => x["description"].as_str().unwrap_or("").to_string(),
                                 "casual" => format!("Frontier models, {} of usage included", usd(credit)),
                                 "pro" => format!("API access, frontier and uncensored models, {} of usage included", usd(credit)),
                                 _ => "Pay only for what you use".to_string(),
