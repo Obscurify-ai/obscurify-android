@@ -1278,7 +1278,7 @@ fn Account() -> Element {
                         }
                     }
                 }
-                History { rev: tx_rev, mine }
+                History { rev: tx_rev, mine, tier }
                 div { class: "section",
                     if *confirm.read() == Some("out") {
                         p { class: "muted", "Chats on this phone are deleted. Make sure you have your account code (or number)." }
@@ -1326,7 +1326,7 @@ fn Account() -> Element {
 /// Transaction history, like the web account page: spending per day, week or month (tap one for its
 /// charges), or every charge. Paged on the server: heavy accounts have tens of thousands of charges.
 #[component]
-fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
+fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>, tier: ReadSignal<Value>) -> Element {
     const PAGE: i64 = 50;
     const PERIODS: i64 = 31;
     let mut view = use_signal(|| "day");
@@ -1335,10 +1335,13 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
     let mut p_offset = use_signal(|| 0i64);
     let mut opened = use_signal(String::new); // the charge whose details show
     let data = use_resource(move || {
-        let (v, off, per, poff, _, mine) = (view(), offset(), period(), p_offset(), rev(), mine());
+        let (v, off, per, poff, _, mine, tier) = (view(), offset(), period(), p_offset(), rev(), mine(), tier());
         async move {
             let q = |s: &str| s.replace('+', "%2B");
-            let held = held_in(&mine);
+            // While the plan's included credit lasts, it paid for the newest money moved into the
+            // wallet (credit goes first), so nothing comes off the account's charges.
+            let credit_left = tier["included_credit"].as_f64().unwrap_or(0.0) - tier["credit_used"].as_f64().unwrap_or(0.0);
+            let held = if credit_left < 0.005 { held_in(&mine) } else { 0.0 };
             if per.is_some() || v == "all" {
                 let o = if per.is_some() { poff } else { off };
                 let mut url = format!("/transactions?all=true&limit={PAGE}&offset={o}");
@@ -1357,7 +1360,6 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
         }
     });
     let n = |v: &Value| -> f64 { v.as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0) };
-    let plural = |k: i64, w: &str| format!("{k} {w}{}", if k == 1 { "" } else { "s" });
     let label = move |ymd: &str| -> String {
         let Ok(d) = chrono::NaiveDate::parse_from_str(ymd, "%Y-%m-%d") else { return ymd.to_string() };
         let this_year = d.format("%Y").to_string() == chrono::Local::now().format("%Y").to_string();
