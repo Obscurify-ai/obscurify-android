@@ -135,7 +135,7 @@ async function background() {
   if ($('.login')) await click('button.guest');
   await until(() => $('#composer'), 15000, 'the chat');
   const before = replies().length;
-  await type('#composer', 'Write a story of about 150 words about a lighthouse keeper who finds a message in a bottle.');
+  await type('#composer', 'Write a story of about 300 words about a lighthouse keeper who finds a message in a bottle.');
   await click('.send');
   await until(() => answering(), 30000, 'the answer to start');
   await host('background', 2000);
