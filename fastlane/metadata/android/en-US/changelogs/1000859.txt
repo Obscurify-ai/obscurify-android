@@ -1,0 +1,1 @@
+Right after signing in, your chats come over at once, and the list says they are loading instead of "No chats yet".

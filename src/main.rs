@@ -100,6 +100,75 @@ document.addEventListener('change', async e => {
   }
   if (images.length) dioxus.send({images});
 });
+// Favorites in the model picker are dragged into order by their handles. Rows only move by transform
+// while dragged (Dioxus owns the DOM); on release the new order goes to the app, and the transforms
+// go when its rows have moved.
+document.addEventListener('pointerdown', e => {
+  const handle = e.target.closest('.pick .handle');
+  if (!handle || e.button || window.obsDragging) return;
+  e.preventDefault();
+  const row = handle.closest('.pick'), list = row.parentElement;
+  const rows = [...list.querySelectorAll('.pick[data-fav]')], from = rows.indexOf(row), last = rows.length - 1;
+  const tops = rows.map(r => r.offsetTop), heights = rows.map(r => r.offsetHeight);
+  const startY = e.clientY, startScroll = list.scrollTop;
+  let y = startY, to = from, frame = 0;
+  window.obsDragging = true;
+  handle.setPointerCapture(e.pointerId);
+  row.dataset.dragging = 1; list.dataset.sorting = 1;
+  const place = () => {
+    const by = Math.max(tops[0] - tops[from], Math.min(y - startY + list.scrollTop - startScroll, tops[last] + heights[last] - tops[from] - heights[from]));
+    const top = tops[from] + by, bottom = top + heights[from];
+    to = from;
+    rows.forEach((_, i) => {
+      const middle = tops[i] + heights[i] / 2;
+      if (i < from && top < middle) to = Math.min(to, i);
+      if (i > from && bottom > middle) to = Math.max(to, i);
+    });
+    rows.forEach((r, i) => {
+      const shift = i === from ? by : i > from && i <= to ? -heights[from] : i < from && i >= to ? heights[from] : 0;
+      r.style.transform = shift ? `translateY(${shift}px)` : '';
+    });
+  };
+  // Near its top or bottom edge, the list scrolls.
+  const tick = () => {
+    const box = list.getBoundingClientRect(), edge = 48;
+    const near = y < box.top + edge ? y - box.top - edge : y > box.bottom - edge ? y - box.bottom + edge : 0;
+    if (near) { list.scrollTop += Math.max(-12, Math.min(12, near / 3)); place(); }
+    frame = requestAnimationFrame(tick);
+  };
+  const move = ev => { y = ev.clientY; place(); };
+  const ends = ['pointerup', 'pointercancel', 'lostpointercapture'];
+  const clear = () => { delete list.dataset.sorting; delete row.dataset.dragging; rows.forEach(r => { r.style.transform = ''; }); window.obsDragging = false; };
+  const finish = ev => {
+    handle.removeEventListener('pointermove', move);
+    ends.forEach(t => handle.removeEventListener(t, finish));
+    cancelAnimationFrame(frame);
+    if (ev.type !== 'pointerup' || to === from) return clear();
+    const ids = rows.map(r => r.dataset.fav);
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
+    let done = false;
+    const settled = () => { if (!done) { done = true; seen.disconnect(); clear(); } };
+    const seen = new MutationObserver(settled);
+    seen.observe(list, {childList: true});
+    setTimeout(settled, 600);
+    dioxus.send({favorites: ids});
+  };
+  handle.addEventListener('pointermove', move);
+  ends.forEach(t => handle.addEventListener(t, finish));
+  frame = requestAnimationFrame(tick);
+});
+// The handle takes arrow keys too.
+document.addEventListener('keydown', e => {
+  const handle = e.target.closest && e.target.closest('.pick .handle');
+  const step = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0;
+  if (!handle || !step) return;
+  e.preventDefault();
+  const row = handle.closest('.pick'), ids = [...row.parentElement.querySelectorAll('.pick[data-fav]')].map(r => r.dataset.fav);
+  const from = ids.indexOf(row.dataset.fav), to = from + step;
+  if (to < 0 || to >= ids.length) return;
+  ids.splice(to, 0, ids.splice(from, 1)[0]);
+  dioxus.send({favorites: ids});
+});
 setInterval(() => {
   const el = document.getElementById('msgs');
   if (!el || el.dataset.watch) return;
@@ -264,6 +333,7 @@ impl App {
     }
     fn signed_in(mut self) {
         self.screen.set(Screen::Chat);
+        bg(sync::tick(self)); // the account's chats, without waiting for the next round (30 s)
         self.refresh_balance();
         self.refresh_top_ups();
     }
@@ -271,6 +341,7 @@ impl App {
         bg(async move { let _ = api::call("POST", "/logout", Some(json!({}))).await; api::forget(); });
         private::forget();
         sync::forget();
+        *sync::LOOKED.write() = false;
         for m in self.convs.peek().iter() {
             store::remove(&format!("chat-{}.json", m.id));
         }
@@ -543,6 +614,9 @@ fn Root() -> Element {
                     bg(sync::tick(app));
                     if !matches!(*app.screen.peek(), Screen::Login | Screen::Signup) { app.refresh_top_ups() }
                 }
+            } else if let Some(ids) = v["favorites"].as_array() {
+                let ids: Vec<String> = ids.iter().filter_map(|i| i.as_str().map(String::from)).collect();
+                chat::reorder_favorites(app, ids)
             } else if let Some(e) = v["doc_error"].as_str() {
                 app.say(e)
             } else if let Some(name) = v["doc"]["name"].as_str() {
