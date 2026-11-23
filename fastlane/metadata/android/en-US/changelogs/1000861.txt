@@ -1,1 +1,1 @@
-Math in answers is shown as formulas instead of raw TeX, on the phone with nothing downloaded.
+Math in answers is shown as formulas instead of raw TeX, on the phone with nothing downloaded. Lines in an answer stay under each other instead of running together.

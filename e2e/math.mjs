@@ -1,4 +1,4 @@
-// Math in replies, as on the web chat: TeX between $...$, $$...$$, \(...\) and \[...\] is typeset by
+// Math in replies, as on the web chat (and single line breaks kept): TeX between $...$, $$...$$, \(...\) and \[...\] is typeset by
 // the bundled KaTeX (nothing fetched); money, code and broken TeX are left as text. Guest chat with a
 // scripted reply, so no model is called. Leaves a screenshot.
 //   node flaky-proxy.mjs &  node math.mjs   (test APK with OBSCURIFY_API=http://127.0.0.1:8093,
@@ -26,6 +26,9 @@ const REPLY = [
   '```',
   '',
   'A slip: $\\frac{1}{$ and $\\href{javascript:alert(1)}{x}$.',
+  '',
+  'Roses are red,',
+  'violets are blue.',
 ].join('\n');
 
 const { page } = await launch(true);
@@ -67,5 +70,6 @@ ok(!/<a\b[^>]*javascript|href="javascript/i.test(r.html), 'links in TeX are not 
 ok(!r.html.includes('OBSCURIFYMATH'), 'no math token is left in the reply');
 ok(r.width <= r.box + 1, `a wide formula scrolls inside the reply (${r.width} <= ${r.box})`);
 ok(r.fetched.length === 0, 'KaTeX is not fetched from the network');
+ok(/red,<br\s*\/?>\s*violets/.test(r.html), 'a line under another stays under it');
 execFileSync('sh', ['-c', `adb exec-out screencap -p > ${SHOTS}/math.png`]);
 process.exit(0);

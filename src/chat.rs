@@ -882,7 +882,7 @@ fn restore_math(mut html: String, math: &[(String, bool)]) -> String {
     html
 }
 
-/// Markdown to HTML with raw HTML shown as text, only http(s)/mailto links, and images turned into
+/// Markdown to HTML, a single line break kept, with raw HTML shown as text, only http(s)/mailto links, and images turned into
 /// links (a model's image would load from a third party and reveal the phone's IP).
 pub fn md(s: &str) -> String {
     let (s, math) = protect_math(s);
@@ -901,6 +901,8 @@ pub fn md(s: &str) -> String {
             Event::Start(Tag::Link { link_type, dest_url, title, id })
         }
         Event::End(TagEnd::Image) => Event::End(TagEnd::Link),
+        // A line under another stays under it (poems, addresses, line-by-line answers), as on the web.
+        Event::SoftBreak => Event::HardBreak,
         e => e,
     });
     let mut out = String::new();
