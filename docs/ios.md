@@ -97,8 +97,8 @@ reading the backup flag on the app's files. It runs against production as a gues
 `E2E_SIGNUP=1`, as CI does) makes a new account and deletes it from the app at the end, so nothing is
 left behind. No secrets, and no screenshot of an account code: artifacts of this public repo are
 public. The e2e build never ships: `tools/ios.sh device` refuses `E2E=1` and fails if the driver's
-marker is in the binary. The simulator doesn't let the app ask for notifications, so the e2e build
-doesn't ask; the log says whether the "answer ready" notification was posted or refused.
+marker is in the binary. The e2e build doesn't ask for notifications (the alert would cover the
+screenshots); the log says whether the "answer ready" notification was posted or refused.
 
 ## Parity with the Play build
 
@@ -108,7 +108,7 @@ it stands on the iPhone. "Simulator" means `e2e/ios/driver.js` checked it in CI 
 "device" means it depends on native behaviour the simulator run can't show (pickers, the keyboard,
 Safari, notifications on screen).
 
-Run: RUNURL
+Run: https://github.com/Obscurify-ai/obscurify-android/actions/runs/45132255600 (all checks green; screenshots from it are in `ios/listing/screenshots/`).
 
 | Feature (Play build) | iPhone | How we know |
 |---|---|---|
@@ -134,7 +134,7 @@ Run: RUNURL
 | Account: balance, plan, account code, API keys; no payments, no plan buying, no word about buying elsewhere | Works | Simulator: Account screen, no Add funds and no buy-elsewhere text |
 | Delete account in the app | Works | Simulator: the new account deleted from Account, back at sign-in |
 | Sign out | Same code | Not driven on iOS |
-| Long answers with the app in the background, "answer ready" notification | Partly | Simulator: an answer kept streaming and finished after the app left the screen, and the notification was handed to iOS. iOS gives about 30 s, not Android's foreground service; past that the server finishes a signed-in answer and the app picks it up (same code, not driven). The notification on screen and the permission prompt need a device |
+| Long answers with the app in the background, "answer ready" notification | Partly | Simulator: with Settings in front, an answer kept streaming for 11 s and finished in the background, and the notification was handed to iOS (`addNotificationRequest` succeeded). iOS gives about 30 s, not Android's foreground service; past that the server finishes a signed-in answer and the app picks it up (same code, not driven). The notification on screen and the permission prompt need a device |
 | Lost connection: waits and carries on | Same code | iOS uses the page's `online` event; not driven |
 | Answer picked up after the app was killed (server-held) | Same code | Not driven on iOS (Android: background.mjs) |
 | Compaction of long chats, agent runs (100 steps) | Same code | Not driven on iOS |
