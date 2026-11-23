@@ -7,6 +7,9 @@
 #   tools/ios.sh device     iPhone app -> target/ios-device/Obscurify.app and Obscurify.ipa (ad-hoc
 #                           signed: re-sign it for a device, e.g. with xtool, or for the App Store)
 #   tools/ios.sh sim        build, boot a simulator, install, launch, screenshot -> target/ios/
+#   tools/ios.sh e2e        the e2e build in an iPhone Pro Max simulator, driven by e2e/ios/driver.js
+#                           against production; screenshots and logs -> target/ios/e2e/ (E2E_SIGNUP=1
+#                           also makes an account, and deletes it from the app at the end)
 #
 # Every build gets what an App Store upload needs that dx doesn't make (docs/ios.md, "Bundle
 # contents"): the app icon, the launch screen, the privacy manifest and the Info.plist keys, and is
@@ -144,6 +147,18 @@ sim() {
   echo "screenshot $(pwd)/target/ios/screenshot.png"
 }
 
+e2e() {
+  E2E=1 build "${IOS_TARGET:-aarch64-apple-ios-sim}" target/ios
+  local udid=${SIM_UDID:-$(simulator "${SIM_NAME:-Pro Max}")}
+  boot "$udid"
+  # Store screenshots: 9:41, full bars and battery.
+  xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
+    --cellularMode active --cellularBars 4 --batteryState charged --batteryLevel 100 || true
+  xcrun simctl uninstall "$udid" "$id" 2>/dev/null || true
+  xcrun simctl install "$udid" target/ios/Obscurify.app
+  python3 e2e/ios/host.py "$udid" "$id" target/ios/e2e
+}
+
 device() {
   [ "${E2E:-}" != 1 ] || { echo "no e2e driver in a device build" >&2; exit 2; }
   build aarch64-apple-ios target/ios-device
@@ -156,5 +171,6 @@ case "${1:-build}" in
   build) build "${IOS_TARGET:-aarch64-apple-ios-sim}" target/ios ;;
   device) device ;;
   sim) sim ;;
-  *) echo "usage: $0 build|device|sim" >&2; exit 2 ;;
+  e2e) e2e ;;
+  *) echo "usage: $0 build|device|sim|e2e" >&2; exit 2 ;;
 esac

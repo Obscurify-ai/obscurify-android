@@ -35,8 +35,7 @@ pub const FREE_MODEL: &str = "meta-llama/llama-3.3-70b-instruct";
 /// content guard on every completion (`api::play_guard`). Gated where it can't be got around: the
 /// Funds screen never renders and the model list is filtered where it loads.
 pub const PLAY: bool = cfg!(feature = "play");
-/// The iPhone app: the store build (`PLAY`), with the native glue in ios.rs instead of MainActivity.kt,
-/// and no Code Mode yet (`code::code_blocked`).
+/// The iPhone app: the store build (`PLAY`), with the native glue in ios.rs instead of MainActivity.kt.
 pub const IOS: bool = cfg!(target_os = "ios");
 
 // ---- JS bridge: links, Back, visibility, picked images, the chat pinned to the bottom ----
@@ -423,6 +422,7 @@ impl App {
 }
 
 fn main() {
+    store::exclude_secrets_from_backup();
     // "Always connect through Tor": Tor starts before anything can make a request.
     if tor::always() {
         tor::start()
@@ -630,6 +630,21 @@ fn Root() -> Element {
                 a.extend(imgs.iter().filter_map(|i| i.as_str().map(String::from)));
                 a.truncate(4);
             }
+        }
+    });
+
+    // The iPhone e2e build: e2e/ios/driver.js drives the app; e2e/ios/host.py reads this stderr.
+    #[cfg(feature = "e2e")]
+    use_future(move || async move {
+        const DRIVER: &str = include_str!("../e2e/ios/driver.js");
+        let signup = option_env!("E2E_SIGNUP") == Some("1");
+        let mut e = document::eval(&format!("const SIGNUP = {signup};\n{DRIVER}"));
+        while let Ok(v) = e.recv::<Value>().await {
+            if let Some(s) = v["log"].as_str() { eprintln!("E2E {s}") }
+            else if let Some(s) = v["shot"].as_str() { eprintln!("E2E-SHOT {s}") }
+            else if let Some(s) = v["host"].as_str() { eprintln!("E2E-HOST {s}") }
+            else if v["close_page"] == true { ios::close_page() }
+            else if let Some(ok) = v["done"].as_bool() { eprintln!("E2E-DONE {}", if ok { "ok" } else { "failed" }) }
         }
     });
 

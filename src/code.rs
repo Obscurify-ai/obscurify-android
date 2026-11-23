@@ -122,14 +122,9 @@ pub fn tools_on(app: &App) -> bool {
 
 /// Code can't run while Tor is on: the code runs in a WebView with the phone's own connection
 /// (it may fetch from the internet), which Tor can't carry.
-/// Nor on iOS yet: there it needs a WKWebView of its own with no bridges (MainActivity.kt's sandbox).
-pub fn code_blocked() -> bool { crate::IOS || crate::tor::wanted() || crate::tor::always() }
+pub fn code_blocked() -> bool { crate::tor::wanted() || crate::tor::always() }
 
-pub const TOR_NO_CODE: &str = if crate::IOS {
-    "Code doesn't run in the iPhone app yet. Tools still work."
-} else {
-    "Code is off while you're connected through Tor: it would use your own connection."
-};
+pub const TOR_NO_CODE: &str = "Code is off while you're connected through Tor: it would use your own connection.";
 
 /// The Code switch is on: the model can run code.
 pub fn code_on(app: &App) -> bool {
@@ -254,8 +249,18 @@ pub fn on_sandbox(text: &str) {
 }
 
 fn post(v: &Value) {
-    let text = serde_json::to_string(&v.to_string()).unwrap_or_default();
-    js(&format!("window.android && android.sandboxPost && android.sandboxPost({text})"));
+    #[cfg(target_os = "ios")]
+    crate::ios::sandbox_post(v.to_string());
+    #[cfg(not(target_os = "ios"))]
+    js(&format!("window.android && android.sandboxPost && android.sandboxPost({})", serde_json::to_string(&v.to_string()).unwrap_or_default()));
+}
+
+/// (Re)starts the sandbox WebView (MainActivity.kt on Android, ios.rs on the iPhone).
+fn start(base: &str) {
+    #[cfg(target_os = "ios")]
+    crate::ios::sandbox_start(base);
+    #[cfg(not(target_os = "ios"))]
+    js(&format!("window.android && android.sandboxStart && android.sandboxStart({})", serde_json::to_string(base).unwrap_or_default()));
 }
 
 async fn next(rx: &mut UnboundedReceiver<Value>, ms: u32) -> Option<Value> {
@@ -273,7 +278,7 @@ async fn ensure(rx: &mut UnboundedReceiver<Value>, base: &str, mut app: App, sto
     if READY.load(Ordering::SeqCst) {
         return Ok(());
     }
-    js(&format!("window.android && android.sandboxStart && android.sandboxStart({})", serde_json::to_string(base).unwrap_or_default()));
+    start(base);
     // The sandbox's pages come from the server, so with no connection it keeps trying. With the
     // server reachable, MAX_LOST_WAITS restarts (~2 min) and it stops with an error instead: a
     // sandbox that won't start used to hold the chat on "Waiting for Obscurify" for good.
@@ -297,7 +302,7 @@ async fn ensure(rx: &mut UnboundedReceiver<Value>, base: &str, mut app: App, sto
             }
             app.waiting.set(true);
             asked = crate::store::now();
-            js(&format!("window.android && android.sandboxStart && android.sandboxStart({})", serde_json::to_string(base).unwrap_or_default()));
+            start(base);
         }
     }
     app.waiting.set(false);
@@ -1131,6 +1136,11 @@ pub fn open_page(app: &App, title: &str, html: &str) {
         return app.say(TOR_NO_CODE);
     }
     let base = app.code.peek().base.clone();
-    let q = |s: &str| serde_json::to_string(s).unwrap_or_default();
-    js(&format!("window.android && android.openPage && android.openPage({}, {}, {})", q(&base), q(title), q(html)));
+    #[cfg(target_os = "ios")]
+    crate::ios::open_page(&base, title, html);
+    #[cfg(not(target_os = "ios"))]
+    {
+        let q = |s: &str| serde_json::to_string(s).unwrap_or_default();
+        js(&format!("window.android && android.openPage && android.openPage({}, {}, {})", q(&base), q(title), q(html)));
+    }
 }

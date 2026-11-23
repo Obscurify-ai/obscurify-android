@@ -417,6 +417,15 @@ fn thread_body(body: &Value) -> (Value, Vec<String>) {
     (out, sent)
 }
 
+/// The iPhone app sends nothing to a model before the AI providers sheet is agreed to (`chat::needs_consent`).
+pub fn consent() -> Result<(), String> {
+    if crate::chat::needs_consent() {
+        *crate::chat::ASK_CONSENT.write() = true;
+        return Err(crate::chat::NEEDS_CONSENT.into());
+    }
+    Ok(())
+}
+
 /// Sent first in every completion from the Play build: Play requires AI apps to prevent this content.
 pub const PLAY_GUARD: &str = "Never write sexually explicit content, content that sexualizes minors, or instructions that would help someone seriously hurt people.";
 
@@ -432,6 +441,7 @@ pub fn play_guard(body: &mut Value) {
 /// Starts a streamed chat completion (`/web/chat/completions`, every plan). Returns the open
 /// response; the caller reads its SSE body. Sends only what the server doesn't already hold.
 pub async fn chat(body: &Value) -> Result<ReplyStream, String> {
+    consent()?;
     let mut body = body.clone();
     play_guard(&mut body);
     // Signed in, the server finishes the answer whatever happens to the app (closed, killed, offline)
@@ -481,6 +491,7 @@ fn verifier_options() -> obscurify_tee_verify::Options {
 /// and sent whole (never as a held thread). Nothing is sent when that fails ("Not encrypted: ...").
 /// The stream decrypts each event as it reads it.
 pub async fn chat_encrypted(body: &Value) -> Result<ReplyStream, String> {
+    consent()?;
     let model = body["model"].as_str().unwrap_or_default().to_string();
     let nonce = obscurify_tee_verify::new_nonce();
     let route = [("X-Obscurify-TEE-Route", E2EE_ROUTE.to_string())];

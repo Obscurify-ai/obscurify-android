@@ -17,6 +17,9 @@ play = []
 # In-app Tor (Arti): the Tor button and "Always connect through Tor". On by default; the Play build
 # is made with --no-default-features and leaves it out, as it leaves out the Tor button.
 default = ["tor"]
+# The iPhone app's e2e build (tools/ios.sh e2e): e2e/ios/driver.js drives the app in the simulator.
+# Test builds only; `tools/ios.sh device` refuses it and checks the binary.
+e2e = ["play"]
 tor = ["dep:arti-client", "dep:tor-rtcompat", "dep:rustls", "tokio/rt-multi-thread", "tokio/net", "tokio/io-util"]
 
 [dependencies]
@@ -52,12 +55,19 @@ flate2 = "1"
 hmac = "0.12"
 sha2 = "0.10"
 
-# The iPhone app (src/ios.rs): links, the clipboard and the screen. All already in the tree through Dioxus.
+# The iPhone app (src/ios.rs): links, the clipboard, the screen, Code Mode's sandbox WebView, finishing
+# an answer in the background and saying it's ready, and keeping secrets out of backups. All in the
+# tree through Dioxus except the notifications.
 [target.'cfg(target_os = "ios")'.dependencies]
 webbrowser = "1.2"
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
-objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIPasteboard"] }
+block2 = "0.6"
+dispatch2 = "0.3"
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSURLRequest", "NSError", "NSValue", "NSObject", "NSGeometry", "NSArray"] }
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "UIApplication", "UIResponder", "UIPasteboard", "UIView", "UIWindow", "UIButton", "UIControl", "UILabel", "UIColor", "UIFont", "UIGeometry"] }
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKUserContentController", "WKScriptMessage", "WKScriptMessageHandler", "WKNavigationDelegate", "WKNavigationAction", "WKFrameInfo", "WKNavigation", "WKPreferences"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationTrigger", "UNNotificationSound"] }
 
 [profile.release]
 opt-level = "s"

@@ -4993,8 +4993,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d87d638e33c06f577498cbcc50491496a3ed4246998a7fbba7ccb98b1e7eab22"
 dependencies = [
  "bitflags 2.13.2",
+ "block2",
  "objc2",
  "objc2-core-foundation",
+ "objc2-foundation",
+]
+
+[[package]]
+name = "objc2-user-notifications"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9df9128cbbfef73cda168416ccf7f837b62737d748333bfe9ab71c245d76613e"
+dependencies = [
+ "bitflags 2.13.2",
+ "block2",
+ "objc2",
  "objc2-foundation",
 ]
 
@@ -5029,18 +5042,23 @@ dependencies = [
  "arti-client",
  "base64 0.22.1",
  "blind-rsa-signatures",
+ "block2",
  "bytes",
  "calamine",
  "chrono",
  "dioxus",
+ "dispatch2",
  "flate2",
  "futures-channel",
  "futures-util",
  "hmac 0.12.1",
  "iana-time-zone",
  "objc2",
+ "objc2-core-foundation",
  "objc2-foundation",
  "objc2-ui-kit",
+ "objc2-user-notifications",
+ "objc2-web-kit",
  "obscurify-tee-verify",
  "pdf-extract",
  "pulldown-cmark",

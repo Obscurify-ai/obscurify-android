@@ -766,6 +766,16 @@ fn run_with(mut app: App, follow: Option<String>) {
     });
 }
 
+/// The iPhone app asks once, before the first message reaches a model, whether chats may be sent to
+/// AI model providers (App Store guideline 5.1.2(i)). Agreeing is kept here.
+pub const AI_CONSENT: &str = "ai-consent.json";
+/// A request was stopped for want of it: the sheet opens wherever the chat is.
+pub static ASK_CONSENT: GlobalSignal<bool> = Signal::global(|| false);
+pub const NEEDS_CONSENT: &str = "Nothing was sent: agree to sending your chats to AI model providers first.";
+
+/// Nothing may go to a model yet (`api::chat` and the summaries check it too).
+pub fn needs_consent() -> bool { crate::IOS && !store::load::<bool>(AI_CONSENT) }
+
 fn send(mut app: App, text: String) {
     if app.live.peek().is_some() || (text.trim().is_empty() && app.attach.peek().is_empty() && app.docs.peek().is_empty()) {
         return;
@@ -891,10 +901,16 @@ pub fn ChatView() -> Element {
     let tor_on = crate::code::code_blocked();
     let n = c.messages.len();
 
+    // The first message waits for the AI providers sheet (iPhone); the text stays meanwhile.
+    let mut consent = use_signal(|| false);
     let mut do_send = move || {
         // Images attached for a model that can't read them: nothing is sent, the text stays.
         if !app.attach.peek().is_empty() && !app.takes_images() {
             app.say(IMAGES_NOT_SUPPORTED);
+            return;
+        }
+        if needs_consent() && !(text.peek().trim().is_empty() && app.attach.peek().is_empty() && app.docs.peek().is_empty()) {
+            consent.set(true);
             return;
         }
         let t = text.peek().clone();
@@ -989,8 +1005,7 @@ pub fn ChatView() -> Element {
                                     span { class: "label", "Tools" }
                                     span { class: "switch" }
                                 }
-                                // No Code switch in the iPhone app: code doesn't run there yet.
-                                if separate && !crate::IOS {
+                                if separate {
                                     button { class: if !capable || tor_on { "item code-switch na" } else if code_on { "item code-switch on" } else { "item code-switch" },
                                         role: "switch", aria_checked: "{capable && code_on}", aria_disabled: "{!capable || tor_on}",
                                         onclick: move |_| {
@@ -1026,6 +1041,24 @@ pub fn ChatView() -> Element {
             Overlay::Drawer => rsx! { Drawer {} },
             Overlay::Models => rsx! { Models {} },
             Overlay::None => rsx! {},
+        }
+        if *consent.read() || *ASK_CONSENT.read() {
+            div { class: "veil" }
+            div { class: "sheet consent",
+                h2 { "Before your first message" }
+                p { "To answer, Obscurify sends your messages and anything you attach to the AI model provider that runs the model you pick. Tools such as web search send what they look up to the service behind them. Providers get the chat, not your account." }
+                p { class: "muted", "Nothing is sent until you agree. "
+                    a { onclick: move |_| crate::open_url(&format!("{}/privacy", api::BASE)), "Privacy Policy" }
+                }
+                div { class: "row end",
+                    button { class: "bare", onclick: move |_| { consent.set(false); *ASK_CONSENT.write() = false }, "Not now" }
+                    button { class: "go", onclick: move |_| {
+                        store::save(AI_CONSENT, &true);
+                        *ASK_CONSENT.write() = false;
+                        if *consent.peek() { consent.set(false); do_send() }
+                    }, "Agree and send" }
+                }
+            }
         }
         PrivateSetup {}
     }

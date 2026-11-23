@@ -32,6 +32,12 @@ pub fn load<T: DeserializeOwned + Default>(name: &str) -> T {
     std::fs::read_to_string(dir().join(name)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
 
+/// Kept out of iCloud and computer backups on the iPhone (docs/ios.md, "Backups"): the session and the
+/// keys for private chats and chat sync. Signing in again brings all of them back, and a backup that
+/// held them could be restored onto another phone already signed in.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub const NOT_BACKED_UP: &[&str] = &["session.json", "unlinkable-seed.json", "unlinkable-state.json", "sync-seed.json"];
+
 /// Writes through a temp file and a rename, so a crash never leaves half a file (the wallet holds money).
 pub fn save<T: Serialize>(name: &str, value: &T) {
     let path = dir().join(name);
@@ -40,6 +46,19 @@ pub fn save<T: Serialize>(name: &str, value: &T) {
         && std::fs::write(&tmp, s).is_ok()
     {
         let _ = std::fs::rename(&tmp, &path);
+        #[cfg(target_os = "ios")]
+        if NOT_BACKED_UP.contains(&name) {
+            crate::ios::exclude_from_backup(&path)
+        }
+    }
+}
+
+/// The files kept out of backups, as they are now (an older version's, or after an update).
+pub fn exclude_secrets_from_backup() {
+    #[cfg(target_os = "ios")]
+    for name in NOT_BACKED_UP {
+        let path = dir().join(name);
+        if path.exists() { crate::ios::exclude_from_backup(&path) }
     }
 }
 

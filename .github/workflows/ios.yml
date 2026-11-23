@@ -14,7 +14,7 @@ env:
 
 jobs:
   simulator:
-    name: Simulator build and screenshot
+    name: Simulator e2e and screenshots
     runs-on: macos-latest
     timeout-minutes: 90
     steps:
@@ -50,8 +50,10 @@ jobs:
           echo ~/.local/bin >> $GITHUB_PATH
           ~/.local/bin/dx --version | grep -F "$DX_VERSION"
 
-      - name: Build, launch in the simulator, screenshot
-        run: WAIT=40 tools/ios.sh sim
+      - name: e2e in the simulator (guest, then a new account deleted at the end)
+        env:
+          E2E_SIGNUP: "1"
+        run: tools/ios.sh e2e
 
       - name: Diagnostics
         if: always()
@@ -60,7 +62,7 @@ jobs:
           id=$(sed -n '/^\[ios\]/,/^\[/s/^identifier = "\(.*\)"/\1/p' Dioxus.toml)
           xcrun simctl io booted screenshot target/ios/screenshot-end.png || true
           xcrun simctl spawn booted log show --last 10m --style compact --predicate 'process CONTAINS[c] "obscurify" OR subsystem CONTAINS[c] "obscurify"' > target/ios/app.log 2>&1 || true
-          tail -100 target/ios/app.log || true
+          tail -40 target/ios/app.log || true
           cp ~/Library/Logs/DiagnosticReports/*.ips target/ios/ 2>/dev/null || true
           ls target/ios
           # The app's files: chats and settings go in Library/Application Support.

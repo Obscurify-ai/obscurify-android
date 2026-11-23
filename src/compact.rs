@@ -114,6 +114,7 @@ fn chunks(lines: &[String], max: usize) -> Vec<String> {
 async fn request(model: &str, prompt: &str, stop: &impl Fn() -> bool) -> Result<String, String> {
     let mut body = json!({"model": model, "stream": false, "max_tokens": SUMMARY_MAX_TOKENS, "messages": [{"role": "user", "content": prompt}]});
     api::play_guard(&mut body);
+    api::consent()?;
     let started = crate::store::now();
     let mut attempt = 0u32;
     loop {
