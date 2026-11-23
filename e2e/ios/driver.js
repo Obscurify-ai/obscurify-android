@@ -33,7 +33,7 @@ async function click(sel, t, ms) {
 }
 async function type(sel, value) {
   const el = await until(() => $(sel), 30000, sel);
-  el.focus();
+  // Not focused: the simulator's keyboard and its first-use tip would cover the screenshots.
   el.value = value;
   el.dispatchEvent(new Event('input', {bubbles: true}));
   await sleep(300);
@@ -59,8 +59,6 @@ function dismiss() {
 
 async function guest() {
   await until(() => $('.login'), 45000, 'the sign-in screen');
-  await sleep(1500);
-  await shot('signin');
   await click('button.guest');
   await until(() => $('#composer'), 15000, 'the chat');
   log('model: ' + text($('.title.model')));
@@ -127,7 +125,13 @@ async function guest() {
     await click('.report button', 'Cancel');
   }
 
-  // An answer that finishes with the app in the background: iOS gives it time, and it says so.
+}
+
+// An answer that finishes with the app in the background: iOS gives it time, and it says so. Last,
+// because the status bar keeps a "back to" link afterwards.
+async function background() {
+  if ($('.login')) await click('button.guest');
+  await until(() => $('#composer'), 15000, 'the chat');
   const before = replies().length;
   await type('#composer', 'Write a 400-word story about a lighthouse keeper who finds a message in a bottle.');
   await click('.send');
@@ -182,6 +186,10 @@ try {
   await until(() => $('#main > *'), 45000, 'the app');
   await guest();
   await account();
+  // The sign-in screen (Delete account ends there).
+  if (byText('h1', 'Create Account')) await click('a', 'Sign in');
+  if (byText('h1', 'Sign In')) { await sleep(1000); await shot('signin'); }
+  await background();
 } catch (e) {
   ok(false, 'stopped: ' + (e && e.message || e));
   // Never a screenshot of a real account code (artifacts are public).
