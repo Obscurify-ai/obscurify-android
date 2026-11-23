@@ -657,7 +657,7 @@ fn Root() -> Element {
                 // The host takes it (several seconds in CI) and writes e2e-shot-done: then the driver goes on.
                 eprintln!("E2E-SHOT {s}");
                 let done = store::dir().join("e2e-shot-done");
-                for _ in 0..120 {
+                for _ in 0..720 {
                     if std::fs::read_to_string(&done).is_ok_and(|n| n.trim() == s) { break }
                     sleep(250).await;
                 }

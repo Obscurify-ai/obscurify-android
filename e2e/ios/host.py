@@ -97,8 +97,8 @@ note('sandbox: runner loaded' in log, 'Code Mode: the sandbox WKWebView loaded t
 note('page: open' in log, 'Code Mode: a page opened full screen')
 note('working: off (app state 2)' in log or 'working: off (app state 1)' in log,
      'an answer finished with the app in the background' if 'app state 2)' in log or 'app state 1)' in log else 'no answer finished in the background')
-note('notified: answer ready' in log or "couldn't notify" in log, 'the answer-ready notification was posted (' + (
-    'shown' if 'notified: answer ready' in log else 'refused: notifications not allowed in this simulator') + ')')
+note('notified: answer ready' in log or "couldn't notify" in log, 'the answer-ready notification was ' + (
+    'posted (UNUserNotificationCenter took it)' if 'notified: answer ready' in log else 'refused (notifications not allowed in this simulator)'))
 for line in log.splitlines():
     if 'backup:' in line:
         print(line, flush=True)
