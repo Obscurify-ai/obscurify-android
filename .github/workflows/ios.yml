@@ -24,6 +24,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios-sim, aarch64-apple-ios
+          # dx strips the app with rust-objcopy.
+          components: clippy, llvm-tools
 
       - name: Cache cargo
         uses: actions/cache@v4
