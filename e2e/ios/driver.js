@@ -98,6 +98,8 @@ async function guest() {
   ok(!!r.querySelector('.run.ok'), 'code ran in the sandbox: ' + text(r.querySelector('.run-head')));
   ok(!!r.querySelector('img.run-img'), 'its chart is shown');
   ok(/385/.test(text(r)), 'the sum is 385');
+  const chart = r.querySelector('img.run-img');
+  if (chart) { chart.scrollIntoView({block: 'center'}); await sleep(800); }
   await shot('code');
 
   // A page the model builds opens full screen in a sandbox WebView of its own.
@@ -147,6 +149,7 @@ async function account() {
   await until(() => byText('h1', 'Create Account'), 10000, 'Create Account');
   ok(!$('input[placeholder^="Referral"]'), 'sign-up: no referral code');
   ok(!!byText('label.check', "I'm 18 or older"), 'sign-up: 18+');
+  await sleep(3500); // the toast goes
   await shot('signup');
   if (!SIGNUP) return log('no SIGNUP: account screens skipped');
   $('.login .check input').click();
@@ -164,8 +167,9 @@ async function account() {
   await click('.title.model');
   await until(() => $$('.pick').length > 5, 20000, 'the model list');
   ok(!$$('.chip').some(c => /Uncensored|Roleplay/.test(text(c))), 'no Uncensored or Roleplay category');
-  const frontier = byText('.chip', 'Frontier');
-  if (frontier) { frontier.click(); await sleep(1200); }
+  // Free models: nothing in the screenshot asks for a plan.
+  const free = byText('.chip', 'Free');
+  if (free) { free.click(); await sleep(1200); }
   await shot('models');
   await click('.drawer .bar .icon');
 
@@ -188,7 +192,7 @@ try {
   await account();
   // The sign-in screen (Delete account ends there).
   if (byText('h1', 'Create Account')) await click('a', 'Sign in');
-  if (byText('h1', 'Sign In')) { await sleep(1000); await shot('signin'); }
+  if (byText('h1', 'Sign In')) { await sleep(4000); await shot('signin'); }
   await background();
 } catch (e) {
   ok(false, 'stopped: ' + (e && e.message || e));
