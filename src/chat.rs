@@ -811,12 +811,62 @@ fn ask_instead(mut app: App, i: usize, model: &str) {
     run(app);
 }
 
-/// Markdown to HTML with raw HTML shown as text, only http(s)/mailto links, and images turned into
-/// links (a model's image would load from a third party and reveal the phone's IP).
-pub fn md(s: &str) -> String {
-    use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, TagEnd, html};
+/// Bare http(s) addresses in a piece of text: (start, end) byte ranges. Ends at a space or `<`, and
+/// drops trailing punctuation (a `)` only when the address has more `)` than `(`).
+fn bare_urls(t: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(i) = t[from..].find("http").map(|i| i + from) {
+        let rest = &t[i..];
+        let scheme = if rest.starts_with("https://") { 8 } else if rest.starts_with("http://") { 7 } else { 0 };
+        let word_start = i == 0 || !t[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric());
+        if scheme == 0 || !word_start { from = i + 4; continue }
+        let mut end = i + rest.find(|c: char| c.is_whitespace() || c == '<' || c == '>' || c == '"').unwrap_or(rest.len());
+        while end > i + scheme {
+            let c = t[..end].chars().next_back().unwrap();
+            let open = |s: &str| s.matches('(').count() < s.matches(')').count();
+            if ".,;:!?'*_".contains(c) || (c == ')' && open(&t[i..end])) { end -= c.len_utf8() } else { break }
+        }
+        if end > i + scheme { out.push((i, end)) }
+        from = end.max(i + 4);
+    }
+    out
+}
+
+/// Markdown to HTML with raw HTML shown as text, only http(s)/mailto links, bare addresses made into
+/// links, and images turned into links (a model's image would load from a third party and reveal the
+/// phone's IP).
+pub fn md<'a>(s: &'a str) -> String {
+    use pulldown_cmark::{CowStr, Event, LinkType, Options, Parser, Tag, TagEnd, TextMergeStream, html};
     let safe = |u: &CowStr| { let l = u.to_lowercase(); l.starts_with("https://") || l.starts_with("http://") || l.starts_with("mailto:") };
     let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    // Text inside a link or a code block stays as it is.
+    let (mut in_link, mut in_code) = (0, false);
+    let link = move |ev: Event<'a>| -> Vec<Event<'a>> {
+        match &ev {
+            Event::Start(Tag::Link { .. }) => in_link += 1,
+            Event::End(TagEnd::Link) => in_link -= 1,
+            Event::Start(Tag::CodeBlock(_)) => in_code = true,
+            Event::End(TagEnd::CodeBlock) => in_code = false,
+            Event::Text(t) if in_link == 0 && !in_code => {
+                let urls = bare_urls(t);
+                if urls.is_empty() { return vec![ev] }
+                let (t, mut out, mut at) = (t.to_string(), Vec::new(), 0);
+                for (a, b) in urls {
+                    if a > at { out.push(Event::Text(CowStr::from(t[at..a].to_string()))) }
+                    let url = CowStr::from(t[a..b].to_string());
+                    out.push(Event::Start(Tag::Link { link_type: LinkType::Autolink, dest_url: url.clone(), title: "".into(), id: "".into() }));
+                    out.push(Event::Text(url));
+                    out.push(Event::End(TagEnd::Link));
+                    at = b;
+                }
+                if at < t.len() { out.push(Event::Text(CowStr::from(t[at..].to_string()))) }
+                return out;
+            }
+            _ => {}
+        }
+        vec![ev]
+    };
     let events = Parser::new_ext(s, opts).map(|ev| match ev {
         Event::Html(h) | Event::InlineHtml(h) => Event::Text(h),
         Event::Start(Tag::Link { link_type, dest_url, title, id }) => {
@@ -830,6 +880,8 @@ pub fn md(s: &str) -> String {
         Event::End(TagEnd::Image) => Event::End(TagEnd::Link),
         e => e,
     });
+    // The parser splits text at `_` and `*`; join it again so an address is one piece.
+    let events = TextMergeStream::new(events).flat_map(link);
     let mut out = String::new();
     html::push_html(&mut out, events);
     out

@@ -68,14 +68,16 @@ while time.time() < deadline and done is None:
             print('host: the app is back', flush=True)
         elif line.startswith('E2E-HOST check-backup'):
             support = os.path.join(container(), 'Library', 'Application Support')
-            for name in ('session.json', 'unlinkable-seed.json', 'chats.json', 'settings.json'):
+            chats = sorted(n for n in os.listdir(support) if n.startswith('chat-') and n.endswith('.json'))
+            print(f'host: {len(chats)} chat files', flush=True)
+            for name in ['session.json', 'unlinkable-seed.json', 'chats.json', 'settings.json'] + chats[:1]:
                 path = os.path.join(support, name)
                 if not os.path.exists(path):
                     print(f'host: no {name}', flush=True)
                     continue
                 attrs = sh('xattr', path).stdout
                 excluded = 'com_apple_backup_excludeItem' in attrs
-                secret = name in ('session.json', 'unlinkable-seed.json')
+                secret = name != 'settings.json'  # session, keys and chats stay out; settings go in
                 note(excluded == secret, f'{name} is {"not " if not excluded else ""}excluded from backups')
         elif line.startswith('E2E-DONE'):
             done = line.split()[-1]

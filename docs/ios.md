@@ -63,7 +63,7 @@ within the Apple operating system" at: no CCATS, and a French encryption declara
 is on the App Store in France. Under US rules this is mass-market encryption, and the source is public
 (GPL); both of those are our reading, not checked against the EAR text. In App Store Connect: the app
 uses encryption, standard algorithms; then upload the French declaration or leave France out.
-**Tony decides France.**
+**Tony, 2026-11-23: file the French declaration and keep France.**
 
 ## What's different on iOS
 
@@ -80,7 +80,7 @@ models or Tor.
 | Links | `android.open` → an intent | `webbrowser::open` → Safari |
 | Copy | `ClipboardManager` | `UIPasteboard` (the page's clipboard API would need a user gesture) |
 | Long answers | Foreground service with a notification, wake lock, "answer ready" notification | The screen stays on while an answer is worked on. Leaving the app, `beginBackgroundTask` gives the answer iOS's usual half minute or so, and if it ends with the app in the background a local notification says "Your answer is ready" (permission asked when the first answer starts, as on Android). Nothing is drawn while the app is in the background: iOS suspends the WebView, and Dioxus polls no task while a render waits for it. A signed-in answer the app couldn't finish is finished by the server and picked up on return. A Code Mode turn's steps and its sandbox stall in the background too (both are web views), and carry on when the app is back. `backgrounded()` is also true while the app is merely inactive (a system alert in front, such as the notification prompt that comes with the first answer), so that answer draws only once the alert is answered: check on a device |
-| Backups | Android's default (allowBackup not set, so Google backup may include the files) | Application Support goes into iCloud and computer backups, except the session and the keys for private chats and chat sync (`store::NOT_BACKED_UP`: `session.json`, `unlinkable-seed.json`, `unlinkable-state.json`, `sync-seed.json`), marked `isExcludedFromBackup` after every save and at launch. Signing in again brings all of them back. Chats, settings and `wallet.json` (blind vouchers, which the store build can't buy) are backed up. **Tony to confirm**: whether chats should stay out of backups too |
+| Backups | Android's default (allowBackup not set, so Google backup may include the files) | Application Support goes into iCloud and computer backups except the session, the keys for private chats and chat sync, and the chats (`store::not_backed_up`: `session.json`, `unlinkable-seed.json`, `unlinkable-state.json`, `sync-seed.json`, `chats.json`, `pending.json`, every `chat-*.json`), marked `isExcludedFromBackup` after every save and at launch. Signing in again brings the keys back, and synced chats come back from sync. Settings and `wallet.json` (blind vouchers, which the store build can't buy) are backed up. Chats out too: Tony, 2026-11-23 |
 | Back | System Back asks the page (`obsBack`) | No Back button: screens have their own ← |
 | Network back | `ConnectivityManager` callback → `obsOnline` | The page's `online` event |
 | Files | `/data/user/<id>/<package>/files` | `$HOME/Library/Application Support` in the app container |
@@ -187,20 +187,22 @@ waiting for Tony's approval.
 - **App Review risks**: Code Mode under 2.5.2 (fallback: Code off on iOS through `code::code_blocked`);
   models that need a plan bought on the website ("needs the Pro plan") under 3.1.1/3.1.3(f).
 
-### Decisions for Tony
+### Decided (Tony, 2026-11-23)
 
-Already done here but his to approve or undo: the Account screen on iOS no longer says funds and plans
-are on the website (3.1.3(f)); iPhone only and portrait only; the e2e runs against production (as a
-guest on every push; a by-hand run makes and deletes an account).
+1. Bundle id `ai.obscurify.ios`.
+2. Chats stay out of backups too (above).
+3. The AI providers sheet wording stays as it is.
+4. Age rating: not 18+ unless Apple's answers make it so. The answers in `ios/listing/app-store.md`
+   give 16+; the Terms and the sign-up screen still say 18+.
+5. Export compliance: file the French declaration and keep France.
+6. Code Mode stays on iOS for the first submission (fallback if App Review objects under 2.5.2:
+   Code off through `code::code_blocked`).
 
-1. Bundle id `ai.obscurify.ios` (permanent once the App Store Connect record exists).
-2. Backups: only the session and keys are kept out (above); chats are backed up. Keep chats out too?
-3. The AI providers sheet wording (`chat.rs`, `ChatView`).
-4. The listing text, age rating, App Privacy answers ("Other user content: not linked"?) and review
-   notes in `ios/listing/`, and the demo account for review. The description keeps the Play claims;
-   on iOS the notification, sync, Encrypted mode and attachments haven't been run yet.
-5. Export compliance: France (upload the French declaration) or leave France out.
-6. Code Mode and App Review 2.5.2: keep it on iOS (fallback: Code off through `code::code_blocked`).
+Still his to approve: the listing text, the App Privacy answers and review notes in `ios/listing/`,
+and a funded demo account for review. Done here and kept unless he says otherwise: the Account
+screen on iOS doesn't say funds and plans are on the website (3.1.3(f)); iPhone only and portrait
+only; the e2e runs against production (as a guest on every push; a by-hand run makes and deletes an
+account).
 
 ## Signing and TestFlight (once the Apple developer account exists)
 

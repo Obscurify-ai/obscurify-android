@@ -20,8 +20,13 @@ Category: Productivity (secondary: Utilities). Price: free. No in-app purchases.
 
 ## Age rating questionnaire
 
-Aiming at 18+, which the Terms require. The model answers whatever it's asked within the content
-guard (no sexually explicit content), so the content answers are about what a general assistant can say.
+Not 18+ unless the answers make it so (Tony, 2026-11-23); these give 16+. The store build has no
+uncensored or roleplay models, and the models it offers refuse sexually explicit content, so the
+answers are what a general assistant says when asked. Apple counts AI chat in the frequencies
+("you must consider how all app features, including AI assistants and chatbot functionality, impact
+the frequency of sensitive content", July 2025). The Terms and the sign-up screen still ask for 18+;
+the store rating doesn't have to match. An 18+ rating would also block unverified users in
+Australia, Brazil and Singapore.
 
 | Question | Answer |
 |---|---|
@@ -32,14 +37,14 @@ guard (no sexually explicit content), so the content answers are about what a ge
 | Social media | No |
 | Messaging and chat (between users) | No |
 | Shared location | No |
+| Dating and relationships | No: no matching people and no companion that engages in sexual or romantic content |
 | Advertising | No |
-| Profanity or crude humor | Frequent |
+| Profanity or crude humor | Infrequent |
 | Horror/fear themes | Infrequent |
-| Alcohol, tobacco or drug use or references | Frequent |
-| Dating and relationships | No |
-| Medical or treatment information | Frequent |
+| Alcohol, tobacco or drug use or references | Infrequent |
+| Medical or treatment information | Frequent (people ask health questions often): 16+ |
 | Health or wellness topics | Yes |
-| Mature or suggestive themes | Frequent |
+| Mature or suggestive themes | Infrequent |
 | Sexual content or nudity | Infrequent |
 | Graphic sexual content and nudity | No |
 | Cartoon or fantasy violence | Infrequent |
@@ -48,8 +53,8 @@ guard (no sexually explicit content), so the content answers are about what a ge
 | Guns or other weapons | Infrequent |
 | Gambling, simulated gambling, contests, loot boxes | No |
 
-Frequent alcohol/drug references give 18+. If App Store Connect offers a higher rating than the
-answers give, choose 18+.
+Expected result: 16+ (frequent medical information). If App Store Connect gives a different
+rating from these answers, keep its rating and don't override it higher.
 
 ## App Privacy ("nutrition label")
 
@@ -81,8 +86,8 @@ RSA signatures (RFC 9474) for private sessions, and the TEE enclave's key agreem
 "an industry standard algorithm, not provided within the Apple operating system" needs no CCATS, and
 needs a French encryption declaration only if the app is on the App Store in France. In App Store
 Connect: uses encryption, standard algorithms, then either upload the French declaration or leave
-France out of the countries. The source is public (GPL); whether the US rules then treat it as publicly
-available (no notice needed) is our reading, not checked. Decision for Tony: France or not.
+France out of the countries (Tony, 2026-11-23: file it, keep France). The source is public (GPL); whether the US rules then treat it as publicly
+available (no notice needed) is our reading, not checked. 
 
 ## App Review notes (draft)
 

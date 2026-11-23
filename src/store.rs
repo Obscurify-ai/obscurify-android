@@ -33,10 +33,16 @@ pub fn load<T: DeserializeOwned + Default>(name: &str) -> T {
 }
 
 /// Kept out of iCloud and computer backups on the iPhone (docs/ios.md, "Backups"): the session and the
-/// keys for private chats and chat sync. Signing in again brings all of them back, and a backup that
-/// held them could be restored onto another phone already signed in.
+/// keys for private chats and chat sync (signing in again brings them back, and a backup that held them
+/// could be restored onto another phone already signed in), and the chats themselves (Tony, 2026-11-23).
 #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
-pub const NOT_BACKED_UP: &[&str] = &["session.json", "unlinkable-seed.json", "unlinkable-state.json", "sync-seed.json"];
+pub const NOT_BACKED_UP: &[&str] =
+    &["session.json", "unlinkable-seed.json", "unlinkable-state.json", "sync-seed.json", "chats.json", "pending.json"];
+
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+fn not_backed_up(name: &str) -> bool {
+    NOT_BACKED_UP.contains(&name) || (name.starts_with("chat-") && name.ends_with(".json"))
+}
 
 /// Writes through a temp file and a rename, so a crash never leaves half a file (the wallet holds money).
 pub fn save<T: Serialize>(name: &str, value: &T) {
@@ -47,7 +53,7 @@ pub fn save<T: Serialize>(name: &str, value: &T) {
     {
         let _ = std::fs::rename(&tmp, &path);
         #[cfg(target_os = "ios")]
-        if NOT_BACKED_UP.contains(&name) {
+        if not_backed_up(name) {
             crate::ios::exclude_from_backup(&path)
         }
     }
@@ -56,9 +62,8 @@ pub fn save<T: Serialize>(name: &str, value: &T) {
 /// The files kept out of backups, as they are now (an older version's, or after an update).
 pub fn exclude_secrets_from_backup() {
     #[cfg(target_os = "ios")]
-    for name in NOT_BACKED_UP {
-        let path = dir().join(name);
-        if path.exists() { crate::ios::exclude_from_backup(&path) }
+    for e in std::fs::read_dir(dir()).into_iter().flatten().flatten() {
+        if not_backed_up(&e.file_name().to_string_lossy()) { crate::ios::exclude_from_backup(&e.path()) }
     }
 }
 

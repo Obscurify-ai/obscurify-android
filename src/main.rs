@@ -40,8 +40,20 @@ pub const IOS: bool = cfg!(target_os = "ios");
 
 // ---- JS bridge: links, Back, visibility, picked images, the chat pinned to the bottom ----
 
-/// iOS has no MainActivity to say the network is back: the WebView's own event does.
-const BRIDGE_IOS: &str = if IOS { "window.addEventListener('online', () => dioxus.send({online: true}));\n" } else { "" };
+/// iOS has no MainActivity to say the network is back: the WebView's own event does. And no
+/// adjustResize: when the keyboard opens, WKWebView keeps the page full height and scrolls it up to
+/// show the field, so the top bar goes under the status bar. The page is made as tall as what's left
+/// above the keyboard instead, and put back at the top.
+const BRIDGE_IOS: &str = if IOS { r#"window.addEventListener('online', () => dioxus.send({online: true}));
+if (window.visualViewport) {
+  const vv = window.visualViewport;
+  const fit = () => {
+    document.documentElement.style.height = vv.height + 'px';
+    if (window.scrollY || vv.offsetTop) window.scrollTo(0, 0);
+  };
+  vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit); window.addEventListener('scroll', fit);
+}
+"# } else { "" };
 
 const BRIDGE: &str = r#"
 document.addEventListener('click', e => {
