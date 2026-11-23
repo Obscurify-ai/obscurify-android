@@ -1692,6 +1692,30 @@ fn Report(i: usize, done: EventHandler) -> Element {
 const CATEGORIES: [&str; 17] = ["Favorites", "All", "Free", "Cheap", "Reasoning", "Uncensored", "Roleplay", "Frontier",
     "Zero retention", "TEE", "Writing", "Security", "Legal", "Translation", "Languages", "Code tools", "Documents"];
 
+/// What the server says a locked model needs on this account's plans (frontier, uncensored);
+/// `None` until it has said, then the usual plan names are shown.
+static LOCKS: std::sync::Mutex<(Option<String>, Option<String>)> = std::sync::Mutex::new((None, None));
+
+pub fn set_locks(frontier: Option<&str>, uncensored: Option<&str>) {
+    *LOCKS.lock().unwrap() = (frontier.map(String::from), uncensored.map(String::from));
+}
+
+/// The words for a locked model: "Needs Casual or Pro", "Opens once you've added $5".
+fn lock_text(needs: &str) -> String {
+    let locks = LOCKS.lock().unwrap();
+    let said = if needs == "Pro" { locks.1.clone() } else { locks.0.clone() };
+    said.unwrap_or_else(|| format!("Needs {needs}"))
+}
+
+/// What the app says when a locked model is tapped.
+fn lock_sentence(name: &str, needs: &str) -> String {
+    let text = lock_text(needs);
+    match text.strip_prefix("Needs ") {
+        Some(plans) => format!("{name} needs the {plans} plan"),
+        None => format!("{name}: {text}"),
+    }
+}
+
 /// The plan a model needs that the account doesn't have (uncensored models need Pro, frontier
 /// models Casual or Pro, as the server enforces). Nothing is locked until the plan is known.
 fn needs_plan(id: &str, access: Option<Access>, frontier: &[String], uncensored: &[String]) -> Option<&'static str> {
@@ -1822,8 +1846,8 @@ fn ModelRow(m: Model, needs: Option<&'static str>, above: Option<String>) -> Ele
         div { class, style: "padding: 10px 16px", aria_disabled: (!m.available).then_some("true"),
             div { class: "grow", onclick: { let m = m.clone(); move |_| {
                     if let Some(plan) = needs {
-                        if PLAY { return app.say(format!("{} needs the {plan} plan", m.name)) }
-                        app.say(format!("{} needs the {plan} plan", m.name));
+                        if PLAY { return app.say(lock_sentence(&m.name, plan)) }
+                        app.say(lock_sentence(&m.name, plan));
                         app.overlay.set(Overlay::None);
                         app.screen.set(Screen::Account);
                         return;
@@ -1834,7 +1858,7 @@ fn ModelRow(m: Model, needs: Option<&'static str>, above: Option<String>) -> Ele
                     app.overlay.set(Overlay::None);
                 } },
                 div { "{m.name}" if !m.available { " (Unavailable)" } }
-                div { class: "price", if let Some(plan) = needs { "Needs {plan} · " } {per_million(&m)}
+                div { class: "price", if let Some(plan) = needs { "{lock_text(plan)} · " } {per_million(&m)}
                     for b in privacy_badges(&m) { span { class: "badge", "{b}" } }
                 }
             }

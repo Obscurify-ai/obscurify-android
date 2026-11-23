@@ -239,6 +239,7 @@ impl App {
                     frontier: v["can_access_frontier"].as_bool().unwrap_or(tier != "pay_as_you_go"),
                     uncensored: v["can_access_uncensored"].as_bool().unwrap_or(tier == "pro"),
                 }));
+                chat::set_locks(v["frontier_lock"].as_str(), v["uncensored_lock"].as_str());
                 self.plan_defaults.set(v["default_models"].as_array().into_iter().flatten().filter_map(|m| m.as_str().map(String::from)).collect());
                 chat::open_on_plan_default(self);
             }
