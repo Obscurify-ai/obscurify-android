@@ -158,6 +158,11 @@ fn ask_to_notify() {
 }
 
 fn notify_ready() {
+    // Whether iOS will show it: 0 not asked, 1 denied, 2 allowed, 3 provisional.
+    let said = RcBlock::new(|s: std::ptr::NonNull<objc2_user_notifications::UNNotificationSettings>| {
+        log(&format!("notifications: authorization status {}", unsafe { s.as_ref() }.authorizationStatus().0))
+    });
+    UNUserNotificationCenter::currentNotificationCenter().getNotificationSettingsWithCompletionHandler(&said);
     let content = UNMutableNotificationContent::new();
     content.setTitle(&NSString::from_str("Your answer is ready"));
     content.setBody(&NSString::from_str("Tap to read it."));

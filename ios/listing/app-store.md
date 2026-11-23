@@ -81,8 +81,8 @@ RSA signatures (RFC 9474) for private sessions, and the TEE enclave's key agreem
 "an industry standard algorithm, not provided within the Apple operating system" needs no CCATS, and
 needs a French encryption declaration only if the app is on the App Store in France. In App Store
 Connect: uses encryption, standard algorithms, then either upload the French declaration or leave
-France out of the countries. The source is public (GPL), which the US rules treat as publicly
-available. Decision for Tony: France or not.
+France out of the countries. The source is public (GPL); whether the US rules then treat it as publicly
+available (no notice needed) is our reading, not checked. Decision for Tony: France or not.
 
 ## App Review notes (draft)
 

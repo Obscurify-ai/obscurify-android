@@ -143,6 +143,22 @@ async function background() {
   ok(text(replies().at(-1)).length > 400, 'the story finished: ' + text(replies().at(-1)).length + ' characters');
 }
 
+// The account this run made, deleted from Account (also when the run fails after making it).
+let madeAccount = false;
+async function deleteAccount() {
+  if (!$('.big')) {
+    dismiss();
+    if ($('.drawer')) await click('.drawer .bar .icon');
+    await click('.bar .icon');
+    await click('.drawer .foot button');
+    await until(() => $('.big'), 30000, 'Account');
+  }
+  await click('button.danger', 'Delete account');
+  await click('button.danger', 'Delete for good');
+  await until(() => $('.login'), 30000, 'signed out');
+  madeAccount = false;
+}
+
 async function account() {
   // A guest's model picker asks for an account.
   await click('.title.model');
@@ -156,6 +172,7 @@ async function account() {
   await click('.login button.go', 'Create Account');
   await until(() => byText('h1', 'Your account code') || $('.login .err'), 30000, 'the account');
   if ($('.login .err')) return log('sign-up refused (skipped): ' + text($('.login .err')));
+  madeAccount = true;
   $('.login .check input').click();
   await click('button.go', 'Start Chatting');
   await until(() => $('#composer'), 15000, 'the chat, signed in');
@@ -180,9 +197,7 @@ async function account() {
   await sleep(1500);
   ok(!byText('button', 'Add funds') && !byText('p', 'Add funds'), 'Account: no Add funds, and no word about buying elsewhere (3.1.3(f))');
   await shot('account');
-  await click('button.danger', 'Delete account');
-  await click('button.danger', 'Delete for good');
-  await until(() => $('.login'), 30000, 'signed out');
+  await deleteAccount();
   ok(true, 'account deleted from the app');
 }
 
@@ -198,6 +213,10 @@ try {
   ok(false, 'stopped: ' + (e && e.message || e));
   // Never a screenshot of a real account code (artifacts are public).
   if (!byText('h1', 'Your account code')) await shot('error');
+  if (madeAccount) {
+    if (byText('h1', 'Your account code')) { $('.login .check input').click(); await sleep(500); await click('button.go', 'Start Chatting').catch(() => {}); }
+    await deleteAccount().then(() => log('the account made by this run was deleted'), e => ok(false, "couldn't delete the account this run made: " + e.message));
+  }
 }
 dioxus.send({done: failures === 0});
 await new Promise(() => {});

@@ -6,7 +6,7 @@
 #   tools/ios.sh build      simulator app -> target/ios/Obscurify.app (ad-hoc signed, simulator only)
 #   tools/ios.sh device     iPhone app -> target/ios-device/Obscurify.app and Obscurify.ipa (ad-hoc
 #                           signed: re-sign it for a device, e.g. with xtool, or for the App Store)
-#   tools/ios.sh sim        build, boot a simulator, install, launch, screenshot -> target/ios/
+#   tools/ios.sh sim        build, boot a simulator, install, launch, screenshot -> target/ios/store/
 #   tools/ios.sh e2e        the e2e build in an iPhone Pro Max simulator, driven by e2e/ios/driver.js
 #                           against production; screenshots and logs -> target/ios/e2e/ (E2E_SIGNUP=1
 #                           also makes an account, and deletes it from the app at the end)
@@ -134,17 +134,17 @@ boot() { # udid
 }
 
 sim() {
-  build "${IOS_TARGET:-aarch64-apple-ios-sim}" target/ios
+  build "${IOS_TARGET:-aarch64-apple-ios-sim}" target/ios/store
   local udid=${SIM_UDID:-$(simulator "${SIM_NAME:-.}")}
   boot "$udid"
-  xcrun simctl install "$udid" target/ios/Obscurify.app
+  xcrun simctl install "$udid" target/ios/store/Obscurify.app
   # The app's own output (ios.rs logs what the native side does) goes to files next to the screenshot.
-  xcrun simctl launch --terminate-running-process --stdout="$(pwd)/target/ios/stdout.log" --stderr="$(pwd)/target/ios/stderr.log" "$udid" "$id"
+  xcrun simctl launch --terminate-running-process --stdout="$(pwd)/target/ios/store/stdout.log" --stderr="$(pwd)/target/ios/store/stderr.log" "$udid" "$id"
   sleep "${WAIT:-30}"
-  xcrun simctl io "$udid" screenshot target/ios/screenshot.png
+  xcrun simctl io "$udid" screenshot target/ios/store/screenshot.png
   # Still running? (A crash leaves the home screen in the screenshot.)
   xcrun simctl spawn "$udid" launchctl list | grep -i "$id" || { echo "the app isn't running" >&2; exit 1; }
-  echo "screenshot $(pwd)/target/ios/screenshot.png"
+  echo "screenshot $(pwd)/target/ios/store/screenshot.png"
 }
 
 e2e() {
@@ -156,8 +156,6 @@ e2e() {
     --cellularMode active --cellularBars 4 --batteryState charged --batteryLevel 100 || true
   xcrun simctl uninstall "$udid" "$id" 2>/dev/null || true
   xcrun simctl install "$udid" target/ios/Obscurify.app
-  # The e2e build doesn't ask for notifications (the alert would cover the screenshots); this may allow them.
-  xcrun simctl privacy "$udid" grant notifications "$id" 2>&1 || true
   python3 e2e/ios/host.py "$udid" "$id" target/ios/e2e
 }
 

@@ -7,6 +7,11 @@ on:
   push:
     branches: [ios]
   workflow_dispatch:
+    inputs:
+      signup:
+        description: "e2e: also make a production account, check the account screens, and delete it"
+        type: boolean
+        default: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -50,10 +55,14 @@ jobs:
           echo ~/.local/bin >> $GITHUB_PATH
           ~/.local/bin/dx --version | grep -F "$DX_VERSION"
 
-      - name: e2e in the simulator (guest, then a new account deleted at the end)
+      - name: e2e in the simulator (guest; by hand, also a new account deleted at the end)
         env:
-          E2E_SIGNUP: "1"
+          # A push doesn't make production accounts; running the workflow by hand does (and deletes it).
+          E2E_SIGNUP: ${{ github.event_name == 'workflow_dispatch' && inputs.signup && '1' || '0' }}
         run: tools/ios.sh e2e
+
+      - name: The store build launches and keeps running in the simulator
+        run: WAIT=20 SIM_NAME="Pro Max" tools/ios.sh sim
 
       - name: Diagnostics
         if: always()

@@ -67,7 +67,7 @@ objc2-core-foundation = { version = "0.3", default-features = false, features = 
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSURLRequest", "NSError", "NSValue", "NSObject", "NSGeometry", "NSArray"] }
 objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "UIApplication", "UIResponder", "UIPasteboard", "UIView", "UIWindow", "UIButton", "UIControl", "UILabel", "UIColor", "UIFont", "UIGeometry"] }
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKUserContentController", "WKScriptMessage", "WKScriptMessageHandler", "WKNavigationDelegate", "WKNavigationAction", "WKFrameInfo", "WKNavigation", "WKPreferences"] }
-objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationTrigger", "UNNotificationSound"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationTrigger", "UNNotificationSound", "UNNotificationSettings"] }
 
 [profile.release]
 opt-level = "s"

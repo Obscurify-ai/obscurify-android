@@ -61,8 +61,9 @@ agreement and encryption to TEE enclaves in Encrypted mode. Apple's table (App S
 "Export compliance documentation for encryption") puts "an industry standard algorithm, not provided
 within the Apple operating system" at: no CCATS, and a French encryption declaration only if the app
 is on the App Store in France. Under US rules this is mass-market encryption, and the source is public
-(GPL). In App Store Connect: the app uses encryption, standard algorithms; then upload the French
-declaration or leave France out. **Tony decides France.**
+(GPL); both of those are our reading, not checked against the EAR text. In App Store Connect: the app
+uses encryption, standard algorithms; then upload the French declaration or leave France out.
+**Tony decides France.**
 
 ## What's different on iOS
 
@@ -78,7 +79,7 @@ models or Tor.
 | Code Mode | Sandbox WebView with no bridges (MainActivity.kt) | The same design in `ios.rs`: a WKWebView with a non-persistent data store and no app bridges, a navigation delegate that loads only `<base>/sandbox/` at the top (frames: https, data, blob, about), and one message handler, `obsSandbox`, that only passes the runner's messages to `code::on_sandbox`. The runner's MessagePort is made in its own page after it loads (runner.js takes an `init` with no source at the top level, as the Android native port arrives). The model's code runs in the runner's Worker, which can't reach the handler. It sits in the window at 1 pt, all but invisible, so iOS doesn't pause it. Pages open full screen in a WKWebView made the same way with no handler, under a bar with the title and Close. A sandbox whose web process dies fails the run at once (`fatal`) |
 | Links | `android.open` → an intent | `webbrowser::open` → Safari |
 | Copy | `ClipboardManager` | `UIPasteboard` (the page's clipboard API would need a user gesture) |
-| Long answers | Foreground service with a notification, wake lock, "answer ready" notification | The screen stays on while an answer is worked on. Leaving the app, `beginBackgroundTask` gives the answer iOS's usual half minute or so, and if it ends with the app in the background a local notification says "Your answer is ready" (permission asked when the first answer starts, as on Android). Nothing is drawn while the app is in the background: iOS suspends the WebView, and Dioxus polls no task while a render waits for it. A signed-in answer the app couldn't finish is finished by the server and picked up on return |
+| Long answers | Foreground service with a notification, wake lock, "answer ready" notification | The screen stays on while an answer is worked on. Leaving the app, `beginBackgroundTask` gives the answer iOS's usual half minute or so, and if it ends with the app in the background a local notification says "Your answer is ready" (permission asked when the first answer starts, as on Android). Nothing is drawn while the app is in the background: iOS suspends the WebView, and Dioxus polls no task while a render waits for it. A signed-in answer the app couldn't finish is finished by the server and picked up on return. A Code Mode turn's steps and its sandbox stall in the background too (both are web views), and carry on when the app is back. `backgrounded()` is also true while the app is merely inactive (a system alert in front, such as the notification prompt that comes with the first answer), so that answer draws only once the alert is answered: check on a device |
 | Backups | Android's default (allowBackup not set, so Google backup may include the files) | Application Support goes into iCloud and computer backups, except the session and the keys for private chats and chat sync (`store::NOT_BACKED_UP`: `session.json`, `unlinkable-seed.json`, `unlinkable-state.json`, `sync-seed.json`), marked `isExcludedFromBackup` after every save and at launch. Signing in again brings all of them back. Chats, settings and `wallet.json` (blind vouchers, which the store build can't buy) are backed up. **Tony to confirm**: whether chats should stay out of backups too |
 | Back | System Back asks the page (`obsBack`) | No Back button: screens have their own ← |
 | Network back | `ConnectivityManager` callback → `obsOnline` | The page's `online` event |
@@ -93,12 +94,16 @@ models or Tor.
 app's own page (it clicks and types as a person would and reports on the app's stderr), and
 `e2e/ios/host.py` launches it in an iPhone Pro Max simulator, follows that log and does what the page
 can't: screenshots (with the status bar at 9:41), sending the app to the background and back, and
-reading the backup flag on the app's files. It runs against production as a guest, then (with
-`E2E_SIGNUP=1`, as CI does) makes a new account and deletes it from the app at the end, so nothing is
-left behind. No secrets, and no screenshot of an account code: artifacts of this public repo are
+reading the backup flag on the app's files. It runs against production as a guest. With
+`E2E_SIGNUP=1` (CI only when the workflow is run by hand, never on a push) it also makes a production
+account, checks the account screens and deletes the account from the app, also when the run fails
+after making it. After the e2e, CI launches the real store build (no e2e driver) in the same
+simulator and checks it keeps running; only the e2e build is driven. No secrets, and no screenshot of an account code: artifacts of this public repo are
 public. The e2e build never ships: `tools/ios.sh device` refuses `E2E=1` and fails if the driver's
 marker is in the binary. The e2e build doesn't ask for notifications (the alert would cover the
-screenshots); the log says whether the "answer ready" notification was posted or refused.
+screenshots), so the permission request has never run anywhere yet; the log says whether the "answer
+ready" notification was handed to iOS and the authorization status (not asked, in CI), so it isn't
+shown there.
 
 ## Parity with the Play build
 
@@ -119,7 +124,8 @@ Run: https://github.com/Obscurify-ai/obscurify-android/actions/runs/45132255600 
 | Old 16-digit account → account code upgrade sheet | Same code | Not driven on iOS |
 | Private sessions (chats with no account attached, wallet from the account code) | Same code | Keys made and saved at sign-up (backup log); chats in the run were as a guest |
 | Model picker: search, categories, providers, favorites (drag to order), unavailable models greyed | Same code | Simulator: picker opens with its categories (screenshot). Drag and search not driven |
-| No uncensored or roleplay models, content guard on every completion | Works | Simulator: no Uncensored or Roleplay category. Guard: same code as Android (play.mjs) |
+| No uncensored or roleplay models in the picker | Works | Simulator: no Uncensored or Roleplay category |
+| Content guard first in every completion (`api::play_guard`) | Same code | Checked on Android through a recording proxy (play.mjs); no proxy in the iOS run |
 | Tools: web search, paid tools billed to the balance | Same code | The Tools switch is on in the run; no paid tool called (needs a funded account) |
 | Code Mode: Python and JavaScript in a sandbox, charts | Works | Simulator: Python ran in the sandbox WKWebView, its chart shown, sum 385 |
 | Code Mode: pages full screen with Close | Works | Simulator: page opened full screen (screenshot); Close button itself not tapped (native, e2e closes it from Rust) |
@@ -134,7 +140,7 @@ Run: https://github.com/Obscurify-ai/obscurify-android/actions/runs/45132255600 
 | Account: balance, plan, account code, API keys; no payments, no plan buying, no word about buying elsewhere | Works | Simulator: Account screen, no Add funds and no buy-elsewhere text |
 | Delete account in the app | Works | Simulator: the new account deleted from Account, back at sign-in |
 | Sign out | Same code | Not driven on iOS |
-| Long answers with the app in the background, "answer ready" notification | Partly | Simulator: with Settings in front, an answer kept streaming for 11 s and finished in the background, and the notification was handed to iOS (`addNotificationRequest` succeeded). iOS gives about 30 s, not Android's foreground service; past that the server finishes a signed-in answer and the app picks it up (same code, not driven). The notification on screen and the permission prompt need a device |
+| Long answers with the app in the background, "answer ready" notification | Partly | Simulator: with Settings in front, an answer kept streaming for 11 s and finished in the background, and the notification request was handed to iOS (`addNotificationRequest` succeeded; not authorized, so not shown). iOS gives about 30 s, not Android's foreground service; past that the server finishes a signed-in answer and the app picks it up (same code, not driven). The notification on screen and the permission prompt need a device |
 | Lost connection: waits and carries on | Same code | iOS uses the page's `online` event; not driven |
 | Answer picked up after the app was killed (server-held) | Same code | Not driven on iOS (Android: background.mjs) |
 | Compaction of long chats, agent runs (100 steps) | Same code | Not driven on iOS |
@@ -168,12 +174,18 @@ waiting for Tony's approval.
 
 ### Decisions for Tony
 
+Already done here but his to approve or undo: the Account screen on iOS no longer says funds and plans
+are on the website (3.1.3(f)); iPhone only and portrait only; the e2e runs against production (as a
+guest on every push; a by-hand run makes and deletes an account).
+
 1. Bundle id `ai.obscurify.ios` (permanent once the App Store Connect record exists).
 2. Backups: only the session and keys are kept out (above); chats are backed up. Keep chats out too?
 3. The AI providers sheet wording (`chat.rs`, `ChatView`).
 4. The listing text, age rating, App Privacy answers ("Other user content: not linked"?) and review
-   notes in `ios/listing/`, and the demo account for review.
+   notes in `ios/listing/`, and the demo account for review. The description keeps the Play claims;
+   on iOS the notification, sync, Encrypted mode and attachments haven't been run yet.
 5. Export compliance: France (upload the French declaration) or leave France out.
+6. Code Mode and App Review 2.5.2: keep it on iOS (fallback: Code off through `code::code_blocked`).
 
 ## Signing and TestFlight (once the Apple developer account exists)
 
