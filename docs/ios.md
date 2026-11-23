@@ -113,7 +113,7 @@ it stands on the iPhone. "Simulator" means `e2e/ios/driver.js` checked it in CI 
 "device" means it depends on native behaviour the simulator run can't show (pickers, the keyboard,
 Safari, notifications on screen).
 
-Run: https://github.com/Obscurify-ai/obscurify-android/actions/runs/45132255600 (all checks green; screenshots from it are in `ios/listing/screenshots/`).
+Runs: https://github.com/Obscurify-ai/obscurify-android/actions/runs/45132255600 (everything, with a new account made and deleted; the screenshots in `ios/listing/screenshots/` are from it) and https://github.com/Obscurify-ai/obscurify-android/actions/runs/45135457044 (the latest push: guest flows, plus the real store build launched and kept running).
 
 | Feature (Play build) | iPhone | How we know |
 |---|---|---|
