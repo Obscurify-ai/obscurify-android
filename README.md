@@ -93,6 +93,7 @@ when the notes are about something the Play app doesn't have (payments, uncensor
 | `src/sync.rs` | Encrypted chat sync with the website and other phones: chats and favorites, AES-256-GCM with a key from the account code's seed (code accounts only), opaque records with no cookie, merges by server revision; the Account switch (off deletes the synced copy) |
 | `src/private.rs` | Private sessions (default once signed in): chat requests carry a session secret and no cookie, paid from a blind-voucher wallet derived from the account number (the open-source [unlinkable-inference](https://github.com/Obscurify-ai/unlinkable-inference) crate); a wiped phone gets it back at sign-in. Sign-up makes an account code on the phone and sends only a key derived from it; Account converts a number account to a code the same way |
 | `src/store.rs` | JSON files in the app's private storage |
+| `src/ios.rs`, `tools/ios.sh`, `ios/` | The iPhone app (the store build for iOS): native glue, Code Mode's sandbox WKWebView, the bundle and the App Store listing. See [docs/ios.md](docs/ios.md); its e2e is `e2e/ios/` |
 | `src/tor.rs` | In-app Tor: Arti on its own thread behind a SOCKS5 proxy on 127.0.0.1 (random port and password per run), built-in bridges through lyrebird (`tools/lyrebird.sh` builds it; `src/tor_off.rs` for the Play app) |
 | `MainActivity.kt` | The only Kotlin: Back asks the page first; opening links and wallet URIs; copy; Code Mode's sandbox WebView and full-screen pages |
 | `assets/style.css` | OLED black, green trim |
