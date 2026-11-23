@@ -1,0 +1,73 @@
+# The iPhone app on a macOS runner: build the store build for the simulator, launch it, screenshot.
+# Not signed for devices or the App Store yet (docs/ios.md). Never releases anything; the Android and
+# Play releases don't go through GitHub Actions at all.
+name: iOS
+
+on:
+  push:
+    branches: [ios]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  DX_VERSION: 0.7.10
+
+jobs:
+  simulator:
+    name: Simulator build and screenshot
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim, aarch64-apple-ios
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ios-${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ios-${{ runner.os }}-cargo-
+
+      - name: Check (fails fast on code that doesn't build for iOS)
+        run: cargo clippy --locked --target aarch64-apple-ios-sim --no-default-features --features play -- -D warnings
+
+      - name: Install dioxus-cli
+        run: |
+          curl -fsSLO https://github.com/DioxusLabs/dioxus/releases/download/v$DX_VERSION/dx-aarch64-apple-darwin.tar.gz
+          curl -fsSL https://github.com/DioxusLabs/dioxus/releases/download/v$DX_VERSION/dx-aarch64-apple-darwin.sha256 -o dx.sha256
+          cat dx.sha256
+          [ "$(shasum -a 256 dx-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)" = "$(grep -oE '[0-9a-f]{64}' dx.sha256 | head -1)" ]
+          mkdir -p ~/.local/bin && tar -xzf dx-aarch64-apple-darwin.tar.gz -C ~/.local/bin
+          echo ~/.local/bin >> $GITHUB_PATH
+          ~/.local/bin/dx --version | grep -F "$DX_VERSION"
+
+      - name: Build, launch in the simulator, screenshot
+        run: WAIT=40 tools/ios.sh sim
+
+      - name: Diagnostics
+        if: always()
+        run: |
+          mkdir -p target/ios
+          id=$(sed -n '/^\[ios\]/,/^\[/s/^identifier = "\(.*\)"/\1/p' Dioxus.toml)
+          xcrun simctl io booted screenshot target/ios/screenshot-end.png || true
+          xcrun simctl spawn booted log show --last 10m --style compact --predicate 'process CONTAINS[c] "obscurify" OR subsystem CONTAINS[c] "obscurify"' > target/ios/app.log 2>&1 || true
+          tail -100 target/ios/app.log || true
+          cp ~/Library/Logs/DiagnosticReports/*.ips target/ios/ 2>/dev/null || true
+          ls target/ios
+          # The app's files: chats and settings go in Library/Application Support.
+          data=$(xcrun simctl get_app_container booted "$id" data 2>/dev/null) && find "$data/Library" -maxdepth 2 | tee target/ios/container.txt || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: obscurify-ios-simulator
+          path: target/ios
+          if-no-files-found: warn

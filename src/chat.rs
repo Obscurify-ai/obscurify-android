@@ -620,6 +620,7 @@ fn run_with(mut app: App, follow: Option<String>) {
     app.stop.set(false);
     app.live.set(Some(Msg { role: "assistant".into(), model: model.clone(), ..Default::default() }));
     js("document.body.dataset.working = 1; const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }; window.android && android.working && android.working(true)");
+    crate::working(true);
     bg(async move {
         let stop = || *app.stop.peek();
         let context = app.models.peek().iter().find(|m| m.id == model).map(|m| m.context).filter(|c| *c > 0).unwrap_or(crate::code::DEFAULT_CONTEXT);
@@ -755,6 +756,7 @@ fn run_with(mut app: App, follow: Option<String>) {
         }
         app.live.set(None);
         js("document.body.dataset.working = 0; const f = document.getElementById('follow'); if (f) f.hidden = true; window.android && android.working && android.working(false)");
+        crate::working(false);
         save(app);
         forget_pending();
         if let Some((receipt, route, raw, sealed)) = checked {
@@ -987,7 +989,8 @@ pub fn ChatView() -> Element {
                                     span { class: "label", "Tools" }
                                     span { class: "switch" }
                                 }
-                                if separate {
+                                // No Code switch in the iPhone app: code doesn't run there yet.
+                                if separate && !crate::IOS {
                                     button { class: if !capable || tor_on { "item code-switch na" } else if code_on { "item code-switch on" } else { "item code-switch" },
                                         role: "switch", aria_checked: "{capable && code_on}", aria_disabled: "{!capable || tor_on}",
                                         onclick: move |_| {
@@ -1644,7 +1647,8 @@ fn Report(i: usize, done: EventHandler) -> Element {
             let q = c.messages[..i].iter().rev().find(|m| m.role == "user").map(|m| m.content.clone()).unwrap_or_default();
             (q, a.content.clone(), a.model.clone())
         };
-        let head = format!("Content report from the Android app (Google Play, {})\nReason: {why}\nModel: {model}\nNote: {}\n\n--- Question ---\n{}\n\n--- Answer ---\n",
+        let head = format!("Content report from the {} app ({}, {})\nReason: {why}\nModel: {model}\nNote: {}\n\n--- Question ---\n{}\n\n--- Answer ---\n",
+            if crate::IOS { "iPhone" } else { "Android" }, if crate::IOS { "App Store" } else { "Google Play" },
             env!("CARGO_PKG_VERSION"), cut(note.peek().trim(), 500), cut(&question, 1200));
         // The contact form takes 5000 bytes.
         let message = format!("{head}{}", cut(&answer, 4900usize.saturating_sub(head.len())));

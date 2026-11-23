@@ -122,9 +122,14 @@ pub fn tools_on(app: &App) -> bool {
 
 /// Code can't run while Tor is on: the code runs in a WebView with the phone's own connection
 /// (it may fetch from the internet), which Tor can't carry.
-pub fn code_blocked() -> bool { crate::tor::wanted() || crate::tor::always() }
+/// Nor on iOS yet: there it needs a WKWebView of its own with no bridges (MainActivity.kt's sandbox).
+pub fn code_blocked() -> bool { crate::IOS || crate::tor::wanted() || crate::tor::always() }
 
-pub const TOR_NO_CODE: &str = "Code is off while you're connected through Tor: it would use your own connection.";
+pub const TOR_NO_CODE: &str = if crate::IOS {
+    "Code doesn't run in the iPhone app yet. Tools still work."
+} else {
+    "Code is off while you're connected through Tor: it would use your own connection."
+};
 
 /// The Code switch is on: the model can run code.
 pub fn code_on(app: &App) -> bool {
@@ -851,6 +856,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
     let mut trace: Vec<Value> = chat::sound_trace(&std::mem::take(&mut first.trace));
     app.live.set(Some(first));
     js("document.body.dataset.working = 1; const m = document.getElementById('msgs'); if (m) { m.dataset.pin = 1; m.scrollTop = m.scrollHeight }; window.android && android.keepAwake && android.keepAwake(true); window.android && android.working && android.working(true)");
+    crate::working(true);
     bg(async move {
         let (tx, mut rx) = unbounded();
         *EVENTS.lock().unwrap() = Some(tx);
@@ -1091,6 +1097,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
         chat::forget_pending();
         app.live.set(None);
         js("document.body.dataset.working = 0; const f = document.getElementById('follow'); if (f) f.hidden = true; window.android && android.keepAwake && android.keepAwake(false); window.android && android.working && android.working(false)");
+        crate::working(false);
         chat::save_chat(app);
         app.refresh_balance();
     });

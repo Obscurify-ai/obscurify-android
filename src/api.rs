@@ -155,6 +155,7 @@ fn dead() -> reqwest::Client {
 static DIRECT: Mutex<Option<reqwest::Client>> = Mutex::new(None);
 
 /// Closes the direct client's idle connections (Tor just started): it is made again when needed.
+#[cfg_attr(not(feature = "tor"), allow(dead_code))] // Only Tor drops it.
 pub fn drop_direct() { *DIRECT.lock().unwrap() = None }
 
 fn direct() -> reqwest::Client {
@@ -167,7 +168,7 @@ fn direct() -> reqwest::Client {
         .pool_idle_timeout(Duration::from_secs(20))
         .tcp_keepalive(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(180))
-        .user_agent("Obscurify-Android")
+        .user_agent(if crate::IOS { "Obscurify-iOS" } else { "Obscurify-Android" })
         .build()
         .unwrap()).clone()
 }

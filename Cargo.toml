@@ -52,6 +52,13 @@ flate2 = "1"
 hmac = "0.12"
 sha2 = "0.10"
 
+# The iPhone app (src/ios.rs): links, the clipboard and the screen. All already in the tree through Dioxus.
+[target.'cfg(target_os = "ios")'.dependencies]
+webbrowser = "1.2"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIPasteboard"] }
+
 [profile.release]
 opt-level = "s"
 strip = true

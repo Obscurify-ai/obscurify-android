@@ -18,6 +18,9 @@ pub fn dir() -> PathBuf {
         use std::os::unix::fs::MetadataExt;
         let user = std::fs::metadata("/proc/self").map(|m| m.uid() / 100_000).unwrap_or(0);
         PathBuf::from(format!("/data/user/{user}/{PACKAGE}/files"))
+    } else if cfg!(target_os = "ios") {
+        // The app's own container (iOS sets HOME to it); Application Support is never shown in Files.
+        PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Library/Application Support")
     } else {
         PathBuf::from(std::env::var("OBSCURIFY_DATA").unwrap_or_else(|_| "data".into()))
     };

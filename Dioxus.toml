@@ -8,3 +8,16 @@ icon = ["assets/icon.png"]
 
 [android]
 min_sdk = 24
+
+# The iPhone app: the store build (`--no-default-features --features play`), see docs/ios.md.
+[ios]
+identifier = "ai.obscurify.ios"
+deployment_target = "16.0"
+
+[ios.plist]
+# Light status bar text on the black app.
+UIStatusBarStyle = "UIStatusBarStyleLightContent"
+UIViewControllerBasedStatusBarAppearance = false
+# The attach button's picker offers the camera and the photo library.
+NSCameraUsageDescription = "To attach a photo you take to your message."
+NSPhotoLibraryUsageDescription = "To attach photos to your message."

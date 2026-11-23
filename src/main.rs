@@ -1,7 +1,8 @@
 //! Obscurify for Android: a thin client of the Obscurify API. Sign in with the account number, chat
 //! with any model (streaming, web search, images), keep chats on the phone, manage the plan and
 //! API key, and add funds (top-ups to the account, or blind vouchers). No local models. The Android
-//! glue (Back, opening links and wallets, copying) is the MainActivity that build.sh writes in.
+//! glue (Back, opening links and wallets, copying) is the MainActivity that build.sh writes in; the
+//! iPhone app's (the store build) is ios.rs.
 
 mod api;
 mod chat;
@@ -9,6 +10,8 @@ mod code;
 mod compact;
 mod private;
 mod files;
+#[cfg(target_os = "ios")]
+mod ios;
 mod store;
 mod sync;
 mod tee;
@@ -32,8 +35,14 @@ pub const FREE_MODEL: &str = "meta-llama/llama-3.3-70b-instruct";
 /// content guard on every completion (`api::play_guard`). Gated where it can't be got around: the
 /// Funds screen never renders and the model list is filtered where it loads.
 pub const PLAY: bool = cfg!(feature = "play");
+/// The iPhone app: the store build (`PLAY`), with the native glue in ios.rs instead of MainActivity.kt,
+/// and no Code Mode yet (`code::code_blocked`).
+pub const IOS: bool = cfg!(target_os = "ios");
 
 // ---- JS bridge: links, Back, visibility, picked images, the chat pinned to the bottom ----
+
+/// iOS has no MainActivity to say the network is back: the WebView's own event does.
+const BRIDGE_IOS: &str = if IOS { "window.addEventListener('online', () => dioxus.send({online: true}));\n" } else { "" };
 
 const BRIDGE: &str = r#"
 document.addEventListener('click', e => {
@@ -119,7 +128,17 @@ fn js(code: &str) { document::eval(code); }
 fn bg(f: impl std::future::Future<Output = ()> + 'static) { dioxus::core::spawn_forever(f); }
 // Native, not a WebView timer: those stall when the app is in the background.
 async fn sleep(ms: u32) { tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await }
-pub(crate) fn open_url(url: &str) { js(&format!("window.android ? android.open({url:?}) : window.open({url:?})")) }
+pub(crate) fn open_url(url: &str) {
+    #[cfg(target_os = "ios")]
+    ios::open(url);
+    #[cfg(not(target_os = "ios"))]
+    js(&format!("window.android ? android.open({url:?}) : window.open({url:?})"));
+}
+/// An answer started or ended. On Android the page tells MainActivity itself (`android.working`).
+pub(crate) fn working(_on: bool) {
+    #[cfg(target_os = "ios")]
+    ios::working(_on)
+}
 fn usd(d: f64) -> String { if d.abs() < 0.01 && d != 0.0 { format!("${d:.4}") } else { format!("${d:.2}") } }
 fn cents(c: i64) -> String { format!("${}.{:02}", c / 100, c % 100) }
 
@@ -206,6 +225,9 @@ impl App {
         });
     }
     fn copy(self, text: &str, what: &str) {
+        #[cfg(target_os = "ios")]
+        ios::copy(text);
+        #[cfg(not(target_os = "ios"))]
         js(&format!("window.android ? android.copy({text:?}) : navigator.clipboard.writeText({text:?})"));
         self.say(format!("{what} copied"));
     }
@@ -497,7 +519,7 @@ fn Root() -> Element {
 
     use_future(move || async move {
         let mut app = app;
-        let mut e = document::eval(BRIDGE);
+        let mut e = document::eval(&format!("{BRIDGE_IOS}{BRIDGE}"));
         while let Ok(v) = e.recv::<Value>().await {
             if let Some(s) = v["sandbox"].as_str() {
                 code::on_sandbox(s)

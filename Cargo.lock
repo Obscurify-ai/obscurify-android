@@ -5038,6 +5038,9 @@ dependencies = [
  "futures-util",
  "hmac 0.12.1",
  "iana-time-zone",
+ "objc2",
+ "objc2-foundation",
+ "objc2-ui-kit",
  "obscurify-tee-verify",
  "pdf-extract",
  "pulldown-cmark",
@@ -5052,6 +5055,7 @@ dependencies = [
  "tokio",
  "tor-rtcompat",
  "unlinkable-inference",
+ "webbrowser",
  "zip",
 ]
 
