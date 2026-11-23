@@ -1373,12 +1373,19 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>, tier: ReadSignal<Value
             _ => d.format(if this_year { "%a, %b %-d" } else { "%a, %b %-d, %Y" }).to_string(),
         }
     };
-    let when = move |at: &str| -> String {
+    // `day_only`: money moved into a wallet keeps only its day (noon UTC on the server), so it has
+    // no time to show.
+    let when = move |at: &str, day_only: bool| -> String {
         let Ok(t) = chrono::DateTime::parse_from_rfc3339(at) else { return at.to_string() };
         let t = t.with_timezone(&chrono::Local);
-        if period().is_some() && view() == "day" { return t.format("%-I:%M %p").to_string() }
+        let in_a_day = period().is_some() && view() == "day";
         let this_year = t.format("%Y").to_string() == chrono::Local::now().format("%Y").to_string();
-        t.format(if this_year { "%b %-d, %-I:%M %p" } else { "%b %-d %Y, %-I:%M %p" }).to_string()
+        match (day_only, in_a_day) {
+            (true, true) => String::new(),
+            (true, false) => t.format(if this_year { "%b %-d" } else { "%b %-d %Y" }).to_string(),
+            (false, true) => t.format("%-I:%M %p").to_string(),
+            (false, false) => t.format(if this_year { "%b %-d, %-I:%M %p" } else { "%b %-d %Y, %-I:%M %p" }).to_string(),
+        }
     };
     let unit = match view() { "week" => "week", "month" => "month", _ => "day" };
     let result = data.read().clone();
@@ -1459,7 +1466,7 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>, tier: ReadSignal<Value
                                 rsx! {
                                     div { class: if paid.is_some() { "row tap" } else { "row" },
                                         onclick: move |_| if paid.is_some() { opened.set(if opened() == id { String::new() } else { id.clone() }) },
-                                        div { class: "grow", div { "{name}" } div { class: "muted", {when(x["created_at"].as_str().unwrap_or(""))} }
+                                        div { class: "grow", div { "{name}" } div { class: "muted", {when(x["created_at"].as_str().unwrap_or(""), matches!(x["transaction_type"].as_str(), Some("voucher_withdrawal" | "free_to_wallet")))} }
                                             if open_this { div { class: "muted detail", {x["detail"].as_str().map(|d| format!("Paid with {}", match d { "Card" => "card", "Blind voucher" => "a blind voucher", o => o })).unwrap_or_default()} } }
                                         }
                                         span { class: if a > 0.0 { "ok" } else if a < 0.0 { "debit" } else { "" },
