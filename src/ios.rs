@@ -44,10 +44,14 @@ fn log(s: &str) {
     eprintln!("obscurify-ios: [{:.1}s] {s}", t.as_secs_f32())
 }
 
-static BG_NOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// An answer got more text with the app in the background (said once per answer).
+static BG_NOTED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+/// An answer got more text with the app in the background (said every 5 s at most).
 pub fn answer_in_background() {
-    if !BG_NOTED.swap(true, std::sync::atomic::Ordering::SeqCst) { log("answer: still coming in with the app in the background") }
+    let now = crate::store::now();
+    if now - BG_NOTED.load(std::sync::atomic::Ordering::SeqCst) > 5000 {
+        BG_NOTED.store(now, std::sync::atomic::Ordering::SeqCst);
+        log("answer: still coming in with the app in the background")
+    }
 }
 
 /// Runs `f` on the main thread: now if this is it, else queued there.
@@ -111,7 +115,7 @@ pub fn working(on: bool) {
         app.setIdleTimerDisabled(on);
         if on && !WORKING.get() {
             WORKING.set(true);
-            BG_NOTED.store(false, std::sync::atomic::Ordering::SeqCst);
+            BG_NOTED.store(0, std::sync::atomic::Ordering::SeqCst);
             ask_to_notify();
             end_task(mtm);
             let expired = RcBlock::new(move || {

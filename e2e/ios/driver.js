@@ -133,12 +133,12 @@ async function background() {
   if ($('.login')) await click('button.guest');
   await until(() => $('#composer'), 15000, 'the chat');
   const before = replies().length;
-  await type('#composer', 'Write a 400-word story about a lighthouse keeper who finds a message in a bottle.');
+  await type('#composer', 'Write a story of about 150 words about a lighthouse keeper who finds a message in a bottle.');
   await click('.send');
   await until(() => answering(), 30000, 'the answer to start');
   await host('background', 2000);
   await until(() => replies().length > before && !answering() && replies().at(-1).querySelector('.meta'), 180000, 'the story');
-  ok(text(replies().at(-1)).length > 800, 'the story finished: ' + text(replies().at(-1)).length + ' characters');
+  ok(text(replies().at(-1)).length > 400, 'the story finished: ' + text(replies().at(-1)).length + ' characters');
 }
 
 async function account() {

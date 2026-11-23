@@ -1,27 +1,68 @@
 # iPhone
 
 The iPhone app is this repo's store build, the `play` cargo feature (see `play/README.md`), compiled
-for iOS. Dioxus runs the same Rust UI in WKWebView. It is not signed yet, so for now it runs only in
-the iOS Simulator.
+for iOS. Dioxus runs the same Rust UI in WKWebView. It isn't signed for the App Store yet: CI builds
+it for the simulator (where it's tested end to end) and as an ad-hoc signed `.ipa` for devices, to
+re-sign for the test iPhone.
 
 ## Build
 
-On a Mac with Xcode, Rust with `aarch64-apple-ios-sim` (and `aarch64-apple-ios` for devices) and
-dioxus-cli 0.7.10:
+On a Mac with Xcode, Rust with `aarch64-apple-ios-sim` and `aarch64-apple-ios`, and dioxus-cli 0.7.10:
 
 ```sh
-tools/ios.sh build   # target/ios/Obscurify.app for the simulator, ad-hoc signed
-tools/ios.sh sim     # the same, then boots the newest iPhone simulator, installs, launches, screenshots
+tools/ios.sh build     # target/ios/Obscurify.app for the simulator, ad-hoc signed
+tools/ios.sh device    # target/ios-device/Obscurify.app and Obscurify.ipa for an iPhone, ad-hoc signed
+tools/ios.sh sim       # the simulator build, launched in the newest iPhone simulator, screenshot
+tools/ios.sh e2e       # the e2e build driven in an iPhone Pro Max simulator (below)
+tools/ios.sh listing   # App Store character limits of ios/listing/
 ```
 
-There's no Mac on our side, so `.github/workflows/ios.yml` does this on a GitHub macOS runner for
-every push to the `ios` branch (and by hand from the Actions tab once the workflow is on main). It
-lints for iOS with `-D warnings`, runs `tools/ios.sh sim`, and uploads the `.app`, the screenshot,
-the app's log, any crash reports and a listing of the app's files as the `obscurify-ios-simulator`
-artifact.
+There's no Mac on our side, so `.github/workflows/ios.yml` does this on GitHub macOS runners for every
+push to the `ios` branch (and by hand from the Actions tab once the workflow is on main):
+
+- **Simulator e2e and screenshots**: lints for iOS with `-D warnings`, runs `tools/ios.sh e2e`, and
+  uploads the e2e app, the screenshots and the app's own log as `obscurify-ios-simulator`.
+- **Device build**: `tools/ios.sh device`, uploaded as `obscurify-ios-device` (`Obscurify.ipa`, plus
+  `codesign`, `vtool` and Info.plist printouts). To put it on the test iPhone from Linux:
+  `gh run download <run> -n obscurify-ios-device`, then `xtool install Obscurify.ipa` (xtool re-signs
+  it with a development certificate for the phone). It hasn't run on a device yet, and Apple hasn't
+  validated it: that needs the signing below.
+
+Locally on Linux, `cargo clippy --target aarch64-apple-ios-sim --no-default-features --features play`
+type-checks the iOS code if `SDKROOT` points at a directory whose `usr/include` has C headers for
+aarch64 (the Android NDK's sysroot headers plus a stub `TargetConditionals.h`): ring's build script
+only needs headers. It can't link.
 
 The bundle id is `ai.obscurify.ios` (`[ios]` in `Dioxus.toml`; Android keeps `ai.obscurify.android`
 and `ai.obscurify.play`). It becomes permanent when the App Store Connect record is created.
+
+## Bundle contents
+
+dx 0.7.10 makes a bare `.app` (binary and Info.plist). `tools/ios.sh` adds what an upload needs and
+checks it on every build (the build fails without it):
+
+| | What | From |
+|---|---|---|
+| App icon | `AppIcon` from one 1024x1024 PNG with no alpha; `actool` makes `Assets.car` and the home screen sizes and adds `CFBundleIcons` | `ios/AppIcon.svg` (the split "o" of the Android launcher icon, on black) rendered to `ios/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png` with `rsvg-convert` |
+| Launch screen | Plain black, compiled with `ibtool` to `LaunchScreen.storyboardc` (the plist already names `LaunchScreen`) | `ios/LaunchScreen.storyboard` |
+| `MinimumOSVersion` | 16.0, the `deployment_target` in Dioxus.toml; the binary is linked for the same (`IPHONEOS_DEPLOYMENT_TARGET`, checked with `vtool`). Everything used is older: WKWebView, MessageChannel in the sandbox, UserNotifications, background tasks | Dioxus.toml |
+| `CFBundleVersion` | The Android `version-code` (1000860 for 0.8.60); `CFBundleShortVersionString` is the version | Cargo.toml |
+| `ITSAppUsesNonExemptEncryption` | YES (below) | |
+| Privacy manifest | `PrivacyInfo.xcprivacy`: no tracking, the collected data types of the App Privacy answers, and the required-reason APIs the binary imports. The build lists the binary's imports and fails on a required-reason API the manifest doesn't declare. Today only `stat`/`fstat`/`lstat` (Rust's `std::fs`): file timestamps, reason C617.1 (files in the app's own container). No `NSUserDefaults`, boot time, disk space or keyboard APIs | `ios/PrivacyInfo.xcprivacy` |
+| Device family | iPhone only (`UIDeviceFamily` 1), portrait only: no iPad screenshots or iPad review | |
+| Xcode keys | `DTPlatformName`, `DTSDKName`, `DTXcode`… and `CFBundleSupportedPlatforms`, as Xcode writes them | |
+
+### Export compliance (`ITSAppUsesNonExemptEncryption`)
+
+YES. Apple's rule: encryption limited to what the OS provides (HTTPS through URLSession) is exempt;
+the app ships its own implementations of standard algorithms: TLS (rustls with ring), AES-GCM and
+HMAC-SHA256 for encrypted chat sync, blind RSA signatures (RFC 9474) for private sessions, and the key
+agreement and encryption to TEE enclaves in Encrypted mode. Apple's table (App Store Connect Help,
+"Export compliance documentation for encryption") puts "an industry standard algorithm, not provided
+within the Apple operating system" at: no CCATS, and a French encryption declaration only if the app
+is on the App Store in France. Under US rules this is mass-market encryption, and the source is public
+(GPL). In App Store Connect: the app uses encryption, standard algorithms; then upload the French
+declaration or leave France out. **Tony decides France.**
 
 ## What's different on iOS
 
@@ -31,12 +72,14 @@ models or Tor.
 
 | | Android | iOS |
 |---|---|---|
-| Store rules | Play build: no payments, no uncensored or roleplay models, Report, account deletion, 18+ | The same build (`play`). App Store review asks for the same things |
+| Store rules | Play build: no payments, no uncensored or roleplay models, Report, account deletion, 18+ | The same build (`play`). Also: the Account screen doesn't say funds and plans are on the website (App Store 3.1.3(f) forbids even that call to buy outside the app), and the AI providers sheet below |
+| AI providers sheet | None | Before the first message reaches a model, a sheet says chats go to AI model providers and asks (App Store 5.1.2(i)). "Not now" sends nothing and keeps the text; "Agree and send" is kept in `ai-consent.json`. Every completion checks it (`api::consent` in `api::chat`, `chat_encrypted` and the summaries), not just Send |
 | Tor | Sideload app only | None |
-| Code Mode | Sandbox WebView with no bridges (MainActivity.kt) | **Off.** `code::code_blocked()` is true, as with Tor: no Code switch, the model never gets `run_code`, pages don't open. Tools (web search, paid tools) still work |
-| Links | `android.open` → an intent | `webbrowser::open` → Safari (`ios.rs`) |
-| Copy | `ClipboardManager` | `UIPasteboard` (`ios.rs`); the page's clipboard API would need a user gesture |
-| Long answers | Foreground service with a notification, wake lock, "answer ready" notification | The screen stays on while an answer is worked on (`isIdleTimerDisabled`). Nothing keeps the app running in the background. The server holds a signed-in answer for an hour, so an app that iOS suspended picks it up when it's back |
+| Code Mode | Sandbox WebView with no bridges (MainActivity.kt) | The same design in `ios.rs`: a WKWebView with a non-persistent data store and no app bridges, a navigation delegate that loads only `<base>/sandbox/` at the top (frames: https, data, blob, about), and one message handler, `obsSandbox`, that only passes the runner's messages to `code::on_sandbox`. The runner's MessagePort is made in its own page after it loads (runner.js takes an `init` with no source at the top level, as the Android native port arrives). The model's code runs in the runner's Worker, which can't reach the handler. It sits in the window at 1 pt, all but invisible, so iOS doesn't pause it. Pages open full screen in a WKWebView made the same way with no handler, under a bar with the title and Close. A sandbox whose web process dies fails the run at once (`fatal`) |
+| Links | `android.open` → an intent | `webbrowser::open` → Safari |
+| Copy | `ClipboardManager` | `UIPasteboard` (the page's clipboard API would need a user gesture) |
+| Long answers | Foreground service with a notification, wake lock, "answer ready" notification | The screen stays on while an answer is worked on. Leaving the app, `beginBackgroundTask` gives the answer iOS's usual half minute or so, and if it ends with the app in the background a local notification says "Your answer is ready" (permission asked when the first answer starts, as on Android). Nothing is drawn while the app is in the background: iOS suspends the WebView, and Dioxus polls no task while a render waits for it. A signed-in answer the app couldn't finish is finished by the server and picked up on return |
+| Backups | Android's default (allowBackup not set, so Google backup may include the files) | Application Support goes into iCloud and computer backups, except the session and the keys for private chats and chat sync (`store::NOT_BACKED_UP`: `session.json`, `unlinkable-seed.json`, `unlinkable-state.json`, `sync-seed.json`), marked `isExcludedFromBackup` after every save and at launch. Signing in again brings all of them back. Chats, settings and `wallet.json` (blind vouchers, which the store build can't buy) are backed up. **Tony to confirm**: whether chats should stay out of backups too |
 | Back | System Back asks the page (`obsBack`) | No Back button: screens have their own ← |
 | Network back | `ConnectivityManager` callback → `obsOnline` | The page's `online` event |
 | Files | `/data/user/<id>/<package>/files` | `$HOME/Library/Application Support` in the app container |
@@ -44,28 +87,93 @@ models or Tor.
 | User agent | `Obscurify-Android` | `Obscurify-iOS` (the server counts sign-ups from `Obscurify-Android*` as the app; iOS sign-ups aren't counted yet) |
 | Reports | "from the Android app (Google Play, …)" | "from the iPhone app (App Store, …)" |
 
-What CI shows is that the app builds, launches and draws its first screen in the simulator. Copy,
-links, the picker, safe areas, the keyboard and what happens when iOS suspends the app need a real
-iPhone, so a signed build.
+## e2e
+
+`tools/ios.sh e2e` builds with the `e2e` cargo feature, which runs `e2e/ios/driver.js` inside the
+app's own page (it clicks and types as a person would and reports on the app's stderr), and
+`e2e/ios/host.py` launches it in an iPhone Pro Max simulator, follows that log and does what the page
+can't: screenshots (with the status bar at 9:41), sending the app to the background and back, and
+reading the backup flag on the app's files. It runs against production as a guest, then (with
+`E2E_SIGNUP=1`, as CI does) makes a new account and deletes it from the app at the end, so nothing is
+left behind. No secrets, and no screenshot of an account code: artifacts of this public repo are
+public. The e2e build never ships: `tools/ios.sh device` refuses `E2E=1` and fails if the driver's
+marker is in the binary. The simulator doesn't let the app ask for notifications, so the e2e build
+doesn't ask; the log says whether the "answer ready" notification was posted or refused.
+
+## Parity with the Play build
+
+Every user-facing feature of the Play build (play/README.md, the Android UI and e2e/*.mjs) and where
+it stands on the iPhone. "Simulator" means `e2e/ios/driver.js` checked it in CI (run linked);
+"same code" means the iPhone runs the same Rust and page as Android but no iOS test has driven it;
+"device" means it depends on native behaviour the simulator run can't show (pickers, the keyboard,
+Safari, notifications on screen).
+
+Run: RUNURL
+
+| Feature (Play build) | iPhone | How we know |
+|---|---|---|
+| Chat as a guest (a free model, 30 messages an hour) | Works | Simulator: chat as a guest, streamed answer with markdown and folded thinking |
+| AI providers sheet before the first message (iOS only) | Works | Simulator: opens on Send, nothing sent before agreeing, "Not now" keeps the text, "Agree and send" sends, asked once |
+| Create an account (account code made on the phone, 18+, no referral code) | Works | Simulator: sign-up screen (18+, no referral field), account made, chat signed in |
+| Sign in with an account code or a 16-digit number; typo check | Same code | Not driven on iOS (Android: account-code.mjs) |
+| Old 16-digit account → account code upgrade sheet | Same code | Not driven on iOS |
+| Private sessions (chats with no account attached, wallet from the account code) | Same code | Keys made and saved at sign-up (backup log); chats in the run were as a guest |
+| Model picker: search, categories, providers, favorites (drag to order), unavailable models greyed | Same code | Simulator: picker opens with its categories (screenshot). Drag and search not driven |
+| No uncensored or roleplay models, content guard on every completion | Works | Simulator: no Uncensored or Roleplay category. Guard: same code as Android (play.mjs) |
+| Tools: web search, paid tools billed to the balance | Same code | The Tools switch is on in the run; no paid tool called (needs a funded account) |
+| Code Mode: Python and JavaScript in a sandbox, charts | Works | Simulator: Python ran in the sandbox WKWebView, its chart shown, sum 385 |
+| Code Mode: pages full screen with Close | Works | Simulator: page opened full screen (screenshot); Close button itself not tapped (native, e2e closes it from Rust) |
+| Code Mode sandbox sealed off (no app bridges, no navigation away, no storage) | Built | Design as on Android (ios.rs); the Android checks from inside the sandbox (code.mjs) aren't ported |
+| Attach photos and files (PDF, Word, Excel, PowerPoint, CSV, text) | Device | The file input and reading are the same; the iOS picker (photos, camera, Files) needs a device |
+| Encrypted mode (TEE, checked on the phone) | Same code | Not driven on iOS (Android: encrypted.mjs) |
+| Chat sync, end to end encrypted, "Combine chats?" | Same code | The Sync switch is on after sign-up (Account screenshot); syncing not driven |
+| Chat history drawer, Temp chats, Wipe | Same code | Not driven on iOS |
+| Copy | Device | `UIPasteboard` (ios.rs); needs a device to see |
+| Raw, Edit, Retry, Stop, Continue | Same code | Not driven on iOS |
+| Report on every answer | Works | Simulator: Report opens the form with reasons (not sent) |
+| Account: balance, plan, account code, API keys; no payments, no plan buying, no word about buying elsewhere | Works | Simulator: Account screen, no Add funds and no buy-elsewhere text |
+| Delete account in the app | Works | Simulator: the new account deleted from Account, back at sign-in |
+| Sign out | Same code | Not driven on iOS |
+| Long answers with the app in the background, "answer ready" notification | Partly | Simulator: an answer kept streaming and finished after the app left the screen, and the notification was handed to iOS. iOS gives about 30 s, not Android's foreground service; past that the server finishes a signed-in answer and the app picks it up (same code, not driven). The notification on screen and the permission prompt need a device |
+| Lost connection: waits and carries on | Same code | iOS uses the page's `online` event; not driven |
+| Answer picked up after the app was killed (server-held) | Same code | Not driven on iOS (Android: background.mjs) |
+| Compaction of long chats, agent runs (100 steps) | Same code | Not driven on iOS |
+| Mirrors when the server is unreachable | Same code | Not driven on iOS |
+| Links open in the browser | Device | `webbrowser` → Safari; needs a device |
+| Keyboard, safe areas, screen staying on | Device | Simulator screenshots show the safe areas right; the keyboard and idle timer need a device |
+| Back | Different | No system Back on iOS; every screen has its own ← |
+| Tor, payments, vouchers, plans, referral, uncensored | Left out | As in the Play build (`play`), and `ios.rs` won't compile with Tor |
+
+## Store listing
+
+Drafts in `ios/listing/`: name, subtitle, promotional text, keywords and description (`.txt`, limits
+checked by `tools/ios.sh listing`), and `app-store.md` with the URLs, age rating answers, App Privacy
+answers (from `play/data-safety.csv`, matching `PrivacyInfo.xcprivacy`), export compliance and App
+Review notes. Screenshots: `ios/listing/screenshots/` (6.9", 1320x2868, from the e2e run). All
+waiting for Tony's approval.
 
 ## Still to do
 
-- **Code Mode on iOS.** A second WKWebView made in Rust (objc2-web-kit is already in the tree):
-  no script message handlers, a non-persistent data store, `WKNavigationDelegate` allowing only
-  `/sandbox/` (and https subresources, as on Android), talking to the app through
-  `evaluateJavaScript` and one message handler on that WebView alone. Then full-screen pages the same way.
-- **Background.** `beginBackgroundTask` for the last seconds of an answer, and a local notification
-  when it's ready (`UNUserNotificationCenter`).
-- **Backups.** Application Support goes into iCloud and device backups. The session and the
-  private-session wallet probably shouldn't: mark those files `isExcludedFromBackup`, or decide
-  that it's fine.
-- **Bundle contents.** dx 0.7.10 makes a bare `.app` (binary, `Info.plist`): no app icons (an
-  asset catalog with `AppIcon`, which the App Store requires), no `LaunchScreen.storyboardc` though the plist
-  names one, and no `MinimumOSVersion` (`deployment_target` doesn't reach the plist). Add them in
-  `tools/ios.sh` (`actool` for the icons, `ibtool` for a black launch screen, `plutil` for the key)
-  before the first upload.
-- **Store listing:** screenshots, privacy "nutrition label" (the Play `data-safety.csv` answers),
-  age rating 18+, the account deletion and report flows pointed out to review.
+- **Signing and TestFlight** (below): needs the Apple developer account. Until then nothing is
+  uploaded, and no App Store Connect record or bundle id registration exists.
+- **On the test iPhone**: install `obscurify-ios-device` with xtool and check what the simulator can't
+  show: the attach picker, Copy, links to Safari, the keyboard, the notification prompt and the "answer
+  ready" notification on screen, a long answer past iOS's background time.
+- **More of the Android e2e on iOS**: sign in with a code and a number, sync, Encrypted, edit/retry/stop,
+  paid tools. Paid tools and Encrypted need a funded account as a CI secret: Tony's call.
+- **Server**: sign-ups from `Obscurify-iOS` aren't counted as the app yet.
+- **Release**: `tools/release.mjs` doesn't build or upload the iPhone app; a version bump doesn't either.
+- **App Review risks**: Code Mode under 2.5.2 (fallback: Code off on iOS through `code::code_blocked`);
+  models that need a plan bought on the website ("needs the Pro plan") under 3.1.1/3.1.3(f).
+
+### Decisions for Tony
+
+1. Bundle id `ai.obscurify.ios` (permanent once the App Store Connect record exists).
+2. Backups: only the session and keys are kept out (above); chats are backed up. Keep chats out too?
+3. The AI providers sheet wording (`chat.rs`, `ChatView`).
+4. The listing text, age rating, App Privacy answers ("Other user content: not linked"?) and review
+   notes in `ios/listing/`, and the demo account for review.
+5. Export compliance: France (upload the French declaration) or leave France out.
 
 ## Signing and TestFlight (once the Apple developer account exists)
 
@@ -85,13 +193,13 @@ Nothing below is set up yet. All of it runs on the macOS runner, so it needs sec
    (`IOS_PROFILE` base64), installed into `~/Library/MobileDevice/Provisioning Profiles/`.
    fastlane `match` or `xcodebuild -allowProvisioningUpdates` with the API key can replace steps 3
    and 4.
-5. **Device build.** `dx bundle --platform ios --release --target aarch64-apple-ios
-   --no-default-features --features play --package-types ipa`, then sign with the certificate,
-   the profile embedded as `embedded.mobileprovision` and an entitlements file
-   (`application-identifier`, `com.apple.developer.team-identifier`). Check with
-   `codesign -dv --verbose=4`.
-6. **Version.** `CFBundleShortVersionString` comes from `version` in `Cargo.toml`; every upload needs
-   a higher `CFBundleVersion` than the last one (the Android `version-code` works).
+5. **Device build.** `tools/ios.sh device` already makes the bundle (icon, launch screen, privacy
+   manifest, plist keys) and `Obscurify.ipa`, ad-hoc signed. For the store: re-sign
+   `Payload/Obscurify.app` with the certificate, the profile embedded as `embedded.mobileprovision`
+   and an entitlements file (`application-identifier`, `com.apple.developer.team-identifier`), zip
+   it again. Check with `codesign -dv --verbose=4`.
+6. **Version.** `CFBundleShortVersionString` is `version` in `Cargo.toml`, `CFBundleVersion` the Android
+   `version-code` (tools/ios.sh): every upload needs a higher one.
 7. **Upload.** `xcrun altool --upload-app -f Obscurify.ipa -t ios --apiKey … --apiIssuer …` (or
    fastlane `pilot`). The build shows up in TestFlight
    after Apple processes it; internal testers can install it at once, external testers after a
