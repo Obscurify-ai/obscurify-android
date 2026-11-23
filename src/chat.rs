@@ -955,6 +955,9 @@ pub fn ChatView() -> Element {
             if *app.waiting.read() {
                 div { class: "waiting", "Waiting for Obscurify. This picks up by itself." }
             }
+            if let Some(at) = *crate::private::REFILLING.read() {
+                div { class: "waiting", id: "private-wait", {refilling_text(at)} }
+            }
             div { class: "composer",
                 if !app.docs.read().is_empty() {
                     div { class: "docs",
@@ -1863,4 +1866,12 @@ fn ModelRow(m: Model, needs: Option<&'static str>, above: Option<String>) -> Ele
                 } }, if fav { "★" } else { "☆" } }
         }
     }
+}
+
+/// What a chat waiting for the private wallet says (`private::REFILLING`).
+fn refilling_text(at: u64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let minutes = at.saturating_sub(now).div_ceil(60).max(1);
+    let when = if minutes == 1 { "a minute".to_string() } else { format!("{minutes} minutes") };
+    format!("Your private wallet is refilling. Your message will be sent in about {when}.")
 }

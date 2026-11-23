@@ -308,6 +308,10 @@ impl App {
                 } else if added > 0 && !for_plan {
                     self.say(format!("{} added to your balance", cents(added)))
                 }
+                if added > 0 || plan_on {
+                    // A payment seen is a moment of the account's own: the wallet may ask it now.
+                    private::money_added().await;
+                }
                 if changed || plan_on {
                     self.refresh_balance()
                 }

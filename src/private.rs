@@ -6,6 +6,12 @@
 //! the manager's state, and a new or wiped phone gets the wallet back at the next sign-in.
 //!
 //! Encrypted mode, the account page and buying vouchers still use the signed-in session.
+//!
+//! Nothing a chat does makes a request with the account's key or cookie: one a second before or
+//! after a private session's ties the two together by timing. The manager asks the account at
+//! random times (and when the app opens, or a payment shows up: `money_added`); a chat the wallet
+//! can't pay waits for that ("Your private wallet is refilling", `REFILLING`), and what it says
+//! when refused comes from what the phone holds.
 
 use crate::{api, store};
 use serde_json::{json, Value};
@@ -23,6 +29,10 @@ fn state() -> &'static tokio::sync::Mutex<Option<Manager>> {
     static S: OnceLock<tokio::sync::Mutex<Option<Manager>>> = OnceLock::new();
     S.get_or_init(|| tokio::sync::Mutex::new(None))
 }
+
+/// While a chat waits for the wallet to refill: about when it goes on (Unix seconds). The chat
+/// screen shows it above the composer.
+pub static REFILLING: dioxus::prelude::GlobalSignal<Option<u64>> = dioxus::prelude::Signal::global(|| None);
 
 /// The chat whose requests are being made: each chat gets its own session.
 static CHAT: StdMutex<String> = StdMutex::new(String::new());
@@ -147,29 +157,52 @@ const ALL_USED_UP: &str = "Your balance and this month's free usage are used up,
 /// The session secret to send for the current chat, opening a session. `Ok(None)`: private
 /// sessions aren't on here (signed in without the number); use the signed-in session. `Err`:
 /// they are on and none could be had, so the request is not sent at all: never through the
-/// account instead.
+/// account instead. Waits while the wallet refills.
 pub async fn secret() -> Result<Option<String>, String> {
     if !on() || !api::has_session() {
         return Ok(None);
     }
-    if let Some(s) = open().await? {
-        return Ok(Some(s));
+    loop {
+        if let Some(s) = open().await? {
+            return Ok(Some(s));
+        }
+        // No money and no free-model pass here. The account may have more: wait for it.
+        if !hold().await {
+            return Err(ALL_USED_UP.into());
+        }
     }
-    // No money and no free-model pass, unless money was added since the account last refused a
-    // top-up (the wallet waits ten minutes after one).
-    if !ask_again().await? {
-        return Err(ALL_USED_UP.into());
-    }
-    open().await?.map(Some).ok_or_else(|| NOT_STARTED.into())
 }
 
-/// The account has money now: the wallet may ask it again at once. False: it has none.
-async fn ask_again() -> Result<bool, String> {
-    if funds().await.ok_or(NOT_STARTED)? < 0.01 {
-        return Ok(false);
+/// When the manager says a chat waits for the wallet: show it, keep its clock running until the
+/// chat may go on. False: nothing to wait for (the account had nothing at the last contact).
+async fn hold() -> bool {
+    let at = |m: &Manager| m.refilling();
+    let Some(mut when) = ready().await.and_then(|g| (*g).as_ref().and_then(at)) else { return false };
+    loop {
+        *REFILLING.write() = Some(when);
+        crate::sleep(2000).await;
+        let Some(mut g) = ready().await else { break };
+        let Some(m) = g.as_mut() else { break };
+        m.tick().await;
+        save(m);
+        match m.refilling() {
+            Some(w) => when = w,
+            None => break,
+        }
     }
-    if let Some(m) = state().lock().await.as_mut() { m.ask_again() }
-    Ok(true)
+    *REFILLING.write() = None;
+    true
+}
+
+/// Money was added to the account, or its plan changed, here (a moment of the account's own):
+/// the wallet asks it now.
+pub async fn money_added() {
+    if let Some(mut g) = ready().await
+        && let Some(m) = g.as_mut()
+    {
+        m.money_added().await;
+        save(m);
+    }
 }
 
 async fn open() -> Result<Option<String>, String> {
@@ -181,20 +214,11 @@ async fn open() -> Result<Option<String>, String> {
     Ok(s)
 }
 
-/// What the account has to fill the wallet with: its balance and what's left of its plan's
-/// included credit. `None`: the server couldn't be asked.
-async fn funds() -> Option<f64> {
-    let tier = api::get("/account_tier").await.ok()?;
-    let balance = api::get("/get_user_balance").await.ok()?["balance"].as_f64()?;
-    let credit = tier["included_credit"].as_f64().unwrap_or(0.0) - tier["credit_used"].as_f64().unwrap_or(0.0);
-    Some(credit.max(0.0) + balance.max(0.0))
-}
-
-/// What to say when a request was refused for want of money, with nothing more to add.
+/// What to say when a request was refused for want of money, with nothing more to add: the
+/// account had nothing at the last contact, so what is left is what this phone holds.
 pub async fn refused() -> String {
-    let Some(left) = funds().await else { return NOT_STARTED.into() };
     let held = spending().await["prepaid_millicents"].as_i64().unwrap_or(0) as f64 / 100_000.0;
-    match ((left + held) * 100.0).floor() as i64 {
+    match (held * 100.0).floor() as i64 {
         i64::MIN..1 => USED_UP.into(),
         c @ 1..100 => format!("This needs more than the {c}¢ you have left, so nothing was sent. Pick a cheaper model, or add funds."),
         c => format!("This needs more than the ${}.{:02} you have left, so nothing was sent. Pick a cheaper model, or add funds.", c / 100, c % 100),
@@ -204,10 +228,14 @@ pub async fn refused() -> String {
 /// The session ran out (402): add more to it, more each time. False: there is nothing more to
 /// add, so the request goes once more as the rest of the session's money (`REST_HEADER`).
 pub async fn ran_out(secret: &str, attempt: u32) -> bool {
-    if add(secret, attempt).await {
-        return true;
+    loop {
+        if add(secret, attempt).await {
+            return true;
+        }
+        if !hold().await {
+            return false;
+        }
     }
-    ask_again().await == Ok(true) && add(secret, attempt).await
 }
 
 async fn add(secret: &str, attempt: u32) -> bool {
@@ -226,14 +254,19 @@ async fn add(secret: &str, attempt: u32) -> bool {
 /// free-model tokens), which says nothing of which account. True when one was shown: ask
 /// again. False (the plan doesn't give it): show the error.
 pub async fn needs_pass(secret: &str, label: &str) -> bool {
-    if let Some(mut g) = ready().await
-        && let Some(m) = g.as_mut()
-    {
-        let retry = m.needs_pass(secret, label).await.unwrap_or(false);
+    loop {
+        let Some(mut g) = ready().await else { return false };
+        let Some(m) = g.as_mut() else { return false };
+        let answer = m.needs_pass(secret, label).await;
         save(m);
-        return retry;
+        drop(g);
+        match answer {
+            Ok(retry) => return retry,
+            // The account gets that label and the stock ran out: wait for the next contact.
+            Err(_) if hold().await => continue,
+            Err(_) => return false,
+        }
     }
-    false
 }
 
 /// The server no longer takes this session (401): the chat gets a new one next time.
