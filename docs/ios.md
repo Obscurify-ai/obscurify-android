@@ -120,6 +120,9 @@ Device build from run 45135457044, re-signed with xtool (free team, so the bundl
 - Found: bare URLs in answers are plain text, not tappable (only markdown links are links).
   When the keyboard opens, the whole page scrolls up and the top bar (☰, model picker, ＋)
   goes under the status bar until the keyboard closes.
+- Fixed in 44720ea (run 45194169440, checked on the phone the same day): a bare address in an answer
+  is a link and opens Safari; with the keyboard open the top bar stays put and the message box
+  sits just above the keyboard.
 
 
 Every user-facing feature of the Play build (play/README.md, the Android UI and e2e/*.mjs) and where
