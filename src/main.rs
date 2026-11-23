@@ -211,8 +211,10 @@ pub(crate) fn working(_on: bool) {
 /// render waits for the WebView, so an answer in the background stops drawing until it's back.
 pub(crate) fn backgrounded() -> bool {
     #[cfg(target_os = "ios")]
-    return ios::backgrounded();
-    #[cfg(not(target_os = "ios"))]
+    if ios::backgrounded() {
+        ios::answer_in_background();
+        return true;
+    }
     false
 }
 fn usd(d: f64) -> String { if d.abs() < 0.01 && d != 0.0 { format!("${d:.4}") } else { format!("${d:.2}") } }
@@ -615,6 +617,8 @@ fn Root() -> Element {
                 api::kick();
                 app.work_wallet(false)
             } else if let Some(vis) = v["visible"].as_bool() {
+                #[cfg(feature = "e2e")]
+                eprintln!("E2E page visible: {vis}");
                 app.visible.set(vis);
                 if vis {
                     api::kick();

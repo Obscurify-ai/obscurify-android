@@ -38,7 +38,17 @@ use objc2_web_kit::{
 use std::cell::{Cell, RefCell};
 
 /// What the native side does goes to stderr: the simulator run in CI keeps it (tools/ios.sh).
-fn log(s: &str) { eprintln!("obscurify-ios: {s}") }
+fn log(s: &str) {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let t = START.get_or_init(std::time::Instant::now).elapsed();
+    eprintln!("obscurify-ios: [{:.1}s] {s}", t.as_secs_f32())
+}
+
+static BG_NOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// An answer got more text with the app in the background (said once per answer).
+pub fn answer_in_background() {
+    if !BG_NOTED.swap(true, std::sync::atomic::Ordering::SeqCst) { log("answer: still coming in with the app in the background") }
+}
 
 /// Runs `f` on the main thread: now if this is it, else queued there.
 fn on_main(f: impl FnOnce(MainThreadMarker) + Send + 'static) {
@@ -101,6 +111,7 @@ pub fn working(on: bool) {
         app.setIdleTimerDisabled(on);
         if on && !WORKING.get() {
             WORKING.set(true);
+            BG_NOTED.store(false, std::sync::atomic::Ordering::SeqCst);
             ask_to_notify();
             end_task(mtm);
             let expired = RcBlock::new(move || {
