@@ -1,0 +1,1 @@
+Drag your favorite models into order right in the model picker, using the handle on each row.
