@@ -120,6 +120,11 @@ pub fn working(on: bool) {
     })
 }
 
+/// Not on screen: iOS suspends the WebView, so nothing should be drawn (`crate::backgrounded`).
+pub fn backgrounded() -> bool {
+    MainThreadMarker::new().is_some_and(|mtm| UIApplication::sharedApplication(mtm).applicationState() != UIApplicationState::Active)
+}
+
 fn end_task(mtm: MainThreadMarker) {
     let id = TASK.replace(0);
     if id != 0 && id != unsafe { UIBackgroundTaskInvalid } {

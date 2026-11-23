@@ -26,7 +26,7 @@ async function until(f, ms = 30000, what = '') {
   throw new Error('timed out waiting for ' + what);
 }
 async function click(sel, t, ms) {
-  const el = await until(() => t ? byText(sel, t) : $(sel), ms || 30000, sel + (t ? ' "' + t + '"' : ''));
+  const el = await until(() => { const e = t ? byText(sel, t) : $(sel); return e && !e.disabled && e; }, ms || 30000, sel + (t ? ' "' + t + '"' : ''));
   el.click();
   await sleep(500);
   return el;
@@ -38,7 +38,8 @@ async function type(sel, value) {
   el.dispatchEvent(new Event('input', {bubbles: true}));
   await sleep(300);
 }
-async function shot(name) { dioxus.send({shot: name}); await sleep(3500); }
+// The host takes the screenshot and says when it has (through the app, e2e-shot-done).
+async function shot(name) { await sleep(600); dioxus.send({shot: name}); await dioxus.recv(); }
 const host = async (what, ms) => { dioxus.send({host: what}); await sleep(ms); };
 const replies = () => $$('.msg.assistant');
 const answering = () => !!$('.send.stop');
@@ -183,7 +184,8 @@ try {
   await account();
 } catch (e) {
   ok(false, 'stopped: ' + (e && e.message || e));
-  await shot('error');
+  // Never a screenshot of a real account code (artifacts are public).
+  if (!byText('h1', 'Your account code')) await shot('error');
 }
 dioxus.send({done: failures === 0});
 await new Promise(() => {});

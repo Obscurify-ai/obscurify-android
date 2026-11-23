@@ -207,6 +207,14 @@ pub(crate) fn working(_on: bool) {
     #[cfg(target_os = "ios")]
     ios::working(_on)
 }
+/// The app isn't on screen (iOS). Its WebView is suspended there, and Dioxus polls no task while a
+/// render waits for the WebView, so an answer in the background stops drawing until it's back.
+pub(crate) fn backgrounded() -> bool {
+    #[cfg(target_os = "ios")]
+    return ios::backgrounded();
+    #[cfg(not(target_os = "ios"))]
+    false
+}
 fn usd(d: f64) -> String { if d.abs() < 0.01 && d != 0.0 { format!("${d:.4}") } else { format!("${d:.2}") } }
 fn cents(c: i64) -> String { format!("${}.{:02}", c / 100, c % 100) }
 
@@ -641,7 +649,17 @@ fn Root() -> Element {
         let mut e = document::eval(&format!("const SIGNUP = {signup};\n{DRIVER}"));
         while let Ok(v) = e.recv::<Value>().await {
             if let Some(s) = v["log"].as_str() { eprintln!("E2E {s}") }
-            else if let Some(s) = v["shot"].as_str() { eprintln!("E2E-SHOT {s}") }
+            else if let Some(s) = v["shot"].as_str() {
+                // The host takes it (several seconds in CI) and writes e2e-shot-done: then the driver goes on.
+                eprintln!("E2E-SHOT {s}");
+                let done = store::dir().join("e2e-shot-done");
+                for _ in 0..120 {
+                    if std::fs::read_to_string(&done).is_ok_and(|n| n.trim() == s) { break }
+                    sleep(250).await;
+                }
+                let _ = std::fs::remove_file(&done);
+                let _ = e.send(json!("shot-done"));
+            }
             else if let Some(s) = v["host"].as_str() { eprintln!("E2E-HOST {s}") }
             else if v["close_page"] == true { ios::close_page() }
             else if let Some(ok) = v["done"].as_bool() { eprintln!("E2E-DONE {}", if ok { "ok" } else { "failed" }) }

@@ -156,6 +156,8 @@ e2e() {
     --cellularMode active --cellularBars 4 --batteryState charged --batteryLevel 100 || true
   xcrun simctl uninstall "$udid" "$id" 2>/dev/null || true
   xcrun simctl install "$udid" target/ios/Obscurify.app
+  # The e2e build doesn't ask for notifications (the alert would cover the screenshots); this may allow them.
+  xcrun simctl privacy "$udid" grant notifications "$id" 2>&1 || true
   python3 e2e/ios/host.py "$udid" "$id" target/ios/e2e
 }
 

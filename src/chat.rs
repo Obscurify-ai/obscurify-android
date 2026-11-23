@@ -726,7 +726,7 @@ fn run_with(mut app: App, follow: Option<String>) {
                                 match msg.searches.iter_mut().find(|x| x.query == q) { Some(x) => *x = s, None => msg.searches.push(s) }
                             }
                         }
-                        if store::now() - drawn > 60 {
+                        if store::now() - drawn > 60 && !crate::backgrounded() {
                             drawn = store::now();
                             app.live.set(Some(msg.clone()));
                         }

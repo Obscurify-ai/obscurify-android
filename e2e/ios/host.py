@@ -30,11 +30,14 @@ def note(ok, what):
         failures.append(what)
 
 
-def screenshot(name):
+def screenshot(name, ack=False):
     path = os.path.join(out, f'{name}.png')
     sh('xcrun', 'simctl', 'io', udid, 'screenshot', path)
     size = sh('sips', '-g', 'pixelWidth', '-g', 'pixelHeight', path).stdout.split()
     print(f'shot {name}: {size[-3]}x{size[-1]}', flush=True)
+    if ack:  # the driver waits for this before it goes on
+        with open(os.path.join(container(), 'Library', 'Application Support', 'e2e-shot-done'), 'w') as f:
+            f.write(name)
 
 
 def container():
@@ -54,7 +57,7 @@ while time.time() < deadline and done is None:
         lines = f.read().splitlines()
     for line in lines[seen:]:
         if line.startswith('E2E-SHOT '):
-            screenshot(line.split(' ', 1)[1].strip())
+            screenshot(line.split(' ', 1)[1].strip(), ack=True)
         elif line.startswith('E2E-HOST background'):
             # Another app in front: ours is in the background while its answer is worked on.
             sh('xcrun', 'simctl', 'launch', udid, 'com.apple.Preferences')

@@ -881,7 +881,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
         let context = app.models.peek().iter().find(|m| m.id == model).map(|m| m.context).filter(|c| *c > 0).unwrap_or(DEFAULT_CONTEXT);
         let mut drawn = 0i64;
         let mut show = move |m: &Msg| {
-            if crate::store::now() - drawn > 60 {
+            if crate::store::now() - drawn > 60 && !crate::backgrounded() {
                 drawn = crate::store::now();
                 let mut m = m.clone();
                 // A tool call in the making isn't for reading.
