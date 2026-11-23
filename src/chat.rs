@@ -124,6 +124,7 @@ pub(crate) fn forget_pending() { store::remove(PENDING) }
 /// Stops the answer: here, and on the server, where it would otherwise carry on.
 pub(crate) fn stop_answer(mut app: App) {
     app.stop.set(true);
+    crate::private::cancel_wait();
     api::cancel_current();
     forget_pending();
 }

@@ -863,6 +863,10 @@ async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>>
                 passes += 1;
                 continue;
             }
+            // Stopped while it waited for the wallet: nothing more is sent.
+            if crate::private::stopped() {
+                return Some(Err(crate::private::STOPPED_ERROR.into()));
+            }
             if !none.contains(&label) {
                 none.push(label);
                 continue;
@@ -870,7 +874,12 @@ async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>>
         }
         match status {
             402 if rest => break,
-            402 if attempt < TOP_UPS => rest = !crate::private::ran_out(&secret, attempt).await,
+            402 if attempt < TOP_UPS => {
+                rest = !crate::private::ran_out(&secret, attempt).await;
+                if rest && crate::private::stopped() {
+                    return Some(Err(crate::private::STOPPED_ERROR.into()));
+                }
+            }
             401 if attempt < TOP_UPS => crate::private::expired(&secret).await,
             _ => return Some(Err(chat_error(status, &r.text().await.unwrap_or_default()))),
         }
@@ -922,7 +931,11 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
                 }
             }
             match status {
-                402 if reply.is_none() && attempt < TOP_UPS => { crate::private::ran_out(&secret, attempt).await; }
+                402 if reply.is_none() && attempt < TOP_UPS => {
+                    if !crate::private::ran_out(&secret, attempt).await && crate::private::stopped() {
+                        return Err(format!("402\u{1}{}", crate::private::STOPPED_ERROR));
+                    }
+                }
                 401 if reply.is_none() && attempt < TOP_UPS => crate::private::expired(&secret).await,
                 _ => return Err(format!("{status}\u{1}{}", error_text(status, &v, &text))),
             }

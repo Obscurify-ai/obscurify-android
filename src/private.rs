@@ -34,6 +34,19 @@ fn state() -> &'static tokio::sync::Mutex<Option<Manager>> {
 /// screen shows it above the composer.
 pub static REFILLING: dioxus::prelude::GlobalSignal<Option<u64>> = dioxus::prelude::Signal::global(|| None);
 
+/// Stop was pressed while a chat waited for the wallet: the wait ends and nothing is sent.
+static CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static STOPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const STOPPED_TEXT: &str = "Stopped before it was sent.";
+
+/// Stop pressed: a chat waiting for the wallet gives up, and isn't sent later.
+pub fn cancel_wait() { CANCEL.store(true, std::sync::atomic::Ordering::SeqCst) }
+
+/// The last wait ended because Stop was pressed (asked once).
+pub fn stopped() -> bool { STOPPED.swap(false, std::sync::atomic::Ordering::SeqCst) }
+
+pub const STOPPED_ERROR: &str = STOPPED_TEXT;
+
 /// The chat whose requests are being made: each chat gets its own session.
 static CHAT: StdMutex<String> = StdMutex::new(String::new());
 
@@ -168,7 +181,7 @@ pub async fn secret() -> Result<Option<String>, String> {
         }
         // No money and no free-model pass here. The account may have more: wait for it.
         if !hold().await {
-            return Err(ALL_USED_UP.into());
+            return Err(if stopped() { STOPPED_TEXT } else { ALL_USED_UP }.into());
         }
     }
 }
@@ -178,7 +191,20 @@ pub async fn secret() -> Result<Option<String>, String> {
 async fn hold() -> bool {
     let at = |m: &Manager| m.refilling();
     let Some(mut when) = ready().await.and_then(|g| (*g).as_ref().and_then(at)) else { return false };
+    // Cleared however the wait ends, Stop (the send dropped) included.
+    struct Shown;
+    impl Drop for Shown {
+        fn drop(&mut self) {
+            *REFILLING.write() = None;
+        }
+    }
+    let _shown = Shown;
+    CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
     loop {
+        if CANCEL.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            STOPPED.store(true, std::sync::atomic::Ordering::SeqCst);
+            return false;
+        }
         *REFILLING.write() = Some(when);
         crate::sleep(2000).await;
         let Some(mut g) = ready().await else { break };
@@ -190,7 +216,6 @@ async fn hold() -> bool {
             None => break,
         }
     }
-    *REFILLING.write() = None;
     true
 }
 

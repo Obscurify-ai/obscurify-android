@@ -54,6 +54,16 @@ await sleep(500);
 await page.locator('input.search').fill(PRICEY);
 await page.locator('.drawer .pick:not(.locked)').first().locator('.grow').click();
 await sleep(500);
+// Stop pressed while it waits: the notice goes, and nothing is sent later.
+await page.locator('#composer').fill('Reply with exactly the word: kiwi');
+await sleep(300);
+await page.locator('.send').click();
+await page.waitForSelector('#private-wait', { timeout: 120000 });
+await page.locator('.send.stop').click();
+await page.waitForSelector('#private-wait', { state: 'detached', timeout: 10000 });
+const stoppedAt = Date.now();
+await sleep(20000);
+ok(!seen.some((s) => s.side === 'chat' && s.at > stoppedAt), 'Stop while waiting: the notice goes, and nothing is sent');
 const n = await page.locator('.msg.assistant, .msg.err').count();
 await page.locator('#composer').fill('Reply with exactly the word: mango');
 await sleep(300);
