@@ -10,6 +10,7 @@ failure.
 import os, subprocess, sys, time
 
 udid, bundle, out = sys.argv[1:4]
+out = os.path.abspath(out)  # simctl writes the logs from launchd, which needs an absolute path
 os.makedirs(out, exist_ok=True)
 err_path, out_path = os.path.join(out, 'stderr.log'), os.path.join(out, 'stdout.log')
 open(err_path, 'w').close()

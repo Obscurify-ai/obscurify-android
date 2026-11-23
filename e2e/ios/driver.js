@@ -169,8 +169,7 @@ async function account() {
   await click('.drawer .foot button');
   await until(() => $('.big'), 30000, 'Account');
   await sleep(1500);
-  ok(!!byText('p', 'Add funds and change plans on the website'), 'Account: funds and plans are on the website, with no link');
-  ok(!byText('button', 'Add funds'), 'Account: no Add funds');
+  ok(!byText('button', 'Add funds') && !byText('p', 'Add funds'), 'Account: no Add funds, and no word about buying elsewhere (3.1.3(f))');
   await shot('account');
   await click('button.danger', 'Delete account');
   await click('button.danger', 'Delete for good');

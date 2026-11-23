@@ -172,5 +172,10 @@ case "${1:-build}" in
   device) device ;;
   sim) sim ;;
   e2e) e2e ;;
-  *) echo "usage: $0 build|device|sim|e2e" >&2; exit 2 ;;
+  listing) # App Store character limits (ios/listing/app-store.md)
+    for f in name:30 subtitle:30 promotional_text:170 keywords:100 description:4000; do
+      n=$(tr -d '\n' < "ios/listing/${f%%:*}.txt" | wc -m)
+      echo "${f%%:*}: $n/${f##*:}"; [ "$n" -le "${f##*:}" ] || { echo "too long" >&2; exit 1; }
+    done ;;
+  *) echo "usage: $0 build|device|sim|e2e|listing" >&2; exit 2 ;;
 esac

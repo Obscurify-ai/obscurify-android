@@ -1184,7 +1184,8 @@ fn Account() -> Element {
                         p { class: "muted", "{cents(w.held_cents())} received and waiting to be added to your balance." }
                     }
                     // Play allows saying where to pay, as plain text: no link, no button.
-                    if PLAY { p { class: "muted", "Add funds and change plans on the website, obscurify.ai." } }
+                    // The App Store doesn't allow even this much (guideline 3.1.3(f): no call to buy outside the app).
+                    if PLAY && !IOS { p { class: "muted", "Add funds and change plans on the website, obscurify.ai." } }
                 }
                 div { class: "section",
                     h2 { "Plan" }
