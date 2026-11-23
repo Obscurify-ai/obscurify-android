@@ -107,6 +107,21 @@ shown there.
 
 ## Parity with the Play build
 
+### On the test iPhone 13 (iOS 26.1), 2026-11-23
+
+Device build from run 45135457044, re-signed with xtool (free team, so the bundle id on the phone is
+`XTL-97QU7SP64C.ai.obscurify.ios`) and driven over WebDriverAgent:
+
+- Works: launch and icon, guest chat streaming a real answer, the consent sheet before the first
+  send, the notification permission prompt after the first answer, Copy ("Answer copied"),
+  a markdown link opening Safari, and an answer finishing while another app was in front.
+- Not confirmed: the "answer ready" notification on screen (Notification Center can't be opened
+  from WebDriverAgent, no banner caught).
+- Found: bare URLs in answers are plain text, not tappable (only markdown links are links).
+  When the keyboard opens, the whole page scrolls up and the top bar (☰, model picker, ＋)
+  goes under the status bar until the keyboard closes.
+
+
 Every user-facing feature of the Play build (play/README.md, the Android UI and e2e/*.mjs) and where
 it stands on the iPhone. "Simulator" means `e2e/ios/driver.js` checked it in CI (run linked);
 "same code" means the iPhone runs the same Rust and page as Android but no iOS test has driven it;
