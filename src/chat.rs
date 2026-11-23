@@ -799,9 +799,94 @@ fn ask_instead(mut app: App, i: usize, model: &str) {
     run(app);
 }
 
+/// Math, as on the web chat (chat-markdown.js): TeX between $...$, $$...$$, \(...\) and \[...\] is
+/// lifted out before markdown (never from code) and comes back as a plain-text span that KaTeX
+/// typesets in the WebView. `$x$` counts only when it can't be money: no space just inside either
+/// `$`, no digit right after the closing one, one line ("costs $5 and $10" stays text).
+const MATH_TOKEN: &str = "OBSCURIFYMATH";
+
+fn protect_math(s: &str) -> (String, Vec<(String, bool)>) {
+    let b = s.as_bytes();
+    let (mut out, mut math) = (String::with_capacity(s.len()), Vec::new());
+    let (mut i, mut copied) = (0, 0);
+    let find = |from: usize, pat: &str| s.get(from..).and_then(|t| t.find(pat)).map(|k| from + k);
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    while i < b.len() {
+        let rest = &s[i..];
+        // Code: fenced blocks to their end (or the end of a streaming reply), and spans.
+        if rest.starts_with("```") || rest.starts_with("~~~") {
+            i = find(i + 3, &rest[..3]).map_or(b.len(), |k| k + 3);
+            continue;
+        }
+        if b[i] == b'`' {
+            let n = rest.bytes().take_while(|&c| c == b'`').count();
+            let ticks = &rest[..n];
+            let mut j = i + n;
+            i += n;
+            while let Some(k) = find(j, ticks) {
+                let run = s[k..].bytes().take_while(|&c| c == b'`').count();
+                if run == n { i = k + n; break; }
+                j = k + run;
+            }
+            continue;
+        }
+        let mut found: Option<(usize, usize, bool)> = None; // (tex start, tex end, display); end of match follows
+        let mut end = 0;
+        if rest.starts_with("$$") && (i == 0 || b[i - 1] != b'\\') {
+            if let Some(k) = find(i + 2, "$$") { found = Some((i + 2, k, true)); end = k + 2; }
+        } else if rest.starts_with("\\[") {
+            if let Some(k) = find(i + 2, "\\]") { found = Some((i + 2, k, true)); end = k + 2; }
+        } else if rest.starts_with("\\(") {
+            if let Some(k) = find(i + 2, "\\)") { found = Some((i + 2, k, false)); end = k + 2; }
+        } else if b[i] == b'\\' {
+            // An escaped character (\$ among them), whole: it may be more than one byte.
+            i += 1 + s[i + 1..].chars().next().map_or(0, char::len_utf8);
+            continue;
+        } else if b[i] == b'$' && (i == 0 || !(b[i - 1] == b'\\' || b[i - 1] == b'$' || word(b[i - 1])))
+            && b.get(i + 1).is_some_and(|&c| !c.is_ascii_whitespace() && c != b'$')
+        {
+            let mut k = i + 1;
+            while k < b.len() && b[k] != b'$' && b[k] != b'\n' {
+                k += if b[k] == b'\\' { 2 } else { 1 };
+            }
+            if k < b.len() && b[k] == b'$' && !b[k - 1].is_ascii_whitespace() && b[k - 1] != b'\\'
+                && !b.get(k + 1).is_some_and(|&c| c.is_ascii_digit() || c == b'$')
+            {
+                found = Some((i + 1, k, false));
+                end = k + 1;
+            }
+        }
+        match found {
+            Some((a, z, display)) if !s[a..z].trim().is_empty() => {
+                out.push_str(&s[copied..i]);
+                let token = format!("@@{MATH_TOKEN}{}@@", math.len());
+                out.push_str(&if display { format!("\n\n{token}\n\n") } else { token });
+                math.push((s[a..z].trim().to_string(), display));
+                i = end;
+                copied = end;
+            }
+            _ => i += rest.chars().next().map_or(1, char::len_utf8),
+        }
+    }
+    out.push_str(&s[copied.min(s.len())..]);
+    (out, math)
+}
+
+fn restore_math(mut html: String, math: &[(String, bool)]) -> String {
+    for (n, (tex, display)) in math.iter().enumerate() {
+        let tex = tex.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        let span = format!(r#"<span class="math-tex{}">{tex}</span>"#, if *display { " math-display" } else { "" });
+        let token = format!("@@{MATH_TOKEN}{n}@@");
+        html = html.replace(&format!("<p>{token}</p>"), &span).replace(&token, &span);
+    }
+    html
+}
+
 /// Markdown to HTML with raw HTML shown as text, only http(s)/mailto links, and images turned into
 /// links (a model's image would load from a third party and reveal the phone's IP).
 pub fn md(s: &str) -> String {
+    let (s, math) = protect_math(s);
+    let s = s.as_str();
     use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, TagEnd, html};
     let safe = |u: &CowStr| { let l = u.to_lowercase(); l.starts_with("https://") || l.starts_with("http://") || l.starts_with("mailto:") };
     let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
@@ -820,7 +905,7 @@ pub fn md(s: &str) -> String {
     });
     let mut out = String::new();
     html::push_html(&mut out, events);
-    out
+    restore_math(out, &math)
 }
 
 fn glob(id: &str, pat: &str) -> bool {

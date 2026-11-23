@@ -1,0 +1,1 @@
+Math in answers is shown as formulas instead of raw TeX, on the phone with nothing downloaded.

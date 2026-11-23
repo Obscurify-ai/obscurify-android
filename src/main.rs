@@ -26,6 +26,22 @@ use serde_json::{Value, json};
 use wallet::Wallet;
 
 const CSS: &str = include_str!("../assets/style.css");
+// KaTeX 0.19.1 for math in replies, bundled (fonts inlined in the CSS): the WebView never fetches it,
+// so nothing leaves the phone outside the app's own connection (and Tor). Loaded on the first reply
+// with math (BRIDGE asks).
+const KATEX_JS: &str = include_str!("../assets/katex/katex.min.js");
+const KATEX_CSS: &str = include_str!("../assets/katex/katex.css");
+
+fn load_katex() {
+    let text = |s: &str| serde_json::to_string(s).unwrap_or_default();
+    js(&format!(
+        "if (!window.katex) {{ const st = document.createElement('style'); st.textContent = {}; document.head.appendChild(st); \
+         const sc = document.createElement('script'); sc.textContent = {}; document.head.appendChild(sc); }} \
+         window.obsTypeset && obsTypeset();",
+        text(KATEX_CSS),
+        text(KATEX_JS)
+    ));
+}
 pub const FREE_MODEL: &str = "meta-llama/llama-3.3-70b-instruct";
 /// The Google Play build (`--features play`). Play's rules mean no payments in the app (funds and
 /// plans are handled on the website), no uncensored or roleplay models (`chat::offered`), and a
@@ -180,6 +196,24 @@ setInterval(() => {
   }).observe(el, {childList: true, subtree: true, characterData: true});
   el.scrollTop = el.scrollHeight;
 }, 100);
+// Math: a reply's TeX comes as span.math-tex (chat.rs md) and KaTeX typesets it, as on the web. The
+// app sends KaTeX (load_katex) the first time a reply has math.
+window.obsTypeset = () => {
+  if (!window.katex) return;
+  document.querySelectorAll('span.math-tex:not([data-typeset])').forEach(el => {
+    el.setAttribute('data-typeset', '');
+    const display = el.classList.contains('math-display');
+    // A wide formula scrolls on its own instead of widening the reply.
+    if (display) Object.assign(el.style, {display: 'block', overflowX: 'auto', overflowY: 'hidden'});
+    try { katex.render(el.textContent, el, {displayMode: display, throwOnError: false, trust: false, strict: 'ignore', maxExpand: 1000, maxSize: 50}); } catch (_) {}
+  });
+};
+let mathAsked = false;
+new MutationObserver(() => {
+  if (!document.querySelector('span.math-tex:not([data-typeset])')) return;
+  if (window.katex) obsTypeset();
+  else if (!mathAsked) { mathAsked = true; dioxus.send({katex: true}); }
+}).observe(document.body, {childList: true, subtree: true});
 await new Promise(() => {});
 "#;
 
@@ -572,6 +606,8 @@ fn Root() -> Element {
         while let Ok(v) = e.recv::<Value>().await {
             if let Some(s) = v["sandbox"].as_str() {
                 code::on_sandbox(s)
+            } else if v["katex"] == true {
+                load_katex()
             } else if let Some(url) = v["link"].as_str() {
                 open_url(url)
             } else if v["back"] == true {
