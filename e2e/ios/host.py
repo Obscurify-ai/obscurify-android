@@ -62,7 +62,16 @@ while time.time() < deadline and done is None:
             # Another app in front: ours is in the background while its answer is worked on.
             sh('xcrun', 'simctl', 'launch', udid, 'com.apple.Preferences')
             print('host: the app is in the background', flush=True)
-            time.sleep(25)
+            # Until the answer is done (the guest model can take 40 s for the story), at most 60 s:
+            # iOS gives an app about 30 s in the background, and the answer asks for that time.
+            start, size = time.time(), os.path.getsize(err_path)
+            while time.time() - start < 60:
+                time.sleep(2)
+                with open(err_path, errors='replace') as f:
+                    f.seek(size)
+                    if 'working: off' in f.read():
+                        break
+            print(f'host: {time.time() - start:.0f} s in the background', flush=True)
             screenshot('background')
             sh('xcrun', 'simctl', 'launch', udid, bundle)
             print('host: the app is back', flush=True)
