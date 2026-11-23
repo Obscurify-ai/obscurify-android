@@ -1,6 +1,6 @@
-# The iPhone app on a macOS runner: build the store build for the simulator, launch it, screenshot.
-# Not signed for devices or the App Store yet (docs/ios.md). Never releases anything; the Android and
-# Play releases don't go through GitHub Actions at all.
+# The iPhone app on macOS runners: the store build for the simulator (launched, screenshot) and for
+# devices (an ad-hoc signed .ipa to re-sign for the test iPhone). Not signed for the App Store yet
+# (docs/ios.md). Never releases anything; the Android and Play releases don't go through GitHub Actions.
 name: iOS
 
 on:
@@ -73,3 +73,55 @@ jobs:
           name: obscurify-ios-simulator
           path: target/ios
           if-no-files-found: warn
+
+  device:
+    name: Device build (aarch64-apple-ios)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+          components: llvm-tools
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ios-device-${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ios-device-${{ runner.os }}-cargo-
+
+      - name: Install dioxus-cli
+        run: |
+          curl -fsSLO https://github.com/DioxusLabs/dioxus/releases/download/v$DX_VERSION/dx-aarch64-apple-darwin.tar.gz
+          curl -fsSL https://github.com/DioxusLabs/dioxus/releases/download/v$DX_VERSION/dx-aarch64-apple-darwin.sha256 -o dx.sha256
+          [ "$(shasum -a 256 dx-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)" = "$(grep -oE '[0-9a-f]{64}' dx.sha256 | head -1)" ]
+          mkdir -p ~/.local/bin && tar -xzf dx-aarch64-apple-darwin.tar.gz -C ~/.local/bin
+          echo ~/.local/bin >> $GITHUB_PATH
+
+      - name: Build the device app and .ipa
+        run: tools/ios.sh device
+
+      - name: Describe
+        run: |
+          cd target/ios-device
+          codesign -dv --verbose=2 Obscurify.app 2>&1 | tee codesign.txt
+          xcrun vtool -show-build Obscurify.app/obscurify | tee build-version.txt
+          plutil -p Obscurify.app/Info.plist > Info.plist.txt
+          find Obscurify.app | sort > files.txt
+          ls -la Obscurify.ipa
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: obscurify-ios-device
+          path: |
+            target/ios-device/Obscurify.ipa
+            target/ios-device/*.txt
+          if-no-files-found: error

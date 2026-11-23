@@ -1,0 +1,8 @@
+<!-- The App Store icon: the Obscurify split "o" (android-res/drawable-v24/ic_launcher_foreground.xml) on black. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" fill="#000"/>
+  <g transform="translate(232 232) scale(17.5)">
+    <path fill="none" stroke="#00d97e" stroke-width="5.5"
+      d="M3.75 15v-5a4.5 4.5 0 0 1 4.5-4.5h10a4.5 4.5 0 0 1 4.5 4.5v5M9.25 17v5a4.5 4.5 0 0 0 4.5 4.5h10a4.5 4.5 0 0 0 4.5-4.5v-5"/>
+  </g>
+</svg>
