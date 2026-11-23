@@ -59,6 +59,11 @@ iPhone, so a signed build.
 - **Backups.** Application Support goes into iCloud and device backups. The session and the
   private-session wallet probably shouldn't: mark those files `isExcludedFromBackup`, or decide
   that it's fine.
+- **Bundle contents.** dx 0.7.10 makes a bare `.app` (binary, `Info.plist`): no app icons (an
+  asset catalog with `AppIcon`, which the App Store requires), no `LaunchScreen.storyboardc` though the plist
+  names one, and no `MinimumOSVersion` (`deployment_target` doesn't reach the plist). Add them in
+  `tools/ios.sh` (`actool` for the icons, `ibtool` for a black launch screen, `plutil` for the key)
+  before the first upload.
 - **Store listing:** screenshots, privacy "nutrition label" (the Play `data-safety.csv` answers),
   age rating 18+, the account deletion and report flows pointed out to review.
 
