@@ -105,7 +105,7 @@ try {
   const pick = async (search, name) => {
     await page.locator('.title.model').click();
     await page.locator('input.search').fill(search);
-    await page.locator('.pick', { hasText: name }).filter({ hasNotText: 'Thinking' }).first().locator('.grow').click();
+    await page.locator('.pick', { hasText: name }).filter({ hasNotText: /Thinking|Pro\b|Mini|Nano|Chat/ }).first().locator('.grow').click();
   };
   const ask = async (text, timeout = 240000) => {
     const before = await page.locator('.msg.assistant, .msg.err').count();
@@ -116,10 +116,10 @@ try {
     return (await page.locator('.msg.assistant, .msg.err').last().textContent()).trim();
   };
 
-  // 2b. A pricey model: the server holds the reply's worst case (about $1 of output), more than a
+  // 2b. A pricey model: the server holds the reply's worst case (about $1 of output on GPT 5.5), more than a
   // new session starts with, so it answers 402 until the app has topped the session up.
   await newChat();
-  await pick('Claude 4.1 Opus', 'Anthropic: Claude 4.1 Opus');
+  await pick('OpenAI: GPT 5.5', 'OpenAI: GPT 5.5');
   let from = seen.length;
   const mango = await ask('Reply with exactly the word: mango');
   ok(/mango/i.test(mango), 'pricey model answered: ' + mango.slice(0, 40));
@@ -140,7 +140,7 @@ try {
   ok(!/insufficient|kept failing/i.test(looked) && looked.length > 10, 'the lookup answered: ' + looked.slice(0, 60));
   shot('private-tools');
 
-  const usage = sql(`SELECT COUNT(*) FROM transactions WHERE user_id = '${userId}' AND transaction_type NOT IN ('deposit', 'voucher_withdrawal', 'starter_credit')`);
+  const usage = sql(`SELECT COUNT(*) FROM transactions WHERE user_id = '${userId}' AND transaction_type NOT IN ('deposit', 'voucher_withdrawal', 'free_to_wallet', 'starter_credit')`);
   ok(usage === '0', 'the account was not charged for the chats');
   const secrets = [...new Set(seen.map(bearer).filter((b) => b.startsWith('sk-unl1_')))];
   const hashes = secrets.map((s) => `'${createHash('sha256').update(s).digest('hex')}'`).join(',');
@@ -149,34 +149,34 @@ try {
   ok(open > 0, 'their sessions are still open');
   const had = walletMillicents() + open;
 
-  // 2b. The Account screen on this phone: the balance includes the money held for private chats
-  // (still the customer's), each chat shows as spent straight away (its session still open) and is
-  // listed; the move into the wallet is not a charge.
+  // 2b. The Account screen: balance = account + what this phone's wallet holds; one usage figure;
+  // opening it asks the server about no private session, and no chat's reply was followed by a
+  // request from the account (they would tie the two together by time and address).
+  const firstChat = seen.findIndex((r) => bearer(r).startsWith('sk-unl1_'));
+  const own = seen.slice(firstChat).filter((r) => /^\/(get_user_balance|account_tier|code_mode|api\/mirrors)/.test(r.path));
+  ok(own.length === 0, 'no request from the account after the chats: ' + own.map((r) => r.path).join(' '));
   const accountBalance = Number(sql(`SELECT balance FROM users WHERE id = '${userId}'`));
+  const seenBefore = seen.length;
   await page.locator('.bar .icon').first().click();
   await page.getByText('Account', { exact: false }).last().click();
-  const expect = '$' + (accountBalance + had / 100000).toFixed(2);
-  let shown = '';
-  for (let i = 0; i < 30 && shown !== expect; i++) { await sleep(1000); shown = (await page.locator('.section .big').first().textContent()).trim(); }
-  ok(shown === expect, `the balance includes the money held for private chats: ${shown} (expected ${expect})`);
+  const expect = accountBalance + had / 100000;
+  let shown = 0;
+  for (let i = 0; i < 30 && Math.abs(shown - expect) > 0.011; i++) { await sleep(1000); shown = Number((await page.locator('.section .big').first().textContent()).replace(/[^0-9.]/g, '')); }
+  ok(Math.abs(shown - expect) < 0.011, `the balance includes what the wallet holds: ${shown} (expected ${expect})`);
   const hist = page.locator('.history');
   await hist.scrollIntoViewIfNeeded();
   await hist.locator('.row.tap').first().waitFor({ timeout: 20000 });
+  ok(!seen.slice(seenBefore).some((r) => /^\/u\/sessions\/current/.test(r.path)), 'and asked about no private session');
   const today = await hist.locator('.row.tap').first().textContent();
-  // A chat that cost under 0.001¢ costs nothing (sessions round in the customer's favour) and isn't listed.
-  const state = JSON.parse(execFileSync('adb', ['shell', 'cat', `${files}/unlinkable-state.json`], { encoding: 'utf8' })).wallet.sessions;
-  const costly = state.filter((x) => {
-    const h = createHash('sha256').update(x.secret).digest('hex');
-    return x.funded_millicents > +sql(`SELECT CEIL(u.balance * 100000)::BIGINT FROM unlinkable_sessions s JOIN users u ON u.id = s.user_id WHERE s.secret_hash = '${h}'`);
-  }).length;
-  ok(costly >= 2 && new RegExp(costly + ' private chats').test(today) && !/prepaid|wallet/i.test(today), `today: ${costly} private chats that cost something, nothing about wallets: ` + today);
-  await hist.locator('.row.tap').first().click();
-  await hist.locator('.history-head').waitFor();
-  ok(await hist.getByText('Private chat', { exact: true }).count() === costly, 'each listed as "Private chat"');
-  ok(/Private chat.*−\$/.test(await hist.textContent()) && !/prepaid|wallet/i.test(await hist.textContent()), 'with what it cost, as a debit; no move to a wallet');
+  ok(!/prepaid|wallet|private/i.test(today), 'one usage figure: ' + today);
+  const used = Number((today.match(/\$([0-9.]+)/) || [])[1] || 0);
+  ok(used >= 0 && used < 1, 'what was really used, not the $1 taken: ' + used);
   shot('private-history');
 
-  // 3. Wipe the app (a new phone), sign in with the number.
+  // 3. Wipe the app (a new phone), sign in with the number. The server offers a session back only
+  // 15 minutes after its last use (another phone on the account may be using it), so the wait is
+  // skipped here by making them look that old.
+  sql(`UPDATE unlinkable_sessions SET last_used_at = NOW() - INTERVAL '16 minutes' WHERE secret_hash IN (${hashes})`);
   ({ page } = await launch(true));
   await page.locator('.login input').fill(number);
   await page.getByRole('button', { name: 'Sign In' }).click();
