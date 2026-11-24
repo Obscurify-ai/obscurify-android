@@ -7,11 +7,12 @@
 //!
 //! Encrypted mode, the account page and buying vouchers still use the signed-in session.
 //!
-//! Nothing a chat does makes a request with the account's key or cookie: one a second before or
-//! after a private session's ties the two together by timing. The manager asks the account at
-//! random times (and when the app opens, or a payment shows up: `money_added`); a chat the wallet
-//! can't pay waits for that ("Your private wallet is refilling", `REFILLING`), and what it says
-//! when refused comes from what the phone holds.
+//! The manager keeps the wallet stocked ahead of time: it asks the account at random times, when
+//! the app opens, and when a payment or plan change shows up here (`money_added`), so a chat
+//! rarely needs it. A chat the wallet can't pay is funded from the account at once (the library's
+//! default), and goes on without waiting. What a refusal says comes from what the phone holds and
+//! what the account said when it last refused a top-up (a plan's limit used up), never from asking
+//! the account again because of the chat.
 
 use crate::{api, store};
 use serde_json::{json, Value};
@@ -30,8 +31,9 @@ fn state() -> &'static tokio::sync::Mutex<Option<Manager>> {
     S.get_or_init(|| tokio::sync::Mutex::new(None))
 }
 
-/// While a chat waits for the wallet to refill: about when it goes on (Unix seconds). The chat
-/// screen shows it above the composer.
+/// While a chat waits for the wallet to refill (only when the manager is set to wait instead of
+/// funding at once): about when it goes on (Unix seconds). The chat screen shows it above the
+/// composer.
 pub static REFILLING: dioxus::prelude::GlobalSignal<Option<u64>> = dioxus::prelude::Signal::global(|| None);
 
 /// Stop was pressed while a chat waited for the wallet: the wait ends and nothing is sent.
@@ -170,7 +172,8 @@ const ALL_USED_UP: &str = "Your balance and this month's free usage are used up,
 /// The session secret to send for the current chat, opening a session. `Ok(None)`: private
 /// sessions aren't on here (signed in without the number); use the signed-in session. `Err`:
 /// they are on and none could be had, so the request is not sent at all: never through the
-/// account instead. Waits while the wallet refills.
+/// account instead. The manager funds the session from the account at once when the wallet
+/// can't.
 pub async fn secret() -> Result<Option<String>, String> {
     if !on() || !api::has_session() {
         return Ok(None);
@@ -179,15 +182,26 @@ pub async fn secret() -> Result<Option<String>, String> {
         if let Some(s) = open().await? {
             return Ok(Some(s));
         }
-        // No money and no free-model pass here. The account may have more: wait for it.
+        // No money and no free-model pass, here or in the account.
         if !hold().await {
-            return Err(if stopped() { STOPPED_TEXT } else { ALL_USED_UP }.into());
+            if stopped() {
+                return Err(STOPPED_TEXT.into());
+            }
+            return Err(limit_note().await.unwrap_or_else(|| ALL_USED_UP.into()));
         }
     }
 }
 
-/// When the manager says a chat waits for the wallet: show it, keep its clock running until the
-/// chat may go on. False: nothing to wait for (the account had nothing at the last contact).
+/// What the account said when it last refused to fill the wallet, when that was a plan's weekly
+/// or 5-hour limit used up (and when it starts over).
+async fn limit_note() -> Option<String> {
+    let g = state().lock().await;
+    g.as_ref()?.account_note().filter(|n| n.contains("usage is used up")).map(String::from)
+}
+
+/// When the manager says a chat waits for the wallet (set to wait instead of funding at once):
+/// show it, keep its clock running until the chat may go on. False: nothing to wait for (the
+/// account had nothing at the last contact).
 async fn hold() -> bool {
     let at = |m: &Manager| m.refilling();
     let Some(mut when) = ready().await.and_then(|g| (*g).as_ref().and_then(at)) else { return false };
@@ -240,11 +254,11 @@ async fn open() -> Result<Option<String>, String> {
 }
 
 /// What to say when a request was refused for want of money, with nothing more to add: the
-/// account had nothing at the last contact, so what is left is what this phone holds.
+/// account had nothing when it was just asked, so what is left is what this phone holds.
 pub async fn refused() -> String {
     let held = spending().await["prepaid_millicents"].as_i64().unwrap_or(0) as f64 / 100_000.0;
     match (held * 100.0).floor() as i64 {
-        i64::MIN..1 => USED_UP.into(),
+        i64::MIN..1 => limit_note().await.unwrap_or_else(|| USED_UP.into()),
         c @ 1..100 => format!("This needs more than the {c}¢ you have left, so nothing was sent. Pick a cheaper model, or add funds."),
         c => format!("This needs more than the ${}.{:02} you have left, so nothing was sent. Pick a cheaper model, or add funds.", c / 100, c % 100),
     }
@@ -287,7 +301,7 @@ pub async fn needs_pass(secret: &str, label: &str) -> bool {
         drop(g);
         match answer {
             Ok(retry) => return retry,
-            // The account gets that label and the stock ran out: wait for the next contact.
+            // The account gets that label and the stock ran out, and the manager waits for it.
             Err(_) if hold().await => continue,
             Err(_) => return false,
         }
