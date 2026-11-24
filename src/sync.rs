@@ -124,7 +124,17 @@ fn seed() -> Option<[u8; 32]> {
 pub fn available() -> bool { crate::private::has_code() && seed().is_some() }
 /// Bumped when the account switches to words (Account), so the switch shows it.
 pub static REFRESH: GlobalSignal<u32> = Signal::global(|| 0);
-pub fn on() -> bool { available() && !store::load::<bool>(OFF) }
+/// Switched on here, whether or not the plan has sync now.
+fn enabled() -> bool { available() && !store::load::<bool>(OFF) }
+/// The account's plan leaves sync out (`chat_sync` in `/account_tier`). Sync pauses: chats stay on
+/// the phone, the synced copy stays as it is, and it carries on with a plan that has it.
+const PLAN_OFF: &str = "sync-plan-off.json";
+pub fn plan_off() -> bool { store::load::<bool>(PLAN_OFF) }
+pub fn note_plan(tier: &Value) {
+    let off = tier["chat_sync"].as_bool() == Some(false);
+    if off != plan_off() { store::save(PLAN_OFF, &off); *REFRESH.write() += 1; }
+}
+pub fn on() -> bool { enabled() && !plan_off() }
 pub fn full() -> bool { FULL.load(Ordering::Relaxed) }
 
 // ---- keys and records (FORMAT) ------------------------------------------------------------------
@@ -564,7 +574,7 @@ fn remove(mut app: App, id: &str) {
 
 /// A chat was saved here (chat.rs).
 pub fn changed(app: App, id: &str) {
-    if !on() {
+    if !enabled() {
         return;
     }
     with_state(|s| {
@@ -581,7 +591,7 @@ pub fn changed(app: App, id: &str) {
 
 /// A chat was deleted here (chat.rs).
 pub fn deleted(app: App, id: &str) {
-    if !on() {
+    if !enabled() {
         // Off: nothing to send, but its record (its title as last synced) goes.
         with_state(|s| { s.convs.remove(id); });
         return;
@@ -864,7 +874,7 @@ fn is_joined(k: &Keys) -> bool {
 }
 fn agree(k: &Keys) { store::save(JOINED, &Some(k.owner.clone())) }
 /// Whether this phone joined the synced copy (switching off then deletes it).
-pub fn joined() -> bool { on() && keys().is_some_and(|k| is_joined(&k)) }
+pub fn joined() -> bool { enabled() && keys().is_some_and(|k| is_joined(&k)) }
 
 /// The chats in the synced copy, read without joining it: nothing is kept, and the epoch isn't
 /// recorded (`same_store`), so the next round still knows this phone hasn't joined.
@@ -1145,7 +1155,9 @@ pub fn SyncSection() -> Element {
     rsx! {
         div { class: "section",
             h2 { "Sync" }
-            if !available() {
+            if plan_off() {
+                p { class: "muted", id: "sync-plan-off", "Encrypted sync comes with a plan. Until then chats stay on this phone." }
+            } else if !available() {
                 p { class: "muted", id: "sync-needs-words", if crate::private::on() && !crate::private::has_code() {
                     "Off until you convert to an account code above."
                 } else {

@@ -291,6 +291,8 @@ struct App {
     /// The plan payments already seen to have switched their plan on.
     plans_seen: Signal<Option<Vec<String>>>,
     balance: Signal<Option<f64>>,
+    /// `/account_tier`, as last read (usage bars in the menu).
+    plan: Signal<Value>,
     toast: Signal<Option<String>>,
     visible: Signal<bool>,
     /// Code Mode settings from the server (`GET /code_mode`).
@@ -346,11 +348,14 @@ impl App {
                 self.balance.set(v["balance"].as_f64().map(|b| b + held))
             }
             if let Ok(v) = api::get("/account_tier").await {
+                sync::note_plan(&v);
+                self.plan.set(v.clone());
                 let tier = v["tier"].as_str().unwrap_or("");
                 self.access.set(Some(Access {
                     frontier: v["can_access_frontier"].as_bool().unwrap_or(tier != "pay_as_you_go"),
                     uncensored: v["can_access_uncensored"].as_bool().unwrap_or(tier == "pro"),
                 }));
+                chat::set_locks(v["frontier_lock"].as_str(), v["uncensored_lock"].as_str());
                 self.plan_defaults.set(v["default_models"].as_array().into_iter().flatten().filter_map(|m| m.as_str().map(String::from)).collect());
                 chat::open_on_plan_default(self);
             }
@@ -374,6 +379,7 @@ impl App {
         self.convs.set(vec![]);
         self.conv.set(Conv::new());
         self.balance.set(None);
+        self.plan.set(Value::Null);
         self.access.set(None);
         self.plan_defaults.set(vec![]);
         chat::PLAN_DEFAULT_DONE.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -520,6 +526,7 @@ fn Root() -> Element {
             plans_seen: Signal::new(None),
             top_up_seen: Signal::new(None),
             balance: Signal::new(None),
+            plan: Signal::new(Value::Null),
             toast: Signal::new(None),
             visible: Signal::new(true),
             code: Signal::new(code::Config::default()),
@@ -996,7 +1003,53 @@ fn key_facts(k: &Value, held: f64) -> String {
     if used > 0.0 {
         facts.push(format!("{} used", usd(used)));
     }
+    if let Some(limit) = k["monthly_limit_usd"].as_f64() {
+        facts.push(format!("{} of its {} limit this month", usd(k["month_usd"].as_f64().unwrap_or(0.0)), usd(limit)));
+    }
     facts.join(" · ")
+}
+
+/// "Sun 7:30 AM", in the phone's time (`iso` is the server's UTC time).
+pub fn local_time(iso: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(iso) {
+        Ok(t) => t.with_timezone(&chrono::Local).format("%a %-I:%M %p").to_string(),
+        Err(_) => iso.get(..16).unwrap_or(iso).replace('T', " "),
+    }
+}
+
+/// Usage bars for plans with weekly or 5-hour limits: percent used and when it starts over. The 5
+/// hours show on plans for agents (key limits), or once they're used up.
+#[component]
+pub fn UsageBars() -> Element {
+    let app = use_context::<App>();
+    // As of now, whenever the menu opens (a chat still being answered has spent some already).
+    use_hook(|| bg(async move {
+        if app.plan.peek()["usage_week"].is_object() && let Ok(v) = api::get("/account_tier").await {
+            let mut plan = app.plan;
+            plan.set(v);
+        }
+    }));
+    let t = app.plan.read().clone();
+    let bars: Vec<(&str, f64, String)> = [("This week", "usage_week"), ("5 hours", "usage_5h")].into_iter().filter_map(|(label, key)| {
+        let w = &t[key];
+        let (used, limit) = (w["used"].as_f64()?, w["limit"].as_f64().filter(|l| *l > 0.0)?);
+        if key == "usage_5h" && t["tier"].as_str() != Some("pro") && used < limit { return None }
+        let at = w["frees_at"].as_str().map(local_time).unwrap_or_default();
+        let at = match (key, at.split_once(' ')) {
+            (_, None) => String::new(),
+            ("usage_week", Some((day, _))) => format!(" · Resets {day}"),
+            (_, Some((_, time))) => format!(" · Resets {time}"),
+        };
+        Some((label, (100.0 * used / limit).min(100.0).round(), at))
+    }).collect();
+    rsx! {
+        for (label, pct, at) in bars {
+            div { class: "usage", key: "{label}",
+                div { class: "muted", "{label}: {pct}%{at}" }
+                div { class: "track", div { class: if pct >= 100.0 { "fill full" } else { "fill" }, style: "width: {pct}%" } }
+            }
+        }
+    }
 }
 
 /// Named API keys under the Default one: one per tool, each revocable on its
@@ -1008,11 +1061,14 @@ fn NamedKeys() -> Element {
     let mut name = use_signal(String::new);
     let mut made = use_signal(|| None::<(String, String)>);
     let mut revoking = use_signal(|| None::<String>);
+    let mut limits = use_signal(|| false);
+    let mut limiting = use_signal(|| None::<(String, String)>);
     let mut busy = use_signal(|| false);
     let mut default_key = use_signal(|| None::<Value>);
     let mut held = use_signal(|| 0.0);
     let load = move || bg(async move {
         if let Ok(v) = api::get("/web/api_keys").await {
+            limits.set(v["key_limits"].as_bool().unwrap_or(false));
             let all = v["api_keys"].as_array().cloned().unwrap_or_default();
             // This phone's wallet takes its money with the Default key; what it holds isn't used yet.
             held.set(held_in(&private::spending().await));
@@ -1046,6 +1102,16 @@ fn NamedKeys() -> Element {
             }
         })
     };
+    let set_limit = move || {
+        let Some((id, amount)) = limiting.peek().clone() else { return };
+        let amount = amount.trim().trim_start_matches('$').to_string();
+        bg(async move {
+            match api::post(&format!("/web/api_keys/{id}/limit"), json!({"monthly_limit_usd": if amount.is_empty() { Value::Null } else { json!(amount) }})).await {
+                Ok(_) => { limiting.set(None); load() }
+                Err(e) => app.say(e),
+            }
+        })
+    };
     let list: Vec<(String, String, String, String)> = keys.read().iter().map(|k| (
         k["id"].as_str().unwrap_or_default().to_string(),
         k["name"].as_str().unwrap_or_default().to_string(),
@@ -1067,6 +1133,16 @@ fn NamedKeys() -> Element {
                     if revoking.read().as_deref() != Some(id.as_str()) {
                         button { class: "bare", onclick: { let id = id.clone(); move |_| revoking.set(Some(id.clone())) }, "Revoke…" }
                     }
+                }
+                if limiting.read().as_ref().is_some_and(|(l, _)| *l == id) {
+                    div { class: "row",
+                        input { r#type: "text", inputmode: "decimal", id: "key-limit", class: "grow", placeholder: "Dollars a month, empty for no limit",
+                            value: "{limiting.read().as_ref().map(|l| l.1.clone()).unwrap_or_default()}",
+                            oninput: { let id = id.clone(); move |e| limiting.set(Some((id.clone(), e.value()))) } }
+                        button { class: "go", id: "key-limit-save", onclick: move |_| set_limit(), "Save" }
+                    }
+                } else if limits() || facts.contains(" limit this month") {
+                    button { class: "bare key-limit", style: "padding-left: 0", onclick: { let id = id.clone(); move |_| limiting.set(Some((id.clone(), String::new()))) }, "Monthly limit…" }
                 }
                 if revoking.read().as_deref() == Some(id.as_str()) {
                     div { class: "row",
@@ -1211,6 +1287,12 @@ fn Account() -> Element {
                         if t["included_credit"].as_f64().unwrap_or(0.0) > 0.0 {
                             p { class: "muted", "{usd(t[\"credit_used\"].as_f64().unwrap_or(0.0))} of {usd(t[\"included_credit\"].as_f64().unwrap_or(0.0))} included usage used" }
                         }
+                        // Plans that pace their included usage: this week and these 5 hours.
+                        for (label, key) in [("This week", "usage_week"), ("These 5 hours", "usage_5h")] {
+                            if t[key].is_object() {
+                                p { class: "muted", "{label}: {usd(t[key][\"used\"].as_f64().unwrap_or(0.0))} of {usd(t[key][\"limit\"].as_f64().unwrap_or(0.0))} of it" }
+                            }
+                        }
                         if let Some(d) = t["next_charge_date"].as_str() { p { class: "muted", "Renews {d.get(..10).unwrap_or(d)} from your balance" } }
                         p { class: "muted", "Tokens this period: {t[\"input_tokens_used\"]} in, {t[\"output_tokens_used\"]} out" }
                     }
@@ -1228,8 +1310,8 @@ fn Account() -> Element {
                             let pay = id.clone();
                             let credit = x["included_credit"].as_f64().unwrap_or(0.0);
                             let what = match id.as_str() {
-                                // Plans that sell usage only (every model open): the server words them.
-                                _ if x["all_models"].as_bool() == Some(true) => x["description"].as_str().unwrap_or("").to_string(),
+                                // A plan with terms of its own (weekly limits, a bonus, usage only): the server words it.
+                                _ if x["own_words"].as_bool() == Some(true) || x["all_models"].as_bool() == Some(true) => x["description"].as_str().unwrap_or("").to_string(),
                                 "casual" => format!("Frontier models, {} of usage included", usd(credit)),
                                 "pro" => format!("API access, frontier and uncensored models, {} of usage included", usd(credit)),
                                 _ => "Pay only for what you use".to_string(),

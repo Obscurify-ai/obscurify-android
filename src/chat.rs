@@ -1653,8 +1653,10 @@ fn Drawer() -> Element {
                 if api::has_session() {
                     button { class: "account", onclick: move |_| { app.overlay.set(Overlay::None); app.screen.set(Screen::Account) },
                         span { "Account" }
-                        if let Some(b) = *app.balance.read() { span { class: "bal", {usd(b)} } }
+                        // A plan with weekly limits shows its usage instead of dollars.
+                        if !app.plan.read()["usage_week"].is_object() && let Some(b) = *app.balance.read() { span { class: "bal", {usd(b)} } }
                     }
+                    crate::UsageBars {}
                 } else {
                     button { class: "account", onclick: move |_| { app.overlay.set(Overlay::None); app.screen.set(Screen::Login) }, span { "Sign in" } }
                 }
@@ -1795,6 +1797,30 @@ pub fn reorder_favorites(mut app: App, listed: Vec<String>) {
     if next != current {
         app.settings.write().favorites = next;
         app.save_settings();
+    }
+}
+
+/// What the server says a locked model needs on this account's plans (frontier, uncensored);
+/// `None` until it has said, then the usual plan names are shown.
+static LOCKS: std::sync::Mutex<(Option<String>, Option<String>)> = std::sync::Mutex::new((None, None));
+
+pub fn set_locks(frontier: Option<&str>, uncensored: Option<&str>) {
+    *LOCKS.lock().unwrap() = (frontier.map(String::from), uncensored.map(String::from));
+}
+
+/// The words for a locked model: "Needs Casual or Pro", "Opens once you've added $5".
+fn lock_text(needs: &str) -> String {
+    let locks = LOCKS.lock().unwrap();
+    let said = if needs == "Pro" { locks.1.clone() } else { locks.0.clone() };
+    said.unwrap_or_else(|| format!("Needs {needs}"))
+}
+
+/// What the app says when a locked model is tapped.
+fn lock_sentence(name: &str, needs: &str) -> String {
+    let text = lock_text(needs);
+    match text.strip_prefix("Needs ") {
+        Some(plans) => format!("{name} needs the {plans} plan"),
+        None => format!("{name}: {text}"),
     }
 }
 
@@ -1940,8 +1966,8 @@ fn ModelRow(m: Model, needs: Option<&'static str>, #[props(default)] gone: bool,
         div { class, style: "padding: 10px 16px", aria_disabled: (gone || !m.available).then_some("true"), "data-fav": sortable.then(|| m.id.clone()),
             div { class: "grow", onclick: { let m = m.clone(); move |_| {
                     if let Some(plan) = needs {
-                        if PLAY { return app.say(format!("{} needs the {plan} plan", m.name)) }
-                        app.say(format!("{} needs the {plan} plan", m.name));
+                        if PLAY { return app.say(lock_sentence(&m.name, plan)) }
+                        app.say(lock_sentence(&m.name, plan));
                         app.overlay.set(Overlay::None);
                         app.screen.set(Screen::Account);
                         return;
@@ -1953,7 +1979,7 @@ fn ModelRow(m: Model, needs: Option<&'static str>, #[props(default)] gone: bool,
                     app.overlay.set(Overlay::None);
                 } },
                 div { "{m.name}" if !gone && !m.available { " (Unavailable)" } if new_chats { span { class: "new-chats", "New chats" } } }
-                div { class: "price", if let Some(plan) = needs { "Needs {plan} · " } if gone { "No longer offered" } else { {per_million(&m)} }
+                div { class: "price", if let Some(plan) = needs { "{lock_text(plan)} · " } if gone { "No longer offered" } else { {per_million(&m)} }
                     for b in privacy_badges(&m) { span { class: "badge", "{b}" } }
                 }
             }

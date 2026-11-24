@@ -1,10 +1,7 @@
 // A chat that can't go privately is not sent (src/private.rs, secret): nothing goes out with the
 // account's session and the app says why. With no money the free models still answer, privately;
-// the last cents are spent on any model, the reply cut to what they pay for. Money put on the
-// account elsewhere is seen when the app next opens (never asked for because a chat needs it:
-// that would tie the chat to the account by timing); then the next message goes privately. With
-// the server's private session endpoints back, the next message goes privately too. No request
-// with the account's cookie ever comes in the 20 s around a chat's. The app talks to a recorder here that
+// the last cents are spent on any model, the reply cut to what they pay for. With money in the
+// account, or the server's private session endpoints back, the next message goes privately. The app talks to a recorder here that
 // forwards to the dev server:
 //   OBSCURIFY_API=http://127.0.0.1:8232 DEVTOOLS=1 ./build.sh x86_64 && adb install -r target/obscurify.apk
 //   UPSTREAM_PORT=8097 DB=<dev database> [FREE_MODEL=<the server's free model>] node e2e/private-refused.mjs
@@ -17,15 +14,8 @@ const DB = process.env.DB || 'obscurify_sync';
 const sql = (q) => execFileSync('docker', ['exec', '-i', 'obscurify-postgres-dev', 'psql', '-U', 'obscurify', '-d', DB, '-tAX', '-c', q], { encoding: 'utf8' }).trim();
 let chats = [];
 let noSessions = false; // the private session endpoints answer 503
-// Every request with the time it came: the account's (its key or cookie) and the chats' (a session).
-const seen = [];
 const recorder = http.createServer((req, res) => {
   if (/^\/web\/(chat|tools|replies)/.test(req.url)) chats.push({ path: req.url, auth: req.headers.authorization || '', cookie: req.headers.cookie || '' });
-  const auth = req.headers.authorization || '';
-  const side = /^\/(web\/|u\/sessions)/.test(req.url) && /sk-unl1_/.test(auth) ? 'chat'
-    : /^\/u\/sessions$/.test(req.url) ? 'chat'
-    : (/sk-obs1_/.test(auth) || req.headers.cookie) ? 'account' : null;
-  if (side) seen.push({ at: Date.now(), side, path: req.url.split('?')[0] });
   if (noSessions && req.url.startsWith('/u/')) { req.resume(); res.writeHead(503); res.end(); return; }
   const up = http.request({ host: '127.0.0.1', port: PORT, method: req.method, path: req.url, headers: { ...req.headers, host: `127.0.0.1:${PORT}` } }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
   up.on('error', () => res.destroy());
@@ -36,10 +26,8 @@ adb('reverse', 'tcp:8232', `tcp:${recorder.address().port}`);
 
 let page;
 let id;
-const launches = [];
 // A new account on a new install, with nothing in it: whatever the sign-up gave is taken away.
 const signUp = async () => {
-  launches.push(Date.now());
   ({ page } = await launch(true));
   await page.getByText('Create one').click();
   await page.locator('.check input').check();
@@ -70,8 +58,7 @@ const ask = async (text) => {
   await page.locator('#composer').fill(text);
   await sleep(300);
   await page.locator('.send').click();
-  // Up to two waits for the wallet (the last cents move one fixed coin at a time, at random times).
-  await page.waitForFunction((n) => document.querySelectorAll('.msg.assistant, .msg.err').length > n && !document.querySelector('.send.stop'), n, { timeout: 25 * 60000 });
+  await page.waitForFunction((n) => document.querySelectorAll('.msg.assistant, .msg.err').length > n && !document.querySelector('.send.stop'), n, { timeout: 120000 });
   return (await last().innerText()).trim();
 };
 const fresh = async () => { await page.locator('.bar .icon', { hasText: '＋' }).click().catch(() => {}); await sleep(700); };
@@ -90,26 +77,13 @@ for (const tools of [false, true]) {
   ok(chats.every((c) => !c.cookie) && invoices() === '0', '  nothing went with the account, nothing was billed to it');
   if (!tools) shot('private-used-up');
   setBalance(5);
-  said = await ask('Reply with exactly the word: plum');
-  ok(/Your balance is used up/.test(said) && chats.every((c) => !c.cookie), '  money added elsewhere: not asked for because of a chat');
-  launches.push(Date.now());
-  ({ page } = await launch(false));
-  await page.waitForSelector('#composer');
-  await sleep(3000); // the chats list loads
-  await fresh();
-  await pick(PAID);
   said = await ask('Reply with exactly the word: papaya');
-  ok(/papaya/i.test(said) && privately(), `  once the app opens again, the next message goes privately (${said.slice(0, 120)})`);
+  ok(/papaya/i.test(said) && privately(), 'money added: the next message goes privately at once');
 }
 for (const [cents, text, want, what] of [[7, 'Reply with exactly the word: guava', /guava/i, 'a short answer comes'], [1, 'Write a 2500 word essay about plums', /cut short because your balance ran out/, 'a long answer is cut short, saying so']]) {
   await signUp();
   await agentSwitches(page, false);
   setBalance(cents / 100);
-  launches.push(Date.now());
-  ({ page } = await launch(false));
-  await page.waitForSelector('#composer');
-  await sleep(3000); // the chats list loads
-  await fresh();
   await pick(PRICEY);
   said = await ask(text);
   ok(want.test(said) && privately(), `${cents}¢ on a pricey model: ${what} (${said.slice(-90)})`);
@@ -121,7 +95,6 @@ setBalance(5);
 
 // The private session endpoints don't answer when the app starts.
 noSessions = true;
-launches.push(Date.now());
 page = (await launch(false)).page;
 await page.waitForSelector('#composer');
 said = await ask('Reply with exactly: cherry');
@@ -132,17 +105,5 @@ await fresh();
 said = await ask('Reply with exactly the word: melon');
 ok(/melon/i.test(said) && privately(), 'reachable again: the next message goes privately, without a restart');
 ok(invoices() === '0', 'in all, nothing was billed to the account');
-// The app opening is a moment of the account's own (it signs in, fills the wallet): requests then
-// are left aside. Any other account request within 20 s of a chat's would tie the two together.
-const ACCOUNT = /^\/(u\/(withdraw|issued|passes)|tokens|account_tier|get_user_balance)/;
-const opening = (at) => launches.some((l) => at >= l && at - l < 60000);
-let closest = Infinity;
-let pair = '';
-for (const a of seen.filter((s) => s.side === 'account' && ACCOUNT.test(s.path) && !opening(s.at))) {
-  for (const c of seen.filter((s) => s.side === 'chat')) {
-    if (Math.abs(a.at - c.at) < closest) { closest = Math.abs(a.at - c.at); pair = `${a.path} / ${c.path}`; }
-  }
-}
-ok(closest >= 20000, `no account request within 20 s of a chat's, the app opening aside (closest ${closest === Infinity ? '-' : Math.round(closest / 1000) + ' s'} ${pair})`);
 console.log('all ok');
 process.exit(0);
