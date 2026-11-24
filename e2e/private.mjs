@@ -8,7 +8,7 @@
 // The app talks to a recorder on :8231 that forwards to the dev server on :8230, so the test sees
 // exactly what left the phone:
 //   OBSCURIFY_API=http://127.0.0.1:8231 DEVTOOLS=1 ./build.sh x86_64 && adb install -r target/obscurify.apk
-//   adb root; adb reverse tcp:8231 tcp:8231; DB=obscurify_unlinkable node private.mjs
+//   adb root; adb reverse tcp:8231 tcp:8231; DB=obscurify_unlinkable [UPSTREAM_PORT=…] [RECORDER_PORT=…] node private.mjs
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -55,8 +55,10 @@ const recorder = http.createServer((req, res) => {
     up.end(body);
   });
 });
-await new Promise((r) => recorder.listen(8231, '127.0.0.1', r));
-adb('reverse', 'tcp:8231', 'tcp:8231');
+// RECORDER_PORT: the port the test APK was built for, when 8231 is taken.
+const RECORDER = +(process.env.RECORDER_PORT || 8231);
+await new Promise((r) => recorder.listen(RECORDER, '127.0.0.1', r));
+adb('reverse', `tcp:${RECORDER}`, `tcp:${RECORDER}`);
 const files = `/data/user/0/${PKG}/files`;
 const walletMillicents = () => {
   let w;

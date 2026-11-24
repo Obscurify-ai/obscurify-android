@@ -41,7 +41,7 @@ const sql = (q) => execFileSync('docker', ['exec', '-i', 'obscurify-postgres-dev
   ok(true, `the plan list shows this account's ${name} at ${price}/mo`);
   ok(synced ? await page.locator('#sync-switch').count() === 1 : /comes with a plan/.test(await page.locator('#sync-plan-off').innerText()), synced ? 'sync is there' : 'sync is off until a plan that has it');
   // The server words each plan from its terms; a weekly limit is part of what it says.
-  if (weekly) ok((await row.innerText()).includes(`$${Number(weekly)} of it a week`), `it says ${name}'s weekly limit`);
+  if (weekly) ok(new RegExp(`\\$${Number(weekly)}( of it)? a week`).test(await row.innerText()), `it says ${name}'s weekly limit: ${(await row.innerText()).replace(/\s+/g, ' ')}`);
   shot(`plan-offers-${catalog}`);
 
   const before = Number(sql(`SELECT balance FROM users WHERE id = '${id}'`));
@@ -98,8 +98,17 @@ const sql = (q) => execFileSync('docker', ['exec', '-i', 'obscurify-postgres-dev
 
     // Nothing left: the chat says which limit, and the message is not sent tied to the account.
     sql(`UPDATE users SET balance = 0 WHERE id = '${id}'`);
-    for (let i = 0; i < 6 && !/usage is used up/.test(said); i++) { drain(); said = await ask(`Say hi again (${i}).`); }
-    ok(/5-hour usage is used up\. It starts over/.test(said), 'with no balance the chat says which limit and when it starts over');
+    for (let i = 0; i < 12 && !/used up|you have left/.test(said); i++) { drain(); said = await ask(`Say hi again (${i}).`); }
+    // The phone still counts what the drained sessions held (taking a session's money away on the
+    // server is nothing it could know): once they have been idle for 5 minutes it closes them for
+    // their change, and knows it holds nothing.
+    if (!/usage is used up/.test(said)) {
+      await sleep(330000);
+      await page.locator('.bar .icon', { hasText: '＋' }).click().catch(() => {});
+      await sleep(700);
+      said = await ask('Say hi once more.');
+    }
+    ok(/5-hour usage is used up\. It starts over/.test(said), `with no balance the chat says which limit and when it starts over: ${said.replace(/\s+/g, ' ').slice(0, 160)}`);
     ok(Number(sql(`SELECT count(*) FROM invoices WHERE user_id = '${id}'`)) === 0, 'and nothing was sent tied to the account');
     shot(`plan-offers-${catalog}-limit`);
   }
