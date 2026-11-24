@@ -1,8 +1,9 @@
 // A chat that can't go privately is not sent (src/private.rs, secret): nothing goes out with the
 // account's session and the app says why. With no money the free models still answer, privately;
-// the last cents are spent on any model, the reply cut to what they pay for. With money in the
-// account, or the server's private session endpoints back, the next message goes privately. The app talks to a recorder here that
-// forwards to the dev server:
+// the last cents are spent on any model, the reply cut to what they pay for. Money put on the
+// account elsewhere is found the moment a message needs it (the wallet is funded at once), and
+// that message goes privately; so does the next one once the server's private session endpoints
+// are back. The app talks to a recorder here that forwards to the dev server:
 //   OBSCURIFY_API=http://127.0.0.1:8232 DEVTOOLS=1 ./build.sh x86_64 && adb install -r target/obscurify.apk
 //   UPSTREAM_PORT=8097 DB=<dev database> [FREE_MODEL=<the server's free model>] node e2e/private-refused.mjs
 import http from 'node:http';
@@ -78,7 +79,7 @@ for (const tools of [false, true]) {
   if (!tools) shot('private-used-up');
   setBalance(5);
   said = await ask('Reply with exactly the word: papaya');
-  ok(/papaya/i.test(said) && privately(), 'money added: the next message goes privately at once');
+  ok(/papaya/i.test(said) && privately(), '  money added elsewhere: the next message is funded at once and goes privately');
 }
 for (const [cents, text, want, what] of [[7, 'Reply with exactly the word: guava', /guava/i, 'a short answer comes'], [1, 'Write a 2500 word essay about plums', /cut short because your balance ran out/, 'a long answer is cut short, saying so']]) {
   await signUp();
