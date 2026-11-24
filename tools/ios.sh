@@ -7,6 +7,9 @@
 #   tools/ios.sh device     iPhone app -> target/ios-device/Obscurify.app and Obscurify.ipa (ad-hoc
 #                           signed: re-sign it for a device, e.g. with xtool, or for the App Store)
 #   tools/ios.sh sim        build, boot a simulator, install, launch, screenshot -> target/ios/store/
+#   tools/ios.sh store      the device build signed for the App Store (PROFILE=...mobileprovision, the
+#                           distribution certificate in a keychain); STORE=validate|upload also sends
+#                           it to Apple with the API key (ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8)
 #   tools/ios.sh e2e        the e2e build in an iPhone Pro Max simulator, driven by e2e/ios/driver.js
 #                           against production; screenshots and logs -> target/ios/e2e/ (E2E_SIGNUP=1
 #                           also makes an account, and deletes it from the app at the end)
@@ -167,9 +170,45 @@ device() {
   echo "ipa $(pwd)/target/ios-device/Obscurify.ipa"
 }
 
+# The device build signed for the App Store: needs the "Apple Distribution" certificate in a keychain
+# and PROFILE, its App Store provisioning profile (docs/ios.md). STORE=validate or STORE=upload, with
+# ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_P8 (the key's text), also checks it with Apple or sends it to
+# TestFlight.
+store() {
+  [ -f "${PROFILE:-}" ] || { echo "PROFILE (the App Store .mobileprovision) is needed" >&2; exit 2; }
+  [ "${SKIP_BUILD:-}" = 1 ] || device  # CI has just built it
+  local app=target/ios-device/Obscurify.app tmp team
+  tmp=$(mktemp -d)
+  security cms -D -i "$PROFILE" > "$tmp/profile.plist"
+  team=$(plutil -extract 'Entitlements.com\.apple\.developer\.team-identifier' raw "$tmp/profile.plist")
+  # The profile's entitlements, as Xcode signs them: the keychain group is the app's, not the wildcard.
+  plutil -extract Entitlements xml1 -o "$tmp/entitlements.plist" "$tmp/profile.plist"
+  plutil -replace keychain-access-groups -json "[\"$team.$id\"]" "$tmp/entitlements.plist"
+  [ "$(plutil -extract application-identifier raw "$tmp/entitlements.plist")" = "$team.$id" ] || { echo "the profile isn't for $id" >&2; exit 1; }
+  cp "$PROFILE" "$app/embedded.mobileprovision"
+  codesign --force --sign "${SIGN_IDENTITY:-Apple Distribution}" --entitlements "$tmp/entitlements.plist" --generate-entitlement-der "$app"
+  codesign --verify --strict --verbose=2 "$app"
+  codesign -d --entitlements - "$app"
+  (cd target/ios-device && rm -rf Payload Obscurify-store.ipa && mkdir Payload && cp -R Obscurify.app Payload/ && zip -qry Obscurify-store.ipa Payload && rm -rf Payload)
+  echo "signed ipa $(pwd)/target/ios-device/Obscurify-store.ipa (team $team, build $version_code)"
+  case "${STORE:-}" in
+    '') return ;;
+    validate|upload) ;;
+    *) echo "STORE is validate or upload" >&2; exit 2 ;;
+  esac
+  # altool reads the key from here; the key never goes on the command line.
+  mkdir -p ~/.appstoreconnect/private_keys
+  (umask 077; printf '%s\n' "$ASC_KEY_P8" > ~/.appstoreconnect/private_keys/AuthKey_"$ASC_KEY_ID".p8)
+  xcrun altool --validate-app -f target/ios-device/Obscurify-store.ipa -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" --output-format normal
+  if [ "$STORE" = upload ]; then
+    xcrun altool --upload-app -f target/ios-device/Obscurify-store.ipa -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" --output-format normal
+  fi
+}
+
 case "${1:-build}" in
   build) build "${IOS_TARGET:-aarch64-apple-ios-sim}" target/ios ;;
   device) device ;;
+  store) store ;;
   sim) sim ;;
   e2e) e2e ;;
   listing) # App Store character limits (ios/listing/app-store.md)

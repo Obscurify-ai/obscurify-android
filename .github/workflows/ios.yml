@@ -1,6 +1,7 @@
 # The iPhone app on macOS runners: the store build for the simulator (launched, screenshot) and for
-# devices (an ad-hoc signed .ipa to re-sign for the test iPhone). Not signed for the App Store yet
-# (docs/ios.md). Never releases anything; the Android and Play releases don't go through GitHub Actions.
+# devices (an ad-hoc signed .ipa to re-sign for the test iPhone), also signed for the App Store when the
+# signing secrets exist (docs/ios.md). Only a manual run with store: upload sends a build to TestFlight;
+# nothing here releases to the App Store, and the Android and Play releases don't go through GitHub Actions.
 name: iOS
 
 on:
@@ -12,6 +13,11 @@ on:
         description: "e2e: also make a production account, check the account screens, and delete it"
         type: boolean
         default: true
+      store:
+        description: "Device build: sign for the App Store, then check it with Apple (validate) or send it to TestFlight (upload)"
+        type: choice
+        options: [sign, validate, upload]
+        default: sign
 
 env:
   CARGO_TERM_COLOR: always
@@ -89,6 +95,8 @@ jobs:
     name: Device build (aarch64-apple-ios)
     runs-on: macos-latest
     timeout-minutes: 90
+    env:
+      SIGNING: ${{ secrets.IOS_DIST_P12 != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -118,6 +126,45 @@ jobs:
 
       - name: Build the device app and .ipa
         run: tools/ios.sh device
+
+      # App Store signing (docs/ios.md): only when the signing secrets exist (not on forks). A push
+      # signs; validate and upload are by hand. Nothing signed or secret goes into the artifacts.
+      - name: Keychain with the distribution certificate
+        if: env.SIGNING == 'true'
+        env:
+          IOS_DIST_P12: ${{ secrets.IOS_DIST_P12 }}
+          IOS_DIST_P12_PASSWORD: ${{ secrets.IOS_DIST_P12_PASSWORD }}
+          IOS_PROFILE: ${{ secrets.IOS_PROFILE }}
+        run: |
+          kc=$RUNNER_TEMP/signing.keychain-db
+          kp=$(uuidgen)
+          security create-keychain -p "$kp" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kp" "$kc"
+          printf '%s' "$IOS_DIST_P12" | base64 --decode > "$RUNNER_TEMP/dist.p12"
+          security import "$RUNNER_TEMP/dist.p12" -P "$IOS_DIST_P12_PASSWORD" -A -t cert -f pkcs12 -k "$kc"
+          rm -f "$RUNNER_TEMP/dist.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k "$kp" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          security find-identity -v -p codesigning "$kc"
+          printf '%s' "$IOS_PROFILE" | base64 --decode > "$RUNNER_TEMP/store.mobileprovision"
+
+      - name: Sign for the App Store (${{ inputs.store || 'sign' }})
+        if: env.SIGNING == 'true'
+        env:
+          PROFILE: ${{ runner.temp }}/store.mobileprovision
+          SKIP_BUILD: 1
+          STORE: ${{ inputs.store == 'validate' && 'validate' || inputs.store == 'upload' && 'upload' || '' }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: tools/ios.sh store
+
+      - name: Remove the keychain and the key
+        if: always() && env.SIGNING == 'true'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -rf ~/.appstoreconnect "$RUNNER_TEMP/store.mobileprovision"
 
       - name: Describe
         run: |

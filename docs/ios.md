@@ -178,8 +178,8 @@ waiting for Tony's approval.
 
 ## Still to do
 
-- **Signing and TestFlight** (below): needs the Apple developer account. Until then nothing is
-  uploaded, and no App Store Connect record or bundle id registration exists.
+- **TestFlight** (below): signing is set up; the App Store Connect app record, a validate run and the
+  first upload are next.
 - **On the test iPhone**: install `obscurify-ios-device` with xtool and check what the simulator can't
   show: the attach picker, Copy, links to Safari, the keyboard, the notification prompt and the "answer
   ready" notification on screen, a long answer past iOS's background time.
@@ -207,37 +207,34 @@ screen on iOS doesn't say funds and plans are on the website (3.1.3(f)); iPhone 
 only; the e2e runs against production (as a guest on every push; a by-hand run makes and deletes an
 account).
 
-## Signing and TestFlight (once the Apple developer account exists)
+## Signing and TestFlight
 
-Nothing below is set up yet. All of it runs on the macOS runner, so it needs secrets in the repo
-(Settings → Secrets → Actions), never files in this public repo.
+Set up 2026-11-24, all from Linux through the App Store Connect API (`tools/asc.py`, a JWT from the
+API key): team **CryptoTalks, LLC**, team id `TZGL5RGW6K` (not the free team `97QU7SP64C` xtool uses).
 
-1. **App ID.** Register `ai.obscurify.ios` in the developer portal (Certificates, Identifiers &
-   Profiles), no special capabilities.
-2. **App Store Connect API key.** Users and Access → Integrations → App Store Connect API, role App
-   Manager. Keep the `.p8` file, its key id and the issuer id as secrets
-   (`ASC_KEY_P8`, `ASC_KEY_ID`, `ASC_ISSUER_ID`). The key lets CI create certificates and profiles
-   and upload builds, with no Apple Account password or 2FA on the runner.
-3. **Distribution certificate.** An "Apple Distribution" certificate, exported as a `.p12` with a
-   password (`IOS_DIST_P12` base64, `IOS_DIST_P12_PASSWORD`). In CI: make a temporary keychain,
-   import the `.p12`, allow codesign to use it.
-4. **Provisioning profile.** An App Store profile for `ai.obscurify.ios` and that certificate
-   (`IOS_PROFILE` base64), installed into `~/Library/MobileDevice/Provisioning Profiles/`.
-   fastlane `match` or `xcodebuild -allowProvisioningUpdates` with the API key can replace steps 3
-   and 4.
-5. **Device build.** `tools/ios.sh device` already makes the bundle (icon, launch screen, privacy
-   manifest, plist keys) and `Obscurify.ipa`, ad-hoc signed. For the store: re-sign
-   `Payload/Obscurify.app` with the certificate, the profile embedded as `embedded.mobileprovision`
-   and an entitlements file (`application-identifier`, `com.apple.developer.team-identifier`), zip
-   it again. Check with `codesign -dv --verbose=4`.
-6. **Version.** `CFBundleShortVersionString` is `version` in `Cargo.toml`, `CFBundleVersion` the Android
-   `version-code` (tools/ios.sh): every upload needs a higher one.
-7. **Upload.** `xcrun altool --upload-app -f Obscurify.ipa -t ios --apiKey … --apiIssuer …` (or
-   fastlane `pilot`). The build shows up in TestFlight
-   after Apple processes it; internal testers can install it at once, external testers after a
-   short beta review.
-8. **The test iPhone** can also run a development-signed build (a development certificate and a
-   profile listing its UDID) without TestFlight.
+| What | Where |
+|---|---|
+| App ID `ai.obscurify.ios` | bundle id resource `8NNN97R59R`, no capabilities |
+| API key "obscurify-ios-ci-2", App Manager | key id and issuer in repo secrets `ASC_KEY_ID`, `ASC_ISSUER_ID`; the `.p8` in `ASC_KEY_P8` and `~/.config/apple-developer/` (Apple lets you download it once) |
+| Apple Distribution certificate `N7SW9WK7UH`, to 2027-11-24 | `.p12` in `IOS_DIST_P12` (base64) and `IOS_DIST_P12_PASSWORD`; key, CSR and `.p12` in `~/.config/apple-developer/signing/`. The `.p12` uses the legacy algorithms (`openssl pkcs12 -legacy -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1`), which `security import` reads |
+| App Store profile "Obscurify App Store" `6LB2PQB626`, to 2027-11-24 | `IOS_PROFILE` (base64) |
 
-The release path stays Android-only until then: `tools/release.mjs` doesn't know about iOS, and a
+- **CI** (`ios.yml`, device job): with the secrets present, every push signs the device build for
+  the App Store (`tools/ios.sh store`: a temporary keychain, the profile embedded, its entitlements
+  with the keychain group narrowed to the app, `codesign --generate-entitlement-der`). A manual run
+  with `store: validate` also checks the `.ipa` with Apple (`altool --validate-app`), and
+  `store: upload` sends it to TestFlight. The signed `Obscurify-store.ipa` stays out of the artifacts.
+- **Version.** `CFBundleShortVersionString` is `version` in `Cargo.toml`, `CFBundleVersion` the
+  Android `version-code`: every upload needs a higher one.
+- **Still to do:** the App Store Connect app record (the API can't create apps; the web form asks
+  for the company name shown on the App Store, which can't be changed: Tony's call), then a validate
+  run, then upload and internal TestFlight on the test iPhone. Apple also wants the EU trader status
+  (Digital Services Act) before EU distribution, and a support URL on a site that names the
+  company (Apple support, case 103023671995: obscurify.ai doesn't mention CryptoTalks, LLC).
+- **Renewals.** The certificate and profile expire 2027-11-24, the same day the membership renews
+  ($98.99/yr, App Store subscription on the Apple Account, cancel in Settings → Apple Account).
+- The test iPhone can also run a development-signed build (a development certificate and a profile
+  listing its UDID) without TestFlight.
+
+The release path stays Android-only for now: `tools/release.mjs` doesn't know about iOS, and a
 version bump doesn't build the iPhone app.
