@@ -220,6 +220,8 @@ await new Promise(() => {});
 fn js(code: &str) { document::eval(code); }
 /// Work that must finish even if the screen that started it goes away (Dioxus' `spawn` would cancel it).
 fn bg(f: impl std::future::Future<Output = ()> + 'static) { dioxus::core::spawn_forever(f); }
+/// Sets a screen's signal from a task that may outlive the screen: nothing when it's gone.
+fn put<T: 'static>(mut s: Signal<T>, v: T) { if let Ok(mut w) = s.try_write() { *w = v } }
 // Native, not a WebView timer: those stall when the app is in the background.
 async fn sleep(ms: u32) { tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await }
 pub(crate) fn open_url(url: &str) { js(&format!("window.android ? android.open({url:?}) : window.open({url:?})")) }
@@ -448,7 +450,7 @@ impl App {
                 match wallet::redeem(&mut w, false).await {
                     Ok(c) if c > 0.0 => {
                         self.say(format!("{} added to your balance", usd(c)));
-                        private::money_added().await;
+                        bg(private::money_added());
                         self.refresh_balance();
                     }
                     Err(e) if force => self.say(e),
@@ -1179,12 +1181,12 @@ fn NamedKeys() -> Element {
 #[component]
 fn Account() -> Element {
     let app = use_context::<App>();
-    let mut tier = use_signal(|| Value::Null);
-    let mut tiers = use_signal(|| Value::Null);
-    let mut referral = use_signal(|| Value::Null);
+    let tier = use_signal(|| Value::Null);
+    let tiers = use_signal(|| Value::Null);
+    let referral = use_signal(|| Value::Null);
     let mut tx_rev = use_signal(|| 0u32);
     // What this phone's wallet holds: counted as used by the server, not used yet.
-    let mut mine = use_signal(|| Value::Null);
+    let mine = use_signal(|| Value::Null);
     let mut refill = use_signal(|| Value::Null);
     let mut key = use_signal(|| None::<String>);
     let mut new_number = use_signal(|| None::<String>);
@@ -1203,18 +1205,20 @@ fn Account() -> Element {
     let mut plan_ask = use_signal(|| None::<String>);
     let mut deleting = use_signal(|| false);
 
+    // Outlives the screen (the answers come after it may have closed): nothing is set on a
+    // screen that's gone.
     let load = move || {
         app.refresh_balance();
         bg(async move {
-            if let Ok(v) = api::get("/account_tier").await { tier.set(v) }
+            if let Ok(v) = api::get("/account_tier").await { put(tier, v) }
             if !PLAY {
                 // With the account's key: the plans and prices are this account's.
-                if let Ok(v) = api::get("/available_tiers").await { tiers.set(v) }
-                if let Ok(v) = api::get("/referral_info").await { referral.set(v) }
+                if let Ok(v) = api::get("/available_tiers").await { put(tiers, v) }
+                if let Ok(v) = api::get("/referral_info").await { put(referral, v) }
             }
-            mine.set(private::spending().await);
-            tx_rev += 1;
-            if let Ok(v) = api::get("/auto_refill_status").await { refill.set(v) }
+            put(mine, private::spending().await);
+            if let Ok(mut r) = tx_rev.try_write() { *r += 1 }
+            if let Ok(v) = api::get("/auto_refill_status").await { put(refill, v) }
         });
     };
     use_hook(load);
@@ -1241,10 +1245,11 @@ fn Account() -> Element {
             match api::call("POST", "/change_tier", Some(json!({"tier": t, "payment_method": "balance", "plan_id": plan_id}))).await {
                 Ok(v) => {
                     app.say(v["message"].as_str().unwrap_or("Plan changed").to_string());
+                    load();
                     // A plan bought here is a moment of the account's own: the wallet asks for
-                    // what the new plan gives now, so its models open in the next chat.
-                    private::money_added().await;
-                    load()
+                    // what the new plan gives now, so its models open in the next chat. On its own
+                    // task: it outlives this screen.
+                    bg(private::money_added())
                 }
                 Err(e) if api::status_of(&e).0 == 402 => buy_plan(&t),
                 Err(e) => app.say(api::msg(e)),
@@ -2203,7 +2208,7 @@ fn Funds() -> Element {
                                         }
                                         button { class: "go", onclick: move |_| bg(async move {
                                             let mut w = Wallet::load();
-                                            match wallet::redeem(&mut w, true).await { Ok(c) => { app.say(format!("{} added", usd(c))); private::money_added().await; app.refresh_balance() } Err(e) => app.say(e) }
+                                            match wallet::redeem(&mut w, true).await { Ok(c) => { app.say(format!("{} added", usd(c))); bg(private::money_added()); app.refresh_balance() } Err(e) => app.say(e) }
                                             let mut ws = app.wallet; ws.set(w);
                                         }), "Add now" }
                                     }
@@ -2224,7 +2229,7 @@ fn Funds() -> Element {
                         if codes.is_empty() { return }
                         bg(async move {
                             match api::post("/vouchers/redeem", json!({"vouchers": codes})).await {
-                                Ok(v) => { app.say(format!("{} added", usd(v["credited_usd"].as_f64().unwrap_or(0.0)))); private::money_added().await; app.refresh_balance(); code.set(String::new()); js("document.querySelector('textarea.field').value = ''") }
+                                Ok(v) => { app.say(format!("{} added", usd(v["credited_usd"].as_f64().unwrap_or(0.0)))); bg(private::money_added()); app.refresh_balance(); code.set(String::new()); js("document.querySelector('textarea.field').value = ''") }
                                 Err(e) => app.say(e),
                             }
                         })
