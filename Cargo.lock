@@ -9277,9 +9277,9 @@ dependencies = [
 
 [[package]]
 name = "unlinkable-inference"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c184105c6a6b54ff28431e6ba330bbbf08c34a7166464e404529b98e092fec3d"
+checksum = "3bfb088d9d514294c1b48662863d1c032fd5751b4706b3a479aec8242f533113"
 dependencies = [
  "anyhow",
  "argon2",
