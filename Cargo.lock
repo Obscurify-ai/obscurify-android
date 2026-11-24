@@ -5023,7 +5023,7 @@ dependencies = [
 
 [[package]]
 name = "obscurify"
-version = "0.8.61"
+version = "0.8.62"
 dependencies = [
  "aes-gcm",
  "arti-client",
