@@ -14,6 +14,8 @@ button.bare { border: 0; padding: 8px 10px; color: var(--m); }
 button.danger { border-color: var(--e); color: var(--e); }
 a { color: var(--g); text-decoration: none; }
 .muted { color: var(--m); font-size: 14px; }
+.point { margin-top: 2px; }
+.terms { font-size: 12px; margin-top: 4px; }
 .err { color: var(--e); font-size: 14px; }
 .ok { color: var(--g); font-size: 14px; }
 .mono { font-family: ui-monospace, 'Roboto Mono', monospace; word-break: break-all; }

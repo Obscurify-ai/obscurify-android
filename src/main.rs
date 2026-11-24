@@ -1331,11 +1331,20 @@ fn Account() -> Element {
                                 "pro" => format!("API access, frontier and uncensored models, {} of usage included", usd(credit)),
                                 _ => "Pay only for what you use".to_string(),
                             };
+                            // A plan worded by the server in parts: one point to a line, the terms under them, as on the web.
+                            let points: Vec<String> = if x["own_words"].as_bool() == Some(true) {
+                                x["points"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(str::to_string)).collect()
+                            } else { vec![] };
+                            let terms = x["terms"].as_str().unwrap_or("").to_string();
                             rsx! {
                                 div { class: "row",
                                     div { class: "grow",
                                         div { class: if on { "ok" } else { "" }, "{name} · {usd(fee)}/mo" }
-                                        div { class: "muted", "{what}" }
+                                        if points.is_empty() { div { class: "muted", "{what}" } }
+                                        else {
+                                            for p in points.iter() { div { class: "muted point", "{p}" } }
+                                            if !terms.is_empty() { div { class: "muted terms", "{terms}" } }
+                                        }
                                     }
                                     if on { span { class: "ok", "Current" } }
                                     else { button { onclick: { let i = id.clone(); move |_| ask(i.clone()) }, if up { "Upgrade" } else { "Switch" } } }

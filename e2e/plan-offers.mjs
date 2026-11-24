@@ -42,6 +42,13 @@ const sql = (q) => execFileSync('docker', ['exec', '-i', 'obscurify-postgres-dev
   ok(synced ? await page.locator('#sync-switch').count() === 1 : /comes with a plan/.test(await page.locator('#sync-plan-off').innerText()), synced ? 'sync is there' : 'sync is off until a plan that has it');
   // The server words each plan from its terms; a weekly limit is part of what it says.
   if (weekly) ok(new RegExp(`\\$${Number(weekly)}( of it)? a week`).test(await row.innerText()), `it says ${name}'s weekly limit: ${(await row.innerText()).replace(/\s+/g, ' ')}`);
+  // A plan worded in parts (points, terms): each point on a line of its own, the terms under them, as on the web.
+  {
+    const lines = await row.locator('.point').allInnerTexts();
+    const terms = await row.locator('.terms').allInnerTexts();
+    if (weekly) ok(lines.length >= 2 && terms.length === 1 && /a week/.test(terms[0]) && lines.every((l) => !/a week/.test(l)),
+      `${name}: ${lines.length} points on lines of their own (${lines.join(' / ')}), terms under them (${terms[0]})`);
+  }
   shot(`plan-offers-${catalog}`);
 
   const before = Number(sql(`SELECT balance FROM users WHERE id = '${id}'`));
