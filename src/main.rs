@@ -446,7 +446,11 @@ impl App {
             }
             if *self.screen.peek() != Screen::Login && *self.screen.peek() != Screen::Signup && w.vouchers.iter().any(|v| !v.invalid && v.due <= store::now()) {
                 match wallet::redeem(&mut w, false).await {
-                    Ok(c) if c > 0.0 => { self.say(format!("{} added to your balance", usd(c))); self.refresh_balance(); }
+                    Ok(c) if c > 0.0 => {
+                        self.say(format!("{} added to your balance", usd(c)));
+                        private::money_added().await;
+                        self.refresh_balance();
+                    }
                     Err(e) if force => self.say(e),
                     _ => {}
                 }
@@ -1235,7 +1239,13 @@ fn Account() -> Element {
         let plan_id = listed(&t)["plan_id"].clone();
         bg(async move {
             match api::call("POST", "/change_tier", Some(json!({"tier": t, "payment_method": "balance", "plan_id": plan_id}))).await {
-                Ok(v) => { app.say(v["message"].as_str().unwrap_or("Plan changed").to_string()); load() }
+                Ok(v) => {
+                    app.say(v["message"].as_str().unwrap_or("Plan changed").to_string());
+                    // A plan bought here is a moment of the account's own: the wallet asks for
+                    // what the new plan gives now, so its models open in the next chat.
+                    private::money_added().await;
+                    load()
+                }
                 Err(e) if api::status_of(&e).0 == 402 => buy_plan(&t),
                 Err(e) => app.say(api::msg(e)),
             }
@@ -2193,7 +2203,7 @@ fn Funds() -> Element {
                                         }
                                         button { class: "go", onclick: move |_| bg(async move {
                                             let mut w = Wallet::load();
-                                            match wallet::redeem(&mut w, true).await { Ok(c) => { app.say(format!("{} added", usd(c))); app.refresh_balance() } Err(e) => app.say(e) }
+                                            match wallet::redeem(&mut w, true).await { Ok(c) => { app.say(format!("{} added", usd(c))); private::money_added().await; app.refresh_balance() } Err(e) => app.say(e) }
                                             let mut ws = app.wallet; ws.set(w);
                                         }), "Add now" }
                                     }
@@ -2214,7 +2224,7 @@ fn Funds() -> Element {
                         if codes.is_empty() { return }
                         bg(async move {
                             match api::post("/vouchers/redeem", json!({"vouchers": codes})).await {
-                                Ok(v) => { app.say(format!("{} added", usd(v["credited_usd"].as_f64().unwrap_or(0.0)))); app.refresh_balance(); code.set(String::new()); js("document.querySelector('textarea.field').value = ''") }
+                                Ok(v) => { app.say(format!("{} added", usd(v["credited_usd"].as_f64().unwrap_or(0.0)))); private::money_added().await; app.refresh_balance(); code.set(String::new()); js("document.querySelector('textarea.field').value = ''") }
                                 Err(e) => app.say(e),
                             }
                         })
