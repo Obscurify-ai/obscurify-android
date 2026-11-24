@@ -112,6 +112,7 @@ node card.mjs                     # image picker and a vision model; Stripe test
 adb reverse tcp:8241 tcp:8241 && node plan-checkout.mjs  # Upgrade with nothing on the balance: straight to paying for the plan, method and term changes, BTC payment switches it on
 ACCOUNT=… PLAN=casual node plans.mjs  # models the plan can use first, the rest under "Upgrade to use"
 adb reverse tcp:8099 tcp:8099 && DB=… [CATALOG=…] node plan-offers.mjs  # the Account screen lists this account's plans (asked with its key) and buying one charges exactly the price shown
+UPSTREAM_PORT=… DB=… node plan-bought.mjs  # a plan bought in the app opens its models in the very next private chat, no restart (test APK with OBSCURIFY_API=http://127.0.0.1:8232)
 ACCOUNT=… node agent.mjs             # Long runs, compaction, errors back to the model, background work (scripted replies, through flaky-proxy.mjs)
 ACCOUNT=… node code.mjs              # Code Mode: Python, a chart, a paid tool, a page full screen, the sandbox sealed off
 node flaky-proxy.mjs & ACCOUNT=… node switches.mjs  # Tools and Code switches: on by default, a lookup is a direct web_search, code off, tools off (code can't reach them), both off is plain chat
@@ -132,6 +133,8 @@ TARGET=http://127.0.0.1:8098 CODE=… node unavailable.mjs  # a model that can't
 adb root; DB=obscurify_sync node sync.mjs  # chat sync: a website chat (image, folder) on the phone, the phone's answer back exactly, a phone chat on the website, an edit into the open chat, a delete, favorites, nothing readable or cookie on /sync, the switch off stops the website too, a phone with its own chats asks "Combine chats?" (Not on this phone, then Combine), two different additions to one chat keep both (test APK with OBSCURIFY_API=http://127.0.0.1:8232)
 adb root; node account-code.mjs           # account codes: sign-up makes a 20-character code on the phone (only a key leaves it), sign-in however it's typed, a typo caught on the phone, a code for no account refused and never sent, a 16-digit account converts (saved first) and sync turns on (test APK with OBSCURIFY_API=http://127.0.0.1:8232)
 adb root; DB=… node private.mjs      # private sessions: number made on the phone, only a key sent; chat with a session secret and no cookie, not charged to the account, each chat on its own session; a 402 (a pricey model's hold, and one injected on a tool call) tops the session up and asks again; wiped app signs in and gets every millicent back (test APK with OBSCURIFY_API=http://127.0.0.1:8231: the test records what leaves the phone)
+UPSTREAM_PORT=… DB=… node private-refused.mjs  # a chat that can't go privately is not sent and says why; free models with no money; the last cents spent; money added elsewhere found the moment a message needs it (test APK with OBSCURIFY_API=http://127.0.0.1:8232)
+UPSTREAM_PORT=… DB=… node private-timing.mjs  # a chat that needs more than the wallet holds is funded at once: no wait, $5 taken (a fixed size), sent privately (test APK with OBSCURIFY_API=http://127.0.0.1:8232)
 ```
 
 ## License
