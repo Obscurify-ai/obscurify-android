@@ -1,0 +1,1 @@
+Private chats start at once, can spend every cent of a balance, and free models need no money. Plans with weekly limits show this week's and the last 5 hours' usage, and a chat past a limit says so. Deleted or edited chats stay that way after sync.
