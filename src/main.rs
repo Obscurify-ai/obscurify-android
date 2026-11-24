@@ -909,7 +909,7 @@ pub fn UsageBars() -> Element {
     let bars: Vec<(&str, f64, String)> = [("This week", "usage_week"), ("5 hours", "usage_5h")].into_iter().filter_map(|(label, key)| {
         let w = &t[key];
         let (used, limit) = (w["used"].as_f64()?, w["limit"].as_f64().filter(|l| *l > 0.0)?);
-        if key == "usage_5h" && t["api_key_limits"].as_bool() != Some(true) && used < limit { return None }
+        if key == "usage_5h" && t["tier"].as_str() != Some("pro") && used < limit { return None }
         let at = w["frees_at"].as_str().map(local_time).unwrap_or_default();
         let at = match (key, at.split_once(' ')) {
             (_, None) => String::new(),
