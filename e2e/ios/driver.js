@@ -181,7 +181,7 @@ async function background(signedIn) {
     });
     await script([{tools: [{name: 'web_search', args: {query: 'Obscurify private AI chat'}}]}, {text: 'Searched. ' + words(150), slow: 35000}]);
     await away('tool', 'Search the web, then answer slowly.', 120, r => {
-      ok(!!r.querySelector('.run'), 'a direct tool call in the background: its run is shown');
+      ok(!!r.querySelector('.tool-call'), 'a direct tool call in the background: its call is shown (' + text(r.querySelector('.tool-call')).slice(0, 60) + ')');
       ok(/THE-END/.test(text(r)), 'a direct tool call in the background: the answer after it finished');
     });
   }
