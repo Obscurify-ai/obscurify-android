@@ -1,0 +1,1 @@
+A GitHub link sits left of X and Reddit in the menu, for the app's source code.
