@@ -10,6 +10,7 @@
 // with SIGNUP, a new account: the model picker, Account, the session kept out of backups, and the
 // account deleted from the app, so nothing is left behind.
 const log = s => dioxus.send({log: String(s)});
+// PROXY: the build talks to e2e/flaky-proxy.mjs (host.py runs it), so answers can be scripted.
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -40,7 +41,11 @@ async function type(sel, value) {
 }
 // The host takes the screenshot and says when it has (through the app, e2e-shot-done).
 async function shot(name) { await sleep(600); dioxus.send({shot: name}); await dioxus.recv(); }
-const host = async (what, ms) => { dioxus.send({host: what}); await sleep(ms); };
+// The host does it (main.rs waits for its e2e-shot-done "host"), then the driver goes on.
+const host = async (what, ms = 0) => { dioxus.send({host: what}); await dioxus.recv(); await sleep(ms); };
+// The next answers, scripted at the e2e proxy (flaky-proxy.mjs): no model is called.
+const script = s => host('script ' + JSON.stringify(s));
+const words = n => Array.from({length: n}, (_, i) => 'word' + (i + 1)).join(' ') + ' THE-END';
 const replies = () => $$('.msg.assistant');
 const answering = () => !!$('.send.stop');
 // Sends a message and waits for the whole answer.
@@ -129,18 +134,63 @@ async function guest() {
 
 }
 
-// An answer that finishes with the app in the background: iOS gives it time, and it says so. Last,
-// because the status bar keeps a "back to" link afterwards.
-async function background() {
+// Answers go on with the app in the background (another app in front), every way an answer is made,
+// each scripted at the proxy to take longer than the half minute iOS gives any app: Code Mode with
+// code that runs 20 s, a tool the model calls directly, and plain chat. The host sends the app away
+// as soon as the answer starts and judges each from the app's own log. Then the app must still
+// answer (dioxus#4374: the WebView's edits socket can die in the background). Last, because the
+// status bar keeps a "back to" link afterwards.
+async function switches(code, tools) {
+  await click('.plus');
+  for (const [sel, want] of [['.code-switch', code], ['.tools-switch', tools]]) {
+    const el = $(sel);
+    if (el && el.classList.contains('on') !== want) { el.click(); await sleep(300); }
+  }
+  if ($('.menu-veil')) $('.menu-veil').click();
+  await sleep(300);
+}
+async function away(name, prompt, most, check) {
+  const before = replies().length;
+  await type('#composer', prompt);
+  await click('.send');
+  await until(() => answering(), 30000, name + ': the answer to start');
+  await host('background ' + name + ' ' + most);
+  await until(() => replies().length > before && !answering() && replies().at(-1).querySelector('.meta'), 120000, name + ': the answer');
+  await sleep(800);
+  const r = replies().at(-1);
+  check(r);
+  return r;
+}
+async function background(signedIn) {
   if ($('.login')) await click('button.guest');
   await until(() => $('#composer'), 15000, 'the chat');
-  const before = replies().length;
-  await type('#composer', 'Write a story of about 300 words about a lighthouse keeper who finds a message in a bottle.');
-  await click('.send');
-  await until(() => answering(), 30000, 'the answer to start');
-  await host('background', 2000);
-  await until(() => replies().length > before && !answering() && replies().at(-1).querySelector('.meta'), 180000, 'the story');
-  ok(text(replies().at(-1)).length > 400, 'the story finished: ' + text(replies().at(-1)).length + ' characters');
+  if (!PROXY) {
+    // Production only: a long story, judged as far as it goes (it may end before the app is away).
+    await away('story', 'Write a story of about 600 words about a lighthouse keeper who finds a message in a bottle.', 90,
+      r => ok(text(r).length > 400, 'the story finished: ' + text(r).length + ' characters'));
+    return;
+  }
+  const who = signedIn ? 'signed-in ' : '';
+  if (!signedIn) {
+    await switches(true, true);
+    await script([{code: 'import time\nfor i in range(20):\n    print("tick", i, flush=True)\n    time.sleep(1)\nprint("ran 20 s")'},
+                  {text: 'The code ran. ' + words(120), slow: 15000}]);
+    await away('code', 'Run the slow code.', 120, r => {
+      ok(!!r.querySelector('.run.ok') && /ran 20 s/.test(text(r)), 'Code Mode in the background: the code ran to the end (' + text(r.querySelector('.run-head')) + ')');
+      ok(/THE-END/.test(text(r)), 'Code Mode in the background: the answer after it finished');
+    });
+    await script([{tools: [{name: 'web_search', args: {query: 'Obscurify private AI chat'}}]}, {text: 'Searched. ' + words(150), slow: 35000}]);
+    await away('tool', 'Search the web, then answer slowly.', 120, r => {
+      ok(!!r.querySelector('.run'), 'a direct tool call in the background: its run is shown');
+      ok(/THE-END/.test(text(r)), 'a direct tool call in the background: the answer after it finished');
+    });
+  }
+  await switches(false, false);
+  await script([{text: words(400), slow: 45000}]);
+  await away(who + 'plain', 'Count slowly.', 120, r => ok(/THE-END/.test(text(r)), who + 'plain chat in the background: the whole 45 s answer is there'));
+  await script([{text: 'Still here after the background.'}]);
+  const r = await ask('Are you still there?', 60000);
+  ok(/Still here after the background/.test(text(r)), who + 'after the background: a new message is answered');
 }
 
 // The account this run made, deleted from Account (also when the run fails after making it).
@@ -178,7 +228,9 @@ async function account() {
   await until(() => $('#composer'), 15000, 'the chat, signed in');
   await sleep(3000);
   dismiss();
-  await host('check-backup', 4000);
+  await host('check-backup');
+  // Signed in, the server holds the answer too (`background: true`): it goes on in the app as well.
+  if (PROXY) await background(true);
 
   // The model picker: no uncensored or roleplay models in the store build.
   await click('.title.model');

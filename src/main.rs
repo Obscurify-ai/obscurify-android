@@ -217,7 +217,23 @@ pub(crate) fn open_url(url: &str) {
 /// An answer started or ended. On Android the page tells MainActivity itself (`android.working`).
 pub(crate) fn working(_on: bool) {
     #[cfg(target_os = "ios")]
-    ios::working(_on)
+    {
+        if _on && !ios::answering() {
+            // Says, while the app is in the background, that its tasks are still polled.
+            bg(async { loop { sleep(2000).await; if !ios::answering() { break } ios::beat("dioxus") } });
+        }
+        ios::working(_on)
+    }
+}
+/// Puts what's drawn in a signal, except while the app is in the background (iOS): there the
+/// WebView is suspended, and a render waiting for it would stop every task until the app is back.
+/// The next piece of the answer draws it once the app is on screen again.
+pub(crate) fn draw<T: 'static>(mut s: Signal<T>, v: T) {
+    if !backgrounded() { s.set(v) }
+}
+/// A flag the screen shows, changed only when it changes and the app is on screen (`draw`).
+pub(crate) fn flag(mut s: Signal<bool>, v: bool) {
+    if *s.peek() != v && !backgrounded() { s.set(v) }
 }
 /// The app isn't on screen (iOS). Its WebView is suspended there, and Dioxus polls no task while a
 /// render waits for the WebView, so an answer in the background stops drawing until it's back.
@@ -662,7 +678,8 @@ fn Root() -> Element {
     use_future(move || async move {
         const DRIVER: &str = include_str!("../e2e/ios/driver.js");
         let signup = option_env!("E2E_SIGNUP") == Some("1");
-        let mut e = document::eval(&format!("const SIGNUP = {signup};\n{DRIVER}"));
+        let proxy = api::BASE.starts_with("http://127.0.0.1");
+        let mut e = document::eval(&format!("const SIGNUP = {signup};\nconst PROXY = {proxy};\n{DRIVER}"));
         while let Ok(v) = e.recv::<Value>().await {
             if let Some(s) = v["log"].as_str() { eprintln!("E2E {s}") }
             else if let Some(s) = v["shot"].as_str() {
@@ -676,7 +693,17 @@ fn Root() -> Element {
                 let _ = std::fs::remove_file(&done);
                 let _ = e.send(json!("shot-done"));
             }
-            else if let Some(s) = v["host"].as_str() { eprintln!("E2E-HOST {s}") }
+            else if let Some(s) = v["host"].as_str() {
+                // Also acknowledged through e2e-shot-done ("host"), once the host has done it.
+                eprintln!("E2E-HOST {s}");
+                let done = store::dir().join("e2e-shot-done");
+                for _ in 0..1200 {
+                    if std::fs::read_to_string(&done).is_ok_and(|n| n.trim() == "host") { break }
+                    sleep(250).await;
+                }
+                let _ = std::fs::remove_file(&done);
+                let _ = e.send(json!("host-done"));
+            }
             else if v["close_page"] == true { ios::close_page() }
             else if let Some(ok) = v["done"].as_bool() { eprintln!("E2E-DONE {}", if ok { "ok" } else { "failed" }) }
         }

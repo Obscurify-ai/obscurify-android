@@ -65,6 +65,8 @@ jobs:
         env:
           # A push doesn't make production accounts; running the workflow by hand does (and deletes it).
           E2E_SIGNUP: ${{ github.event_name == 'workflow_dispatch' && inputs.signup && '1' || '0' }}
+          # Through e2e/flaky-proxy.mjs, so answers in the background can be scripted to take a while.
+          E2E_PROXY: '1'
         run: tools/ios.sh e2e
 
       - name: The store build launches and keeps running in the simulator

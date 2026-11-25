@@ -36,22 +36,93 @@ use objc2_web_kit::{
     WKWebViewConfiguration, WKWebsiteDataStore,
 };
 use std::cell::{Cell, RefCell};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::Mutex;
 
-/// What the native side does goes to stderr: the simulator run in CI keeps it (tools/ios.sh).
-fn log(s: &str) {
+unsafe extern "C" {
+    fn syslog(priority: std::ffi::c_int, format: *const std::ffi::c_char, ...);
+}
+// BGTaskScheduler, for the continued processing task an answer asks for (iOS 26).
+#[link(name = "BackgroundTasks", kind = "framework")]
+unsafe extern "C" {}
+
+/// What the native side does goes to stderr (the simulator run in CI keeps it, tools/ios.sh) and to
+/// the system log (a phone's, read over USB). The clock is the device's uptime since the first line,
+/// so it goes on while the app is suspended.
+pub fn log(s: &str) {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     let t = START.get_or_init(std::time::Instant::now).elapsed();
-    eprintln!("obscurify-ios: [{:.1}s] {s}", t.as_secs_f32())
+    let line = format!("obscurify-ios: [{:.1}s] {s}", t.as_secs_f32());
+    eprintln!("{line}");
+    if let Ok(c) = std::ffi::CString::new(line) {
+        // SAFETY: a "%s" format with one C string.
+        unsafe { syslog(5, c"%s".as_ptr(), c.as_ptr()) } // LOG_NOTICE
+    }
 }
 
 static BG_NOTED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 /// An answer got more text with the app in the background (said every 5 s at most).
 pub fn answer_in_background() {
     let now = crate::store::now();
-    if now - BG_NOTED.load(std::sync::atomic::Ordering::SeqCst) > 5000 {
-        BG_NOTED.store(now, std::sync::atomic::Ordering::SeqCst);
+    if now - BG_NOTED.load(Ordering::SeqCst) > 5000 {
+        BG_NOTED.store(now, Ordering::SeqCst);
         log("answer: still coming in with the app in the background")
     }
+}
+
+/// Something came in for the answer being worked on (a piece of a reply, a keepalive, a message
+/// from the sandbox): what the continued processing task reports as progress.
+pub fn activity() { ACTIVITY.fetch_add(1, Ordering::Relaxed); }
+static ACTIVITY: AtomicU64 = AtomicU64::new(0);
+/// An answer is being worked on (`working`), readable from any thread.
+static ANSWERING: AtomicBool = AtomicBool::new(false);
+pub fn answering() -> bool { ANSWERING.load(Ordering::SeqCst) }
+
+/// Said every few seconds while an answer is worked on and the app isn't on screen, from where it's
+/// said: "process" from a thread of its own (the app runs), "main" from the main queue (iOS runs the
+/// main thread), "dioxus" from a Dioxus task (the app's tasks are polled, `crate::working`).
+pub fn beat(from: &str) {
+    if MainThreadMarker::new().is_some_and(|mtm| UIApplication::sharedApplication(mtm).applicationState() == UIApplicationState::Active) { return }
+    log(&format!("beat: {from}"))
+}
+
+/// A message from the sandbox (`code::on_sandbox`): progress, and said while the app is in the
+/// background (every 2 s at most), so a run shows whether code goes on there.
+pub fn sandbox_heard(kind: &str) {
+    activity();
+    static SAID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    let now = crate::store::now();
+    if now - SAID.load(Ordering::SeqCst) < 2000 { return }
+    if MainThreadMarker::new().is_some_and(|mtm| UIApplication::sharedApplication(mtm).applicationState() != UIApplicationState::Active) {
+        SAID.store(now, Ordering::SeqCst);
+        log(&format!("sandbox: {kind} with the app in the background"))
+    }
+}
+
+/// While an answer is worked on: the heartbeats, the app's state changes, and the continued
+/// processing task's progress, every 2 s.
+fn watch() {
+    std::thread::spawn(|| {
+        let mut last_state = -1isize;
+        let mut n = 0u32;
+        while answering() {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            n += 1;
+            report_progress();
+            let (tx, rx) = std::sync::mpsc::channel();
+            on_main(move |mtm| { let _ = tx.send(UIApplication::sharedApplication(mtm).applicationState().0); });
+            match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+                Ok(state) => {
+                    if state != last_state {
+                        log(&format!("app state {state}{}", match state { 0 => " (on screen)", 1 => " (inactive)", _ => " (background)" }));
+                        last_state = state;
+                    }
+                    if state != 0 && n % 2 == 0 { log("beat: process, main") }
+                }
+                Err(_) => if n % 2 == 0 { log("beat: process (the main thread didn't answer)") },
+            }
+        }
+    });
 }
 
 /// Runs `f` on the main thread: now if this is it, else queued there.
@@ -115,7 +186,8 @@ pub fn working(on: bool) {
         app.setIdleTimerDisabled(on);
         if on && !WORKING.get() {
             WORKING.set(true);
-            BG_NOTED.store(0, std::sync::atomic::Ordering::SeqCst);
+            BG_NOTED.store(0, Ordering::SeqCst);
+            ANSWERING.store(true, Ordering::SeqCst);
             ask_to_notify();
             end_task(mtm);
             let expired = RcBlock::new(move || {
@@ -125,14 +197,98 @@ pub fn working(on: bool) {
             let id = app.beginBackgroundTaskWithName_expirationHandler(Some(&NSString::from_str("Finishing an answer")), Some(&expired));
             TASK.set(id);
             log("working: on");
+            continue_start();
+            watch();
         } else if !on && WORKING.get() {
             WORKING.set(false);
+            ANSWERING.store(false, Ordering::SeqCst);
             let state = app.applicationState();
             if state != UIApplicationState::Active { notify_ready() }
             log(&format!("working: off (app state {})", state.0));
+            continue_end(true);
             end_task(mtm);
         }
     })
+}
+
+// ---- the continued processing task (iOS 26) ----
+//
+// Past the half minute `beginBackgroundTask` gives, iOS 26 lets work a person started go on in the
+// background as a continued processing task: iOS shows it in a Live Activity ("Obscurify, Writing
+// your answer", with its progress), where it can also be stopped. Each answer asks for one when it
+// starts, as `<bundle id>.answer.<n>` (Info.plist permits `<bundle id>.answer.*`, tools/ios.sh), and
+// ends it when the answer ends. Older iOS has no such task: the half minute, then the server.
+
+/// The running task: set by its launch handler (on a queue of iOS's), ended from the main thread.
+struct Continued(Retained<AnyObject>);
+// SAFETY: BGTask and its NSProgress may be used from any thread.
+unsafe impl Send for Continued {}
+static CONTINUED: Mutex<Option<Continued>> = Mutex::new(None);
+static CONTINUED_N: AtomicU32 = AtomicU32::new(0);
+
+fn ns(s: &str) -> Retained<NSString> { NSString::from_str(s) }
+
+fn continue_start() {
+    let Some(request_class) = objc2::runtime::AnyClass::get(c"BGContinuedProcessingTaskRequest") else {
+        return log("continued: not on this iOS (before 26)");
+    };
+    let bundle: Option<Retained<NSString>> = unsafe {
+        let main: *mut AnyObject = msg_send![class!(NSBundle), mainBundle];
+        msg_send![main, bundleIdentifier]
+    };
+    let Some(bundle) = bundle else { return log("continued: no bundle id") };
+    let n = CONTINUED_N.fetch_add(1, Ordering::SeqCst) + 1;
+    let ident = ns(&format!("{bundle}.answer.{n}"));
+    ACTIVITY.store(0, Ordering::SeqCst);
+    unsafe {
+        let scheduler: *mut AnyObject = msg_send![class!(BGTaskScheduler), sharedScheduler];
+        let launch = RcBlock::new(move |task: std::ptr::NonNull<AnyObject>| {
+            let Some(task) = Retained::retain(task.as_ptr()) else { return };
+            let expired = RcBlock::new(move || {
+                log("continued: expired (stopped from the Live Activity, or iOS needed the room)");
+                continue_end(false);
+            });
+            let _: () = msg_send![&*task, setExpirationHandler: &*expired];
+            let progress: *mut AnyObject = msg_send![&*task, progress];
+            let _: () = msg_send![progress, setTotalUnitCount: 100i64];
+            *CONTINUED.lock().unwrap() = Some(Continued(task));
+            log(&format!("continued: running (task {n})"));
+            // The answer may have ended while the task waited to start.
+            if !answering() { continue_end(true) }
+        });
+        let registered: Bool = msg_send![scheduler, registerForTaskWithIdentifier: &*ident, usingQueue: std::ptr::null_mut::<AnyObject>(), launchHandler: &*launch];
+        if !registered.as_bool() { return log("continued: couldn't register the task (is it in BGTaskSchedulerPermittedIdentifiers?)") }
+        let request: Allocated<AnyObject> = msg_send![request_class, alloc];
+        let request: Retained<AnyObject> = msg_send![request, initWithIdentifier: &*ident, title: &*ns("Obscurify"), subtitle: &*ns("Writing your answer")];
+        let submitted: Result<(), Retained<NSError>> = msg_send![scheduler, submitTaskRequest: &*request, error: _];
+        match submitted {
+            Ok(()) => log(&format!("continued: submitted (task {n})")),
+            Err(e) => log(&format!("continued: not submitted: {} (code {})", e.localizedDescription(), e.code())),
+        }
+    }
+}
+
+/// Progress the Live Activity shows, from what has come in so far: it keeps rising while anything
+/// arrives and stands still when nothing does (iOS stops a task that shows none).
+fn report_progress() {
+    let Some(task) = CONTINUED.lock().unwrap().as_ref().map(|c| c.0.clone()) else { return };
+    let a = ACTIVITY.load(Ordering::Relaxed) as i64;
+    unsafe {
+        let progress: *mut AnyObject = msg_send![&*task, progress];
+        let _: () = msg_send![progress, setTotalUnitCount: a + (a / 9).max(20)];
+        let _: () = msg_send![progress, setCompletedUnitCount: a];
+    }
+}
+
+fn continue_end(success: bool) {
+    let Some(task) = CONTINUED.lock().unwrap().take() else { return };
+    unsafe {
+        let progress: *mut AnyObject = msg_send![&*task.0, progress];
+        let total: i64 = msg_send![progress, totalUnitCount];
+        let _: () = msg_send![progress, setCompletedUnitCount: total];
+        let _: () = msg_send![&*task.0, setTaskCompletedWithSuccess: Bool::new(success)];
+    }
+    log(&format!("continued: ended ({})", if success { "done" } else { "stopped" }));
 }
 
 /// Not on screen: iOS suspends the WebView, so nothing should be drawn (`crate::backgrounded`).

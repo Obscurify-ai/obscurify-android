@@ -685,7 +685,14 @@ impl ReplyStream {
                 _ = KICK.notified() => { if self.heard.elapsed() < FRESH { continue } None }
             };
             match got {
-                Some(Some(Ok(b))) => { self.partial.extend_from_slice(&b); self.heard = Instant::now(); lost_since = None; continue }
+                Some(Some(Ok(b))) => {
+                    #[cfg(target_os = "ios")]
+                    crate::ios::activity();
+                    self.partial.extend_from_slice(&b);
+                    self.heard = Instant::now();
+                    lost_since = None;
+                    continue
+                }
                 // A clean end: the answer is over, unless a held answer ended before [DONE] (asked
                 // again once: what the server has is the whole of it).
                 Some(None) if self.saw_done || self.id.is_none() || lost_since.is_some() => { self.finish(); return None }

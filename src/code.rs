@@ -243,6 +243,8 @@ static READY: AtomicBool = AtomicBool::new(false);
 /// A message from the sandbox (JSON text), from the bridge.
 pub fn on_sandbox(text: &str) {
     let Ok(v) = serde_json::from_str::<Value>(text) else { return };
+    #[cfg(target_os = "ios")]
+    crate::ios::sandbox_heard(v["type"].as_str().unwrap_or("?"));
     if let Some(tx) = EVENTS.lock().unwrap().as_ref() {
         let _ = tx.unbounded_send(v);
     }
@@ -271,7 +273,7 @@ async fn next(rx: &mut UnboundedReceiver<Value>, ms: u32) -> Option<Value> {
 }
 
 /// Starts the sandbox if it isn't running and waits for it to be ready.
-async fn ensure(rx: &mut UnboundedReceiver<Value>, base: &str, mut app: App, stop: &impl Fn() -> bool) -> Result<(), String> {
+async fn ensure(rx: &mut UnboundedReceiver<Value>, base: &str, app: App, stop: &impl Fn() -> bool) -> Result<(), String> {
     if code_blocked() {
         return Err(TOR_NO_CODE.into());
     }
@@ -289,23 +291,23 @@ async fn ensure(rx: &mut UnboundedReceiver<Value>, base: &str, mut app: App, sto
             && v["type"] == "ready"
         {
             READY.store(true, Ordering::SeqCst);
-            app.waiting.set(false);
+            crate::flag(app.waiting, false);
             return Ok(());
         }
         if crate::store::now() - asked > 20_000 {
             if api::reachable().await {
                 restarts += 1;
                 if restarts > MAX_LOST_WAITS {
-                    app.waiting.set(false);
+                    crate::flag(app.waiting, false);
                     return Err("The code sandbox would not start. Closing and reopening the app restarts it.".into());
                 }
             }
-            app.waiting.set(true);
+            crate::flag(app.waiting, true);
             asked = crate::store::now();
             start(base);
         }
     }
-    app.waiting.set(false);
+    crate::flag(app.waiting, false);
     Err("Stopped by the user.".into())
 }
 
@@ -393,15 +395,15 @@ pub const MAX_LOST_WAITS: u32 = 6;
 
 /// Whether to wait and try again, and waits if so: always while `offline`, otherwise up to
 /// MAX_LOST_WAITS times (counted in `waits`).
-pub async fn wait_again(mut app: App, delay: &mut u32, waits: &mut u32, offline: bool) -> bool {
+pub async fn wait_again(app: App, delay: &mut u32, waits: &mut u32, offline: bool) -> bool {
     if !offline {
         if *waits >= MAX_LOST_WAITS {
-            app.waiting.set(false);
+            crate::flag(app.waiting, false);
             return false;
         }
         *waits += 1;
     }
-    app.waiting.set(true);
+    crate::flag(app.waiting, true);
     wait_a_bit(app, delay).await;
     true
 }
@@ -419,7 +421,7 @@ pub async fn wait_a_bit(app: App, delay: &mut u32) {
 /// A tool call to the server: the signed-in route, or the guest one. A lost connection doesn't fail
 /// it: it waits and asks again until the answer comes. A paid call carries a request id, so the
 /// server runs it once however many times it's asked, and it's safe to ask again.
-async fn tool_post(mut app: App, path: &str, body: &Value, timeout: u64) -> Result<Value, String> {
+async fn tool_post(app: App, path: &str, body: &Value, timeout: u64) -> Result<Value, String> {
     let mut delay = 1000;
     let mut waits = 0;
     let mut limited_since = None;
@@ -433,7 +435,7 @@ async fn tool_post(mut app: App, path: &str, body: &Value, timeout: u64) -> Resu
         if let Err(e) = &r && api::status_of(e).0 == 429 {
             let since = *limited_since.get_or_insert_with(crate::store::now);
             if crate::store::now() - since > TOOL_BUSY_MS {
-                app.waiting.set(false);
+                crate::flag(app.waiting, false);
                 return Err("Tools are busy right now (asked for 2 minutes). Use another way, or carry on without it.".into());
             }
         }
@@ -443,14 +445,14 @@ async fn tool_post(mut app: App, path: &str, body: &Value, timeout: u64) -> Resu
                 // A rate limit has its own limit above; no answer at all is a lost connection.
                 let status = api::status_of(&e).0;
                 if status == 429 {
-                    app.waiting.set(true);
+                    crate::flag(app.waiting, true);
                     wait_a_bit(app, &mut delay).await;
                 } else if !wait_again(app, &mut delay, &mut waits, status == 0).await {
                     return Err(format!("The tool request kept failing ({}). Try again later, or carry on without it.", api::msg(e)));
                 }
             }
             other => {
-                app.waiting.set(false);
+                crate::flag(app.waiting, false);
                 return other.map_err(api::msg);
             }
         }
@@ -763,18 +765,18 @@ async fn compact(mut app: App, setup: &Setup, model: &str, context: u64, shrink:
             }
             match r {
                 Ok(s) if !s.cut => {
-                    app.waiting.set(false);
+                    crate::flag(app.waiting, false);
                     break chat::answer_text(&out.content);
                 }
                 other => {
                     let e = other.err().unwrap_or_else(|| "The connection dropped.".into());
-                    if stop() { app.waiting.set(false); return false }
+                    if stop() { crate::flag(app.waiting, false); return false }
                     if (e == api::OFFLINE || e == api::UNAVAILABLE || e.contains("connection dropped"))
                         && wait_again(app, &mut delay, &mut waits, e == api::OFFLINE).await
                     {
                         continue;
                     }
-                    app.waiting.set(false);
+                    crate::flag(app.waiting, false);
                     if retries >= MAX_RETRIES || !worth_retrying(&e) { return false }
                     retries += 1;
                     sleep(1500 * retries).await;
@@ -915,7 +917,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
                     used = None;
                     // Still over, with nothing left to summarize: don't do it again for nothing.
                     compact_tries = if estimate(&all(&history, &trace)) as f64 >= COMPACT_AT * context as f64 { MAX_COMPACT_TRIES } else { 0 };
-                    app.live.set(Some(msg.clone()));
+                    crate::draw(app.live, Some(msg.clone()));
                     checkpoint(app, &msg, &trace);
                 } else {
                     compact_tries += 1;
@@ -959,7 +961,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
                         if compact(app, &setup, &model, context, true, &mut history, &mut trace, &mut msg, &mut t, &stop).await {
                             used = None;
                             body["messages"] = json!(all(&history, &trace));
-                            app.live.set(Some(msg.clone()));
+                            crate::draw(app.live, Some(msg.clone()));
                             checkpoint(app, &msg, &trace);
                             continue;
                         }
@@ -972,7 +974,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
                     let limited = lower.contains("rate limit") || lower.contains("too many requests");
                     let since = *wait_since.get_or_insert_with(crate::store::now);
                     if limited && crate::store::now() - since < RATE_WAIT_MS && !stop() {
-                        app.waiting.set(true);
+                        crate::flag(app.waiting, true);
                         wait_a_bit(app, &mut delay).await;
                         continue;
                     }
@@ -980,7 +982,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
                         continue;
                     }
                     let e = if lost && !offline { format!("Obscurify kept failing to answer this chat ({e}). Your chat is kept: press Continue to try again, or switch models.") } else { e };
-                    app.waiting.set(false);
+                    crate::flag(app.waiting, false);
                     // The tool results are safe in `trace`: only this one step is asked again.
                     if !lost && retries < MAX_RETRIES && worth_retrying(&e) && !stop() {
                         retries += 1;
@@ -999,7 +1001,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
                     failure = Some(e);
                     break vec![];
                 }
-                app.waiting.set(false);
+                crate::flag(app.waiting, false);
                 wait_since = None;
                 delay = 1000;
                 let s = out.unwrap();
@@ -1054,7 +1056,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
                         msg.runs.push(Run { direct: true, intro: std::mem::take(&mut intro), reasoning: std::mem::take(&mut thought), ..Default::default() });
                         tools_run = Some(msg.runs.len() - 1);
                     }
-                    app.live.set(Some(msg.clone()));
+                    crate::draw(app.live, Some(msg.clone()));
                     let out = direct(name, raw, &mut msg, &mut t, &mut show).await;
                     let r = msg.runs.last_mut().unwrap();
                     r.done = true;
@@ -1071,11 +1073,11 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
                         status: "Running…".into(),
                         ..Default::default()
                     });
-                    app.live.set(Some(msg.clone()));
+                    crate::draw(app.live, Some(msg.clone()));
                     execute(&mut rx, &mut msg, &mut t, &cfg.base, stop, &mut show).await
                 };
                 trace.push(json!({"role": "tool", "tool_call_id": id, "content": result}));
-                app.live.set(Some(msg.clone()));
+                crate::draw(app.live, Some(msg.clone()));
                 checkpoint(app, &msg, &trace);
             }
             if stop() {
@@ -1083,7 +1085,7 @@ pub fn turn_following(mut app: App, from: Option<Msg>, follow: Option<String>) {
             }
         }
         *EVENTS.lock().unwrap() = None;
-        app.waiting.set(false);
+        if *app.waiting.peek() { crate::flag(app.waiting, false) }
         if let Some(e) = failure {
             if msg.content.is_empty() && msg.runs.is_empty() && trace.is_empty() {
                 msg.error = true;

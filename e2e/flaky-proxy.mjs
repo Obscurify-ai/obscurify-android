@@ -17,6 +17,7 @@
 //   POST /__script  [{...}, ...]                     canned replies for the next completions, in order:
 //     {code, usage: {prompt_tokens, completion_tokens, cost}} a run_code call; {text, usage} an answer;
 //     {error: "..."} a failure; {status: 502} a proxy's error page. No model is called, so these cost nothing.
+//     {text, slow: MS} streams the answer a few words at a time over MS (an answer that takes a while).
 //     Any of them may carry {reasoning: "..."} (streamed first); {tools: [{name, args}]} makes direct
 //     tool calls instead, after `text` if there is one. {refusal: true, suggest: {model, name, locked}} is a
 //     Claude-style refusal (finish_reason content_filter, no text), then the server's suggest_model chunk.
@@ -54,6 +55,28 @@ function scripted(res, r) {
       send({ choices: [{ delta: { tool_calls: [{ index, id, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.args) } }] } }] });
     });
     send({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] });
+  } else if (r.slow) {
+    // A few words every 250 ms, so the answer takes `slow` ms; a client that goes away is said.
+    const words = String(r.text).split(/(?<= )/);
+    const ticks = Math.max(1, Math.round(r.slow / 250));
+    const per = Math.max(1, Math.ceil(words.length / ticks));
+    const started = Date.now();
+    let at = 0, closed = false;
+    res.on('close', () => { if (at < words.length) { closed = true; console.log(`scripted: the app went away after ${Math.round((Date.now() - started) / 1000)} s, ${at}/${words.length} words`); } });
+    const tick = () => {
+      if (closed) return;
+      if (at < words.length) {
+        send({ choices: [{ delta: { content: words.slice(at, at + per).join('') } }] });
+        at += per;
+        return setTimeout(tick, 250);
+      }
+      console.log(`scripted: a slow answer finished in ${Math.round((Date.now() - started) / 1000)} s`);
+      send({ choices: [{ delta: {}, finish_reason: 'stop' }] });
+      send({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0, ...r.usage } });
+      res.write('data: [DONE]\n\n');
+      res.end();
+    };
+    return tick();
   } else {
     send({ choices: [{ delta: { content: r.text } }] });
     send({ choices: [{ delta: {}, finish_reason: 'stop' }] });

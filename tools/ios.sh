@@ -61,6 +61,12 @@ bundle() { # app, sdk, scratch dir
   plutil -replace CFBundleVersion -string "$version_code" "$plist"
   # It ships its own standard crypto (TLS, AES-GCM, blind RSA): not only the OS's (docs/ios.md).
   plutil -replace ITSAppUsesNonExemptEncryption -bool YES "$plist"
+  # An answer goes on in the background as a continued processing task (iOS 26, src/ios.rs).
+  plutil -replace BGTaskSchedulerPermittedIdentifiers -json "[\"$id.answer.*\"]" "$plist"
+  # The e2e build talks to e2e/flaky-proxy.mjs on the Mac over plain http (never a device build).
+  if [ "${E2E:-}" = 1 ] && [[ "${OBSCURIFY_API:-}" == http://* ]]; then
+    plutil -replace NSAppTransportSecurity -json '{"NSAllowsArbitraryLoads": true}' "$plist"
+  fi
   # iPhone only, portrait: no iPad screenshots or layouts to keep up.
   plutil -replace UIDeviceFamily -json '[1]' "$plist"
   plutil -replace UISupportedInterfaceOrientations -json '["UIInterfaceOrientationPortrait"]' "$plist"
@@ -91,7 +97,7 @@ check() { # app, sdk
   for f in Assets.car AppIcon60x60@2x.png LaunchScreen.storyboardc PrivacyInfo.xcprivacy; do
     [ -e "$app/$f" ] || { echo "missing in the bundle: $f" >&2; bad=1; }
   done
-  for k in MinimumOSVersion CFBundleVersion CFBundleShortVersionString ITSAppUsesNonExemptEncryption CFBundleIcons UILaunchStoryboardName DTPlatformName; do
+  for k in BGTaskSchedulerPermittedIdentifiers MinimumOSVersion CFBundleVersion CFBundleShortVersionString ITSAppUsesNonExemptEncryption CFBundleIcons UILaunchStoryboardName DTPlatformName; do
     plutil -extract "$k" raw "$plist" >/dev/null 2>&1 || plutil -extract "$k" xml1 -o - "$plist" >/dev/null 2>&1 || { echo "missing in Info.plist: $k" >&2; bad=1; }
   done
   [ "$(plutil -extract CFBundleVersion raw "$plist")" = "$version_code" ] || { echo "CFBundleVersion isn't $version_code" >&2; bad=1; }
@@ -151,6 +157,9 @@ sim() {
 }
 
 e2e() {
+  # E2E_PROXY=1: the app talks to e2e/flaky-proxy.mjs (host.py runs it) in front of production, so
+  # the driver can script answers that take as long as a test needs.
+  if [ "${E2E_PROXY:-}" = 1 ]; then export OBSCURIFY_API=http://127.0.0.1:8093; fi
   E2E=1 build "${IOS_TARGET:-aarch64-apple-ios-sim}" target/ios
   local udid=${SIM_UDID:-$(simulator "${SIM_NAME:-Pro Max}")}
   boot "$udid"

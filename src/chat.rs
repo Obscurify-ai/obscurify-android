@@ -640,7 +640,7 @@ fn run_with(mut app: App, follow: Option<String>) {
             // Summarizing would send the chat to be read: never when encrypted.
             let summarized = if follow.is_some() || encrypted { Ok(false) } else { crate::compact::if_needed(app, &model, context, force, &stop, &mut |note: String| {
                 shown.content = note;
-                app.live.set(Some(shown.clone()));
+                crate::draw(app.live, Some(shown.clone()));
             }).await };
             match summarized {
                 Ok(done) => compacted |= done,
@@ -657,7 +657,8 @@ fn run_with(mut app: App, follow: Option<String>) {
             let mut fresh = app.live.peek().clone().unwrap_or_default();
             fresh.content.clear();
             fresh.compacted = compacted;
-            app.live.set(Some(fresh));
+            let started = fresh.clone();
+            crate::draw(app.live, Some(fresh));
             let mut overflow = false;
             let mut body = json!({"model": model, "messages": api_history(&app.conv.peek(), &model, false), "stream": true});
             if web_search {
@@ -666,7 +667,7 @@ fn run_with(mut app: App, follow: Option<String>) {
             if encrypted {
                 encrypted_reasoning(&app, &model, &mut body);
             }
-            msg = app.live.peek().clone().unwrap();
+            msg = started;
             // No connection: wait for it. A server answering 502/503/504 is waited on for a while.
             let mut delay = 1000;
             let mut waits = 0;
@@ -681,7 +682,7 @@ fn run_with(mut app: App, follow: Option<String>) {
                 match asked {
                     Err(e) if (e == api::OFFLINE || e == api::UNAVAILABLE) && !*app.stop.peek()
                         && crate::code::wait_again(app, &mut delay, &mut waits, e == api::OFFLINE).await => {}
-                    other => { app.waiting.set(false); break other }
+                    other => { crate::flag(app.waiting, false); break other }
                 }
             };
             match first {
