@@ -42,7 +42,9 @@ fn load_katex() {
         text(KATEX_JS)
     ));
 }
-pub const FREE_MODEL: &str = "meta-llama/llama-3.3-70b-instruct";
+/// The model guests chat with: the server's guest model (`DEFAULT_FREE_MODEL`). The server still answers
+/// guests who ask for an older one with this one, so an older app works but names the wrong model.
+pub const FREE_MODEL: &str = "deepseek/deepseek-v4-flash";
 /// The Google Play build (`--features play`). Play's rules mean no payments in the app (funds and
 /// plans are handled on the website), no uncensored or roleplay models (`chat::offered`), and a
 /// content guard on every completion (`api::play_guard`). Gated where it can't be got around: the
