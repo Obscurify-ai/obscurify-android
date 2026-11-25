@@ -47,7 +47,7 @@ checks it on every build (the build fails without it):
 | Launch screen | Plain black, compiled with `ibtool` to `LaunchScreen.storyboardc` (the plist already names `LaunchScreen`) | `ios/LaunchScreen.storyboard` |
 | `MinimumOSVersion` | 16.0, the `deployment_target` in Dioxus.toml; the binary is linked for the same (`IPHONEOS_DEPLOYMENT_TARGET`, checked with `vtool`). Everything used is older: WKWebView, MessageChannel in the sandbox, UserNotifications, background tasks | Dioxus.toml |
 | `CFBundleVersion` | The Android `version-code` (1000860 for 0.8.60); `CFBundleShortVersionString` is the version | Cargo.toml |
-| `ITSAppUsesNonExemptEncryption` | YES (below) | |
+| `ITSAppUsesNonExemptEncryption` | Not in Info.plist: answered in App Store Connect (below) | |
 | Privacy manifest | `PrivacyInfo.xcprivacy`: no tracking, the collected data types of the App Privacy answers, and the required-reason APIs the binary imports. The build lists the binary's imports and fails on a required-reason API the manifest doesn't declare. Today only `stat`/`fstat`/`lstat` (Rust's `std::fs`): file timestamps, reason C617.1 (files in the app's own container). No `NSUserDefaults`, boot time, disk space or keyboard APIs | `ios/PrivacyInfo.xcprivacy` |
 | Device family | iPhone only (`UIDeviceFamily` 1), portrait only: no iPad screenshots or iPad review | |
 | Xcode keys | `DTPlatformName`, `DTSDKName`, `DTXcode`… and `CFBundleSupportedPlatforms`, as Xcode writes them | |
@@ -64,6 +64,8 @@ is on the App Store in France. Under US rules this is mass-market encryption, an
 (GPL); both of those are our reading, not checked against the EAR text. In App Store Connect: the app
 uses encryption, standard algorithms; then upload the French declaration or leave France out.
 **Tony, 2026-11-23: file the French declaration and keep France.**
+
+Not set in Info.plist for now (2026-11-25): with YES there, App Store validation wants the `ITSEncryptionExportComplianceCode` that approved documentation gives (error 90592), and the French declaration isn't filed yet. Each build's answer is given in App Store Connect until then; once Apple approves the documentation, its code goes in Info.plist (`tools/ios.sh` bundle).
 
 ## What's different on iOS
 
