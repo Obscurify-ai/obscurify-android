@@ -117,9 +117,9 @@ fn watch() {
                         log(&format!("app state {state}{}", match state { 0 => " (on screen)", 1 => " (inactive)", _ => " (background)" }));
                         last_state = state;
                     }
-                    if state != 0 && n % 2 == 0 { log("beat: process, main") }
+                    if state != 0 && n.is_multiple_of(2) { log("beat: process, main") }
                 }
-                Err(_) => if n % 2 == 0 { log("beat: process (the main thread didn't answer)") },
+                Err(_) => if n.is_multiple_of(2) { log("beat: process (the main thread didn't answer)") },
             }
         }
     });
