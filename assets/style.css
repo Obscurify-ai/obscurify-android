@@ -14,6 +14,8 @@ button.bare { border: 0; padding: 8px 10px; color: var(--m); }
 button.danger { border-color: var(--e); color: var(--e); }
 a { color: var(--g); text-decoration: none; }
 .muted { color: var(--m); font-size: 14px; }
+.point { margin-top: 2px; }
+.terms { font-size: 12px; margin-top: 4px; }
 .err { color: var(--e); font-size: 14px; }
 .ok { color: var(--g); font-size: 14px; }
 .mono { font-family: ui-monospace, 'Roboto Mono', monospace; word-break: break-all; }
@@ -107,6 +109,10 @@ a { color: var(--g); text-decoration: none; }
 .drawer .foot { border-top: 1px solid var(--l); padding: 14px 16px calc(14px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 12px; }
 .drawer .foot .account { display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 12px 14px; border: 1px solid var(--g); border-radius: 8px; color: var(--g); font-size: 16px; }
 .drawer .foot .account .bal { color: var(--t); font-variant-numeric: tabular-nums; }
+.usage { display: flex; flex-direction: column; gap: 5px; }
+.usage .track { height: 4px; border-radius: 2px; background: var(--l); overflow: hidden; }
+.usage .fill { height: 100%; background: var(--g); }
+.usage .fill.full { background: #fbbf24; }
 .drawer .foot .more summary { list-style: none; text-align: center; color: var(--m); font-size: 14px; padding: 2px 0; }
 .drawer .foot .more summary::-webkit-details-marker { display: none; }
 .drawer .foot .more summary::after { content: ' \25BE'; }

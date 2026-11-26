@@ -124,6 +124,7 @@ pub(crate) fn forget_pending() { store::remove(PENDING) }
 /// Stops the answer: here, and on the server, where it would otherwise carry on.
 pub(crate) fn stop_answer(mut app: App) {
     app.stop.set(true);
+    crate::private::cancel_wait();
     api::cancel_current();
     forget_pending();
 }
@@ -500,6 +501,12 @@ pub(crate) fn sound_trace(trace: &[Value]) -> Vec<Value> {
     out
 }
 
+/// A reply cut to what its private session had left says so.
+fn balance_ended(msg: &mut Msg) {
+    if !msg.content.is_empty() { msg.content.push_str("\n\n") }
+    msg.content.push_str("*This reply was cut short because your balance ran out. Add funds to keep chatting.*");
+}
+
 /// What one streamed completion asked for besides its text.
 pub(crate) struct Step {
     pub tool_calls: Vec<Value>,
@@ -532,6 +539,7 @@ pub(crate) async fn stream_noting(body: &Value, msg: &mut Msg, stop: &impl Fn() 
     let mut details: Vec<Value> = vec![];
     let mut got_any = false;
     let mut finished = false;
+    let mut at_length = false;
     let mut tokens = None;
     let mut cost = 0.0;
     let mut refused = false;
@@ -548,6 +556,7 @@ pub(crate) async fn stream_noting(body: &Value, msg: &mut Msg, stop: &impl Fn() 
             if data == "[DONE]" { finished = true; break 'read }
             let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
             if v["choices"][0]["finish_reason"].is_string() { finished = true }
+            at_length |= v["choices"][0]["finish_reason"] == "length";
             refused |= refusal(&v);
             if let Some(s) = suggestion(&v) { suggest = Some(s) }
             if v["usage"].is_object() {
@@ -582,6 +591,7 @@ pub(crate) async fn stream_noting(body: &Value, msg: &mut Msg, stop: &impl Fn() 
     if !finished {
         calls.clear();
     }
+    if at_length && calls.is_empty() && resp.rest { balance_ended(msg) }
     msg.suggest = if refused { suggest } else { None };
     Ok(Step { tool_calls: calls, details, cut: !finished, tokens, cost, refused })
 }
@@ -634,6 +644,7 @@ fn run_with(mut app: App, follow: Option<String>) {
         let chat_id = app.conv.peek().id.clone();
         crate::private::set_chat(&chat_id);
         let mut checked: Option<Checked> = None;
+        let mut cost = 0.0;
         loop {
             let force = resent;
             let mut shown = app.live.peek().clone().unwrap_or_default();
@@ -661,6 +672,9 @@ fn run_with(mut app: App, follow: Option<String>) {
             crate::draw(app.live, Some(fresh));
             let mut overflow = false;
             let mut body = json!({"model": model, "messages": api_history(&app.conv.peek(), &model, false), "stream": true});
+            if crate::private::on() {
+                body["stream_options"] = json!({"include_usage": true});
+            }
             if web_search {
                 body["web_search"] = json!(true);
             }
@@ -693,6 +707,7 @@ fn run_with(mut app: App, follow: Option<String>) {
                     let mut drawn = store::now();
                     let mut ended = false;
                     let mut refused = false;
+                    let mut at_length = false;
                     'read: while let Some(chunk) = resp.next(&stop).await {
                         if *app.stop.peek() { break }
                         let chunk = match chunk { Ok(c) => c, Err(e) => { if msg.content.is_empty() { msg.error = true; msg.content = e } break } };
@@ -705,6 +720,8 @@ fn run_with(mut app: App, follow: Option<String>) {
                             if data == "[DONE]" { ended = true; break 'read }
                             let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
                             refused |= refusal(&v);
+                            at_length |= v["choices"][0]["finish_reason"] == "length";
+                            cost += v["usage"]["cost"].as_f64().unwrap_or(0.0);
                             if let Some(s) = suggestion(&v) { msg.suggest = Some(s) }
                             if !v["error"].is_null() {
                                 let e = v["error"]["message"].as_str().or(v["error"].as_str()).unwrap_or("The model returned an error");
@@ -735,6 +752,7 @@ fn run_with(mut app: App, follow: Option<String>) {
                     // The model's own filter stopped it before it said anything: say so, not a blank reply.
                     if refused && !msg.error && msg.content.trim().is_empty() { msg.content = DECLINED.into() }
                     if !refused || msg.error { msg.suggest = None }
+                    if at_length && resp.rest && !msg.error { balance_ended(&mut msg) }
                     if !overflow && msg.content.is_empty() && msg.reasoning.is_empty() && !*app.stop.peek() {
                         msg.error = true;
                         msg.content = "No answer came back. Try again or pick another model.".into();
@@ -763,7 +781,7 @@ fn run_with(mut app: App, follow: Option<String>) {
         if let Some((receipt, route, raw, sealed)) = checked {
             crate::tee::check(app, chat_id, model, receipt, route, raw, sealed);
         }
-        app.refresh_balance();
+        app.after_reply(cost, encrypted);
     });
 }
 
@@ -834,10 +852,98 @@ fn bare_urls(t: &str) -> Vec<(usize, usize)> {
     out
 }
 
-/// Markdown to HTML with raw HTML shown as text, only http(s)/mailto links, bare addresses made into
-/// links, and images turned into links (a model's image would load from a third party and reveal the
-/// phone's IP).
-pub fn md<'a>(s: &'a str) -> String {
+/// Math, as on the web chat (chat-markdown.js): TeX between $...$, $$...$$, \(...\) and \[...\] is
+/// lifted out before markdown (never from code) and comes back as a plain-text span that KaTeX
+/// typesets in the WebView. `$x$` counts only when it can't be money: no space just inside either
+/// `$`, no digit right after the closing one, one line ("costs $5 and $10" stays text).
+const MATH_TOKEN: &str = "OBSCURIFYMATH";
+
+fn protect_math(s: &str) -> (String, Vec<(String, bool)>) {
+    let b = s.as_bytes();
+    let (mut out, mut math) = (String::with_capacity(s.len()), Vec::new());
+    let (mut i, mut copied) = (0, 0);
+    let find = |from: usize, pat: &str| s.get(from..).and_then(|t| t.find(pat)).map(|k| from + k);
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    while i < b.len() {
+        let rest = &s[i..];
+        // Code: fenced blocks to their end (or the end of a streaming reply), and spans.
+        if rest.starts_with("```") || rest.starts_with("~~~") {
+            i = find(i + 3, &rest[..3]).map_or(b.len(), |k| k + 3);
+            continue;
+        }
+        if b[i] == b'`' {
+            let n = rest.bytes().take_while(|&c| c == b'`').count();
+            let ticks = &rest[..n];
+            let mut j = i + n;
+            i += n;
+            while let Some(k) = find(j, ticks) {
+                let run = s[k..].bytes().take_while(|&c| c == b'`').count();
+                if run == n { i = k + n; break; }
+                j = k + run;
+            }
+            continue;
+        }
+        let mut found: Option<(usize, usize, bool)> = None; // (tex start, tex end, display); end of match follows
+        let mut end = 0;
+        if rest.starts_with("$$") && (i == 0 || b[i - 1] != b'\\') {
+            if let Some(k) = find(i + 2, "$$") { found = Some((i + 2, k, true)); end = k + 2; }
+        } else if rest.starts_with("\\[") {
+            if let Some(k) = find(i + 2, "\\]") { found = Some((i + 2, k, true)); end = k + 2; }
+        } else if rest.starts_with("\\(") {
+            if let Some(k) = find(i + 2, "\\)") { found = Some((i + 2, k, false)); end = k + 2; }
+        } else if b[i] == b'\\' {
+            // An escaped character (\$ among them), whole: it may be more than one byte.
+            i += 1 + s[i + 1..].chars().next().map_or(0, char::len_utf8);
+            continue;
+        } else if b[i] == b'$' && (i == 0 || !(b[i - 1] == b'\\' || b[i - 1] == b'$' || word(b[i - 1])))
+            && b.get(i + 1).is_some_and(|&c| !c.is_ascii_whitespace() && c != b'$')
+        {
+            let mut k = i + 1;
+            while k < b.len() && b[k] != b'$' && b[k] != b'\n' {
+                k += if b[k] == b'\\' { 2 } else { 1 };
+            }
+            if k < b.len() && b[k] == b'$' && !b[k - 1].is_ascii_whitespace() && b[k - 1] != b'\\'
+                && !b.get(k + 1).is_some_and(|&c| c.is_ascii_digit() || c == b'$')
+            {
+                found = Some((i + 1, k, false));
+                end = k + 1;
+            }
+        }
+        match found {
+            Some((a, z, display)) if !s[a..z].trim().is_empty() => {
+                out.push_str(&s[copied..i]);
+                let token = format!("@@{MATH_TOKEN}{}@@", math.len());
+                out.push_str(&if display { format!("\n\n{token}\n\n") } else { token });
+                math.push((s[a..z].trim().to_string(), display));
+                i = end;
+                copied = end;
+            }
+            _ => i += rest.chars().next().map_or(1, char::len_utf8),
+        }
+    }
+    out.push_str(&s[copied.min(s.len())..]);
+    (out, math)
+}
+
+fn restore_math(mut html: String, math: &[(String, bool)]) -> String {
+    for (n, (tex, display)) in math.iter().enumerate() {
+        let tex = tex.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        let span = format!(r#"<span class="math-tex{}">{tex}</span>"#, if *display { " math-display" } else { "" });
+        let token = format!("@@{MATH_TOKEN}{n}@@");
+        html = html.replace(&format!("<p>{token}</p>"), &span).replace(&token, &span);
+    }
+    html
+}
+
+/// Markdown to HTML, a single line break kept, with raw HTML shown as text, only http(s)/mailto links,
+/// bare addresses made into links, and images turned into links (a model's image would load from a
+/// third party and reveal the phone's IP).
+pub fn md(s: &str) -> String {
+    let (s, math) = protect_math(s);
+    restore_math(md_html(&s), &math)
+}
+
+fn md_html<'a>(s: &'a str) -> String {
     use pulldown_cmark::{CowStr, Event, LinkType, Options, Parser, Tag, TagEnd, TextMergeStream, html};
     let safe = |u: &CowStr| { let l = u.to_lowercase(); l.starts_with("https://") || l.starts_with("http://") || l.starts_with("mailto:") };
     let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
@@ -879,6 +985,8 @@ pub fn md<'a>(s: &'a str) -> String {
             Event::Start(Tag::Link { link_type, dest_url, title, id })
         }
         Event::End(TagEnd::Image) => Event::End(TagEnd::Link),
+        // A line under another stays under it (poems, addresses, line-by-line answers), as on the web.
+        Event::SoftBreak => Event::HardBreak,
         e => e,
     });
     // The parser splits text at `_` and `*`; join it again so an address is one piece.
@@ -1008,6 +1116,9 @@ pub fn ChatView() -> Element {
             }
             if *app.waiting.read() {
                 div { class: "waiting", "Waiting for Obscurify. This picks up by itself." }
+            }
+            if let Some(at) = *crate::private::REFILLING.read() {
+                div { class: "waiting", id: "private-wait", {refilling_text(at)} }
             }
             div { class: "composer",
                 if !app.docs.read().is_empty() {
@@ -1635,15 +1746,19 @@ fn Drawer() -> Element {
                 if api::has_session() {
                     button { class: "account", onclick: move |_| { app.overlay.set(Overlay::None); app.screen.set(Screen::Account) },
                         span { "Account" }
-                        if let Some(b) = *app.balance.read() { span { class: "bal", {usd(b)} } }
+                        // A plan with weekly limits shows its usage instead of dollars.
+                        if !app.plan.read()["usage_week"].is_object() && let Some(b) = *app.balance.read() { span { class: "bal", {usd(b)} } }
                     }
+                    crate::UsageBars {}
                 } else {
                     button { class: "account", onclick: move |_| { app.overlay.set(Overlay::None); app.screen.set(Screen::Login) }, span { "Sign in" } }
                 }
-                // X and Reddit above More info; API docs on the bottom line to save a row.
+                // GitHub, X and Reddit above More info; API docs on the bottom line to save a row.
                 // Not in the Play build: those pages sell plans and list uncensored models,
                 // and the X and Reddit posts are about the same models.
                 if !PLAY { div { class: "social",
+                    a { href: "https://github.com/Obscurify-ai", aria_label: "Obscurify.ai on GitHub",
+                        svg { view_box: "0 0 16 16", width: "20", height: "20", fill: "currentColor", path { d: "M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" } } }
                     a { href: "https://x.com/obscurifyai", aria_label: "Obscurify.ai on X",
                         svg { view_box: "0 0 24 24", width: "20", height: "20", fill: "currentColor", path { d: "M14.234 10.162 22.977 0h-2.072l-7.591 8.824L7.251 0H.258l9.168 13.343L.258 24H2.33l8.016-9.318L16.749 24h6.993zm-2.837 3.299-.929-1.329L3.076 1.56h3.182l5.965 8.532.929 1.329 7.754 11.09h-3.182z" } } }
                     a { href: "https://www.reddit.com/r/ObscurifyAI/", aria_label: "r/ObscurifyAI on Reddit",
@@ -1778,6 +1893,30 @@ pub fn reorder_favorites(mut app: App, listed: Vec<String>) {
     if next != current {
         app.settings.write().favorites = next;
         app.save_settings();
+    }
+}
+
+/// What the server says a locked model needs on this account's plans (frontier, uncensored);
+/// `None` until it has said, then the usual plan names are shown.
+static LOCKS: std::sync::Mutex<(Option<String>, Option<String>)> = std::sync::Mutex::new((None, None));
+
+pub fn set_locks(frontier: Option<&str>, uncensored: Option<&str>) {
+    *LOCKS.lock().unwrap() = (frontier.map(String::from), uncensored.map(String::from));
+}
+
+/// The words for a locked model: "Needs Casual or Pro", "Opens once you've added $5".
+fn lock_text(needs: &str) -> String {
+    let locks = LOCKS.lock().unwrap();
+    let said = if needs == "Pro" { locks.1.clone() } else { locks.0.clone() };
+    said.unwrap_or_else(|| format!("Needs {needs}"))
+}
+
+/// What the app says when a locked model is tapped.
+fn lock_sentence(name: &str, needs: &str) -> String {
+    let text = lock_text(needs);
+    match text.strip_prefix("Needs ") {
+        Some(plans) => format!("{name} needs the {plans} plan"),
+        None => format!("{name}: {text}"),
     }
 }
 
@@ -1923,8 +2062,8 @@ fn ModelRow(m: Model, needs: Option<&'static str>, #[props(default)] gone: bool,
         div { class, style: "padding: 10px 16px", aria_disabled: (gone || !m.available).then_some("true"), "data-fav": sortable.then(|| m.id.clone()),
             div { class: "grow", onclick: { let m = m.clone(); move |_| {
                     if let Some(plan) = needs {
-                        if PLAY { return app.say(format!("{} needs the {plan} plan", m.name)) }
-                        app.say(format!("{} needs the {plan} plan", m.name));
+                        if PLAY { return app.say(lock_sentence(&m.name, plan)) }
+                        app.say(lock_sentence(&m.name, plan));
                         app.overlay.set(Overlay::None);
                         app.screen.set(Screen::Account);
                         return;
@@ -1936,7 +2075,7 @@ fn ModelRow(m: Model, needs: Option<&'static str>, #[props(default)] gone: bool,
                     app.overlay.set(Overlay::None);
                 } },
                 div { "{m.name}" if !gone && !m.available { " (Unavailable)" } if new_chats { span { class: "new-chats", "New chats" } } }
-                div { class: "price", if let Some(plan) = needs { "Needs {plan} · " } if gone { "No longer offered" } else { {per_million(&m)} }
+                div { class: "price", if let Some(plan) = needs { "{lock_text(plan)} · " } if gone { "No longer offered" } else { {per_million(&m)} }
                     for b in privacy_badges(&m) { span { class: "badge", "{b}" } }
                 }
             }
@@ -1954,4 +2093,12 @@ fn ModelRow(m: Model, needs: Option<&'static str>, #[props(default)] gone: bool,
             }
         }
     }
+}
+
+/// What a chat waiting for the private wallet says (`private::REFILLING`).
+fn refilling_text(at: u64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let minutes = at.saturating_sub(now).div_ceil(60).max(1);
+    let when = if minutes == 1 { "a minute".to_string() } else { format!("{minutes} minutes") };
+    format!("Your private wallet is refilling. Your message will be sent in about {when}.")
 }

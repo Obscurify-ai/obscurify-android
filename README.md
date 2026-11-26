@@ -113,6 +113,7 @@ node card.mjs                     # image picker and a vision model; Stripe test
 adb reverse tcp:8241 tcp:8241 && node plan-checkout.mjs  # Upgrade with nothing on the balance: straight to paying for the plan, method and term changes, BTC payment switches it on
 ACCOUNT=… PLAN=casual node plans.mjs  # models the plan can use first, the rest under "Upgrade to use"
 adb reverse tcp:8099 tcp:8099 && DB=… [CATALOG=…] node plan-offers.mjs  # the Account screen lists this account's plans (asked with its key) and buying one charges exactly the price shown
+UPSTREAM_PORT=… DB=… node plan-bought.mjs  # a plan bought in the app opens its models in the very next private chat, no restart (test APK with OBSCURIFY_API=http://127.0.0.1:8232)
 ACCOUNT=… node agent.mjs             # Long runs, compaction, errors back to the model, background work (scripted replies, through flaky-proxy.mjs)
 ACCOUNT=… node code.mjs              # Code Mode: Python, a chart, a paid tool, a page full screen, the sandbox sealed off
 node flaky-proxy.mjs & ACCOUNT=… node switches.mjs  # Tools and Code switches: on by default, a lookup is a direct web_search, code off, tools off (code can't reach them), both off is plain chat
@@ -120,7 +121,9 @@ ACCOUNT=… node parity.mjs            # guest chat and tools, Tools switch, pro
 node flaky-proxy.mjs & ACCOUNT=… node outage.mjs  # lost connections wait and deliver; PAID=1 also loses a paid answer and checks it's charged once
 node flaky-proxy.mjs & ACCOUNT=… node resume.mjs  # failures keep tool work: retries, Continue, new messages, Retry only on failures, a killed app; the Copy toolbar (test APK with OBSCURIFY_API=http://127.0.0.1:8093, adb reverse tcp:8093 tcp:8093)
 node notification.mjs                # both notifications (working, answer ready) carry the logo; guest chat, leaves screenshots
+node flaky-proxy.mjs & node math.mjs   # math in replies typeset by the bundled KaTeX; money, code and broken TeX stay text (scripted reply, test APK with OBSCURIFY_API=http://127.0.0.1:8093)
 ACCOUNT=… node files.mjs             # files: PDF, CSV, Excel, Word, PowerPoint, OpenDocument, text; refusals; a long file cut
+node guest-model.mjs                 # a guest sees the server's guest model (DeepSeek V4 Flash) in the title and beside the answer (dev server with DEFAULT_FREE_MODEL=deepseek/deepseek-v4-flash)
 node categories.mjs                  # specialist categories (Writing, Security, Translation…) from the server's model tags
 node flaky-proxy.mjs & ACCOUNT=… node background.mjs  # background answers: a dropped connection, a killed app (plain and Code Mode), Stop
 node flaky-proxy.mjs & adb root; ACCOUNT=… node encrypted.mjs   # Encrypted (no request ever asks for tee_verify): e2ee models only, a marker word never leaves the phone, Encrypted chip after eight checks, history recalled, a swapped key sends nothing, a changed byte fails, a killed app reads the rest, kept after a restart
@@ -132,6 +135,8 @@ TARGET=http://127.0.0.1:8098 CODE=… node unavailable.mjs  # a model that can't
 adb root; DB=obscurify_sync node sync.mjs  # chat sync: a website chat (image, folder) on the phone, the phone's answer back exactly, a phone chat on the website, an edit into the open chat, a delete, favorites, nothing readable or cookie on /sync, the switch off stops the website too, a phone with its own chats asks "Combine chats?" (Not on this phone, then Combine), two different additions to one chat keep both (test APK with OBSCURIFY_API=http://127.0.0.1:8232)
 adb root; node account-code.mjs           # account codes: sign-up makes a 20-character code on the phone (only a key leaves it), sign-in however it's typed, a typo caught on the phone, a code for no account refused and never sent, a 16-digit account converts (saved first) and sync turns on (test APK with OBSCURIFY_API=http://127.0.0.1:8232)
 adb root; DB=… node private.mjs      # private sessions: number made on the phone, only a key sent; chat with a session secret and no cookie, not charged to the account, each chat on its own session; a 402 (a pricey model's hold, and one injected on a tool call) tops the session up and asks again; wiped app signs in and gets every millicent back (test APK with OBSCURIFY_API=http://127.0.0.1:8231: the test records what leaves the phone)
+UPSTREAM_PORT=… DB=… node private-refused.mjs  # a chat that can't go privately is not sent and says why; free models with no money; the last cents spent; money added elsewhere found the moment a message needs it (test APK with OBSCURIFY_API=http://127.0.0.1:8232)
+UPSTREAM_PORT=… DB=… node private-timing.mjs  # a chat that needs more than the wallet holds is funded at once: no wait, $5 taken (a fixed size), sent privately (test APK with OBSCURIFY_API=http://127.0.0.1:8232)
 ```
 
 ## License

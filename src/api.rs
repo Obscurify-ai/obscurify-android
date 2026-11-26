@@ -600,6 +600,8 @@ pub struct ReplyStream {
     /// TEE verification: the receipt that signs these bytes, and the route that answered.
     pub receipt: Option<String>,
     pub route: Option<String>,
+    /// The reply got what its private session had left: if it ends at its length, that is why.
+    pub rest: bool,
     /// Encrypted mode: the key that decrypts each event, and what checking the answer needs.
     pub session: Option<obscurify_tee_verify::e2ee::Session>,
     pub sealed: Option<Sealed>,
@@ -627,6 +629,7 @@ impl ReplyStream {
             id,
             receipt: header(&r, "x-obscurify-tee-receipt"),
             route: header(&r, "x-obscurify-tee-route"),
+            rest: header(&r, unlinkable_inference::protocol::REST_HEADER).is_some(),
             session: None,
             sealed: None,
             broken: None,
@@ -738,7 +741,7 @@ const LOST_FOR: Duration = Duration::from_secs(15 * 60);
 
 async fn follow_from(id: &str, after: usize) -> Result<reqwest::Response, String> {
     let req = client().get(url(&format!("/web/replies/{id}?after={after}")));
-    let req = match crate::private::secret(Some(id)).await {
+    let req = match crate::private::reply_secret(id).await? {
         Some(secret) => req.bearer_auth(secret),
         None => with_session(req),
     };
@@ -842,15 +845,24 @@ async fn post_chat(body: &Value) -> Result<reqwest::Response, String> {
     }
 }
 
+/// How many times a request's session is topped up (each time by more: 10¢, 20¢ ... $3.20) and asked
+/// again, as the website does. With the 10¢ it opens with, up to $6.40: a pricey model's reply ($1
+/// held) to a prompt that fills its context.
+const TOP_UPS: u32 = 6;
+
 /// A chat request on this chat's private session (private.rs): its secret, no cookie, no CSRF.
 /// Tops the session up when it runs out. `None`: private sessions are off; use the cookie.
 async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>> {
     let mut passes = 0;
     let mut none: Vec<String> = Vec::new();
     let mut attempt = 0;
-    while attempt < 4 {
-        let secret = crate::private::secret(None).await?;
-        let r = match client().post(url("/web/chat/completions")).bearer_auth(&secret).json(body).go().await {
+    let mut rest = false; // nothing more to add: spend what the session has
+    while attempt <= TOP_UPS {
+        let secret = match crate::private::secret().await {
+            Ok(s) => s?,
+            Err(e) => return Some(Err(e)),
+        };
+        let r = match spend_rest(client().post(url("/web/chat/completions")).bearer_auth(&secret), rest).json(body).go().await {
             Ok(r) => r,
             Err(_) => return Some(Err(error_text(0, &Value::Null, ""))),
         };
@@ -870,19 +882,35 @@ async fn post_private(body: &Value) -> Option<Result<reqwest::Response, String>>
                 passes += 1;
                 continue;
             }
+            // Stopped while it waited for the wallet: nothing more is sent.
+            if crate::private::stopped() {
+                return Some(Err(crate::private::STOPPED_ERROR.into()));
+            }
             if !none.contains(&label) {
                 none.push(label);
                 continue;
             }
         }
         match status {
-            402 => crate::private::ran_out(&secret, attempt).await,
-            401 => crate::private::expired(&secret).await,
+            402 if rest => break,
+            402 if attempt < TOP_UPS => {
+                rest = !crate::private::ran_out(&secret, attempt).await;
+                if rest && crate::private::stopped() {
+                    return Some(Err(crate::private::STOPPED_ERROR.into()));
+                }
+            }
+            401 if attempt < TOP_UPS => crate::private::expired(&secret).await,
             _ => return Some(Err(chat_error(status, &r.text().await.unwrap_or_default()))),
         }
         attempt += 1;
     }
-    Some(Err(error_text(402, &Value::Null, "")))
+    Some(Err(crate::private::refused().await))
+}
+
+/// A request on a session with nothing more to add to it says so: the server then shortens the
+/// reply to what the session can pay for instead of refusing it.
+fn spend_rest(r: reqwest::RequestBuilder, rest: bool) -> reqwest::RequestBuilder {
+    if rest { r.header(unlinkable_inference::protocol::REST_HEADER, "1") } else { r }
 }
 
 /// A signed-in POST to a web endpoint (`/web/...`), which wants the CSRF token as well as the
@@ -891,16 +919,17 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
     // On a private session: the reply's own session for /web/replies/<id>, else this chat's.
     let reply = path.strip_prefix("/web/replies/").and_then(|r| r.split('/').next());
     let private = match reply {
-        Some(id) => crate::private::secret(Some(id)).await,
-        None => crate::private::secret(None).await,
-    };
+        Some(id) => crate::private::reply_secret(id).await,
+        None => crate::private::secret().await,
+    }
+    .map_err(|e| format!("402\u{1}{e}"))?;
     if let Some(mut secret) = private {
         // The server holds a reply's (or paid tool's) worst case first: a 402 tops this chat's
         // session up, more each time, and asks again, as post_private does.
         let mut passes = 0;
         let mut none: Vec<String> = Vec::new();
         let mut attempt = 0;
-        while attempt < 4 {
+        while attempt <= TOP_UPS {
             let r = client().post(url(path)).timeout(Duration::from_secs(timeout)).bearer_auth(&secret).json(body).go().await.map_err(|_| offline())?;
             let status = r.status().as_u16();
             let wanted = header(&r, PASS_REQUIRED);
@@ -921,17 +950,22 @@ pub async fn web_post(path: &str, body: &Value, timeout: u64) -> Result<Value, S
                 }
             }
             match status {
-                402 if reply.is_none() && attempt < 3 => crate::private::ran_out(&secret, attempt).await,
-                401 if reply.is_none() && attempt < 3 => crate::private::expired(&secret).await,
+                402 if reply.is_none() && attempt < TOP_UPS => {
+                    if !crate::private::ran_out(&secret, attempt).await && crate::private::stopped() {
+                        return Err(format!("402\u{1}{}", crate::private::STOPPED_ERROR));
+                    }
+                }
+                401 if reply.is_none() && attempt < TOP_UPS => crate::private::expired(&secret).await,
                 _ => return Err(format!("{status}\u{1}{}", error_text(status, &v, &text))),
             }
-            match crate::private::secret(None).await {
-                Some(s) => secret = s,
-                None => break,
+            match crate::private::secret().await {
+                Ok(Some(s)) => secret = s,
+                Ok(None) => break,
+                Err(e) => return Err(format!("402\u{1}{e}")),
             }
             attempt += 1;
         }
-        return Err(format!("402\u{1}{}", error_text(402, &Value::Null, "")));
+        return Err(format!("402\u{1}{}", crate::private::refused().await));
     }
     for attempt in 0..2 {
         let token = csrf().await.map_err(|e| if e == OFFLINE { offline() } else { e })?;

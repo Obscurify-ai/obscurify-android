@@ -29,7 +29,25 @@ use serde_json::{Value, json};
 use wallet::Wallet;
 
 const CSS: &str = include_str!("../assets/style.css");
-pub const FREE_MODEL: &str = "meta-llama/llama-3.3-70b-instruct";
+// KaTeX 0.19.1 for math in replies, bundled (fonts inlined in the CSS): the WebView never fetches it,
+// so nothing leaves the phone outside the app's own connection (and Tor). Loaded on the first reply
+// with math (BRIDGE asks).
+const KATEX_JS: &str = include_str!("../assets/katex/katex.min.js");
+const KATEX_CSS: &str = include_str!("../assets/katex/katex.css");
+
+fn load_katex() {
+    let text = |s: &str| serde_json::to_string(s).unwrap_or_default();
+    js(&format!(
+        "if (!window.katex) {{ const st = document.createElement('style'); st.textContent = {}; document.head.appendChild(st); \
+         const sc = document.createElement('script'); sc.textContent = {}; document.head.appendChild(sc); }} \
+         window.obsTypeset && obsTypeset();",
+        text(KATEX_CSS),
+        text(KATEX_JS)
+    ));
+}
+/// The model guests chat with: the server's guest model (`DEFAULT_FREE_MODEL`). The server still answers
+/// guests who ask for an older one with this one, so an older app works but names the wrong model.
+pub const FREE_MODEL: &str = "deepseek/deepseek-v4-flash";
 /// The Google Play build (`--features play`). Play's rules mean no payments in the app (funds and
 /// plans are handled on the website), no uncensored or roleplay models (`chat::offered`), and a
 /// content guard on every completion (`api::play_guard`). Gated where it can't be got around: the
@@ -200,12 +218,32 @@ setInterval(() => {
   }).observe(el, {childList: true, subtree: true, characterData: true});
   el.scrollTop = el.scrollHeight;
 }, 100);
+// Math: a reply's TeX comes as span.math-tex (chat.rs md) and KaTeX typesets it, as on the web. The
+// app sends KaTeX (load_katex) the first time a reply has math.
+window.obsTypeset = () => {
+  if (!window.katex) return;
+  document.querySelectorAll('span.math-tex:not([data-typeset])').forEach(el => {
+    el.setAttribute('data-typeset', '');
+    const display = el.classList.contains('math-display');
+    // A wide formula scrolls on its own instead of widening the reply.
+    if (display) Object.assign(el.style, {display: 'block', overflowX: 'auto', overflowY: 'hidden'});
+    try { katex.render(el.textContent, el, {displayMode: display, throwOnError: false, trust: false, strict: 'ignore', maxExpand: 1000, maxSize: 50}); } catch (_) {}
+  });
+};
+let mathAsked = false;
+new MutationObserver(() => {
+  if (!document.querySelector('span.math-tex:not([data-typeset])')) return;
+  if (window.katex) obsTypeset();
+  else if (!mathAsked) { mathAsked = true; dioxus.send({katex: true}); }
+}).observe(document.body, {childList: true, subtree: true});
 await new Promise(() => {});
 "#;
 
 fn js(code: &str) { document::eval(code); }
 /// Work that must finish even if the screen that started it goes away (Dioxus' `spawn` would cancel it).
 fn bg(f: impl std::future::Future<Output = ()> + 'static) { dioxus::core::spawn_forever(f); }
+/// Sets a screen's signal from a task that may outlive the screen: nothing when it's gone.
+fn put<T: 'static>(mut s: Signal<T>, v: T) { if let Ok(mut w) = s.try_write() { *w = v } }
 // Native, not a WebView timer: those stall when the app is in the background.
 async fn sleep(ms: u32) { tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await }
 pub(crate) fn open_url(url: &str) {
@@ -321,6 +359,8 @@ struct App {
     /// The plan payments already seen to have switched their plan on.
     plans_seen: Signal<Option<Vec<String>>>,
     balance: Signal<Option<f64>>,
+    /// `/account_tier`, as last read (usage bars in the menu).
+    plan: Signal<Value>,
     toast: Signal<Option<String>>,
     visible: Signal<bool>,
     /// Code Mode settings from the server (`GET /code_mode`).
@@ -356,6 +396,19 @@ impl App {
     fn model_name(&self, id: &str) -> String {
         self.models.peek().iter().find(|m| m.id == id).map(|m| m.name.clone()).unwrap_or_else(|| id.rsplit('/').next().unwrap_or(id).to_string())
     }
+    /// After a reply: its cost comes off the balance shown. A private reply asks the server
+    /// nothing: the account's own requests right after each reply would tie the two together by
+    /// timing and address (the next refresh, on opening the account screen or the app, is exact).
+    /// A reply paid by the account itself (encrypted, or private chats off) refreshes as before.
+    fn after_reply(mut self, cost: f64, by_account: bool) {
+        if by_account || !private::on() {
+            return self.refresh_balance();
+        }
+        if cost <= 0.0 { return }
+        let now = *self.balance.peek();
+        self.balance.set(now.map(|b| (b - cost).max(0.0)));
+        bg(async move { private::note_cost(cost).await });
+    }
     /// Balance, and what the plan unlocks (the model picker lists the rest last).
     fn refresh_balance(mut self) {
         if !api::has_session() { return }
@@ -363,16 +416,19 @@ impl App {
             code::load(self).await;
             api::refresh_mirrors().await;
             if let Ok(v) = api::get("/get_user_balance").await {
-                // Plus what this phone holds for private chats: still the customer's money.
+                // Plus what this phone's wallet holds: still the customer's money.
                 let held = private::spending().await["prepaid_millicents"].as_i64().unwrap_or(0) as f64 / 100_000.0;
                 self.balance.set(v["balance"].as_f64().map(|b| b + held))
             }
             if let Ok(v) = api::get("/account_tier").await {
+                sync::note_plan(&v);
+                self.plan.set(v.clone());
                 let tier = v["tier"].as_str().unwrap_or("");
                 self.access.set(Some(Access {
                     frontier: v["can_access_frontier"].as_bool().unwrap_or(tier != "pay_as_you_go"),
                     uncensored: v["can_access_uncensored"].as_bool().unwrap_or(tier == "pro"),
                 }));
+                chat::set_locks(v["frontier_lock"].as_str(), v["uncensored_lock"].as_str());
                 self.plan_defaults.set(v["default_models"].as_array().into_iter().flatten().filter_map(|m| m.as_str().map(String::from)).collect());
                 chat::open_on_plan_default(self);
             }
@@ -396,6 +452,7 @@ impl App {
         self.convs.set(vec![]);
         self.conv.set(Conv::new());
         self.balance.set(None);
+        self.plan.set(Value::Null);
         self.access.set(None);
         self.plan_defaults.set(vec![]);
         chat::PLAN_DEFAULT_DONE.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -435,6 +492,10 @@ impl App {
                 } else if added > 0 && !for_plan {
                     self.say(format!("{} added to your balance", cents(added)))
                 }
+                if added > 0 || plan_on {
+                    // A payment seen is a moment of the account's own: the wallet may ask it now.
+                    private::money_added().await;
+                }
                 if changed || plan_on {
                     self.refresh_balance()
                 }
@@ -458,7 +519,11 @@ impl App {
             }
             if *self.screen.peek() != Screen::Login && *self.screen.peek() != Screen::Signup && w.vouchers.iter().any(|v| !v.invalid && v.due <= store::now()) {
                 match wallet::redeem(&mut w, false).await {
-                    Ok(c) if c > 0.0 => { self.say(format!("{} added to your balance", usd(c))); self.refresh_balance(); }
+                    Ok(c) if c > 0.0 => {
+                        self.say(format!("{} added to your balance", usd(c)));
+                        bg(private::money_added());
+                        self.refresh_balance();
+                    }
                     Err(e) if force => self.say(e),
                     _ => {}
                 }
@@ -539,6 +604,7 @@ fn Root() -> Element {
             plans_seen: Signal::new(None),
             top_up_seen: Signal::new(None),
             balance: Signal::new(None),
+            plan: Signal::new(Value::Null),
             toast: Signal::new(None),
             visible: Signal::new(true),
             code: Signal::new(code::Config::default()),
@@ -644,6 +710,8 @@ fn Root() -> Element {
         while let Ok(v) = e.recv::<Value>().await {
             if let Some(s) = v["sandbox"].as_str() {
                 code::on_sandbox(s)
+            } else if v["katex"] == true {
+                load_katex()
             } else if let Some(url) = v["link"].as_str() {
                 open_url(url)
             } else if v["back"] == true {
@@ -1045,18 +1113,61 @@ fn Signup() -> Element {
 
 // ---- account ----
 
-/// "Created 2026-11-19 · 3 requests, $0.12 · $5.00 to private sessions" for a key from `/web/api_keys`.
-fn key_facts(k: &Value) -> String {
+/// "Created 2026-11-19 · $5.12 used" for a key from `/web/api_keys`.
+/// `held`: what this phone's wallet took with the key and still holds.
+fn key_facts(k: &Value, held: f64) -> String {
     let mut facts = vec![format!("Created {}", k["created_at"].as_str().unwrap_or_default().get(..10).unwrap_or_default())];
-    let requests = k["requests"].as_i64().unwrap_or(0);
-    if requests > 0 {
-        facts.push(format!("{requests} request{}, {}", if requests == 1 { "" } else { "s" }, usd(k["spent_usd"].as_f64().unwrap_or(0.0))));
+    let used = k["spent_usd"].as_f64().unwrap_or(0.0) + k["private_usd"].as_f64().unwrap_or(0.0) - held;
+    if used > 0.0 {
+        facts.push(format!("{} used", usd(used)));
     }
-    let private = k["private_usd"].as_f64().unwrap_or(0.0);
-    if private > 0.0 {
-        facts.push(format!("{} to private sessions", usd(private)));
+    if let Some(limit) = k["monthly_limit_usd"].as_f64() {
+        facts.push(format!("{} of its {} limit this month", usd(k["month_usd"].as_f64().unwrap_or(0.0)), usd(limit)));
     }
     facts.join(" · ")
+}
+
+/// "Sun 7:30 AM", in the phone's time (`iso` is the server's UTC time).
+pub fn local_time(iso: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(iso) {
+        Ok(t) => t.with_timezone(&chrono::Local).format("%a %-I:%M %p").to_string(),
+        Err(_) => iso.get(..16).unwrap_or(iso).replace('T', " "),
+    }
+}
+
+/// Usage bars for plans with weekly or 5-hour limits: percent used and when it starts over. The 5
+/// hours show on plans for agents (key limits), or once they're used up.
+#[component]
+pub fn UsageBars() -> Element {
+    let app = use_context::<App>();
+    // As of now, whenever the menu opens (a chat still being answered has spent some already).
+    use_hook(|| bg(async move {
+        if app.plan.peek()["usage_week"].is_object() && let Ok(v) = api::get("/account_tier").await {
+            let mut plan = app.plan;
+            plan.set(v);
+        }
+    }));
+    let t = app.plan.read().clone();
+    let bars: Vec<(&str, f64, String)> = [("This week", "usage_week"), ("5 hours", "usage_5h")].into_iter().filter_map(|(label, key)| {
+        let w = &t[key];
+        let (used, limit) = (w["used"].as_f64()?, w["limit"].as_f64().filter(|l| *l > 0.0)?);
+        if key == "usage_5h" && t["tier"].as_str() != Some("pro") && used < limit { return None }
+        let at = w["frees_at"].as_str().map(local_time).unwrap_or_default();
+        let at = match (key, at.split_once(' ')) {
+            (_, None) => String::new(),
+            ("usage_week", Some((day, _))) => format!(" · Resets {day}"),
+            (_, Some((_, time))) => format!(" · Resets {time}"),
+        };
+        Some((label, (100.0 * used / limit).min(100.0).round(), at))
+    }).collect();
+    rsx! {
+        for (label, pct, at) in bars {
+            div { class: "usage", key: "{label}",
+                div { class: "muted", "{label}: {pct}%{at}" }
+                div { class: "track", div { class: if pct >= 100.0 { "fill full" } else { "fill" }, style: "width: {pct}%" } }
+            }
+        }
+    }
 }
 
 /// Named API keys under the Default one: one per tool, each revocable on its
@@ -1068,11 +1179,17 @@ fn NamedKeys() -> Element {
     let mut name = use_signal(String::new);
     let mut made = use_signal(|| None::<(String, String)>);
     let mut revoking = use_signal(|| None::<String>);
+    let mut limits = use_signal(|| false);
+    let mut limiting = use_signal(|| None::<(String, String)>);
     let mut busy = use_signal(|| false);
     let mut default_key = use_signal(|| None::<Value>);
+    let mut held = use_signal(|| 0.0);
     let load = move || bg(async move {
         if let Ok(v) = api::get("/web/api_keys").await {
+            limits.set(v["key_limits"].as_bool().unwrap_or(false));
             let all = v["api_keys"].as_array().cloned().unwrap_or_default();
+            // This phone's wallet takes its money with the Default key; what it holds isn't used yet.
+            held.set(held_in(&private::spending().await));
             default_key.set(all.iter().find(|k| k["kind"] == "default").cloned());
             keys.set(all.into_iter().filter(|k| k["kind"] != "default").collect());
         }
@@ -1103,15 +1220,25 @@ fn NamedKeys() -> Element {
             }
         })
     };
+    let set_limit = move || {
+        let Some((id, amount)) = limiting.peek().clone() else { return };
+        let amount = amount.trim().trim_start_matches('$').to_string();
+        bg(async move {
+            match api::post(&format!("/web/api_keys/{id}/limit"), json!({"monthly_limit_usd": if amount.is_empty() { Value::Null } else { json!(amount) }})).await {
+                Ok(_) => { limiting.set(None); load() }
+                Err(e) => app.say(e),
+            }
+        })
+    };
     let list: Vec<(String, String, String, String)> = keys.read().iter().map(|k| (
         k["id"].as_str().unwrap_or_default().to_string(),
         k["name"].as_str().unwrap_or_default().to_string(),
         k["masked_key"].as_str().unwrap_or_default().to_string(),
-        key_facts(k),
+        key_facts(k, 0.0),
     )).collect();
     rsx! {
         if let Some(d) = default_key.read().as_ref() {
-            p { class: "muted", id: "default-key-facts", style: "font-size: 12px; margin: 4px 0 8px", "Default key: {key_facts(d)}" }
+            p { class: "muted", id: "default-key-facts", style: "font-size: 12px; margin: 4px 0 8px", "Default key: {key_facts(d, *held.read())}" }
         }
         for (id, key_name, masked, facts) in list {
             div { class: "api-key", key: "{id}",
@@ -1124,6 +1251,16 @@ fn NamedKeys() -> Element {
                     if revoking.read().as_deref() != Some(id.as_str()) {
                         button { class: "bare", onclick: { let id = id.clone(); move |_| revoking.set(Some(id.clone())) }, "Revoke…" }
                     }
+                }
+                if limiting.read().as_ref().is_some_and(|(l, _)| *l == id) {
+                    div { class: "row",
+                        input { r#type: "text", inputmode: "decimal", id: "key-limit", class: "grow", placeholder: "Dollars a month, empty for no limit",
+                            value: "{limiting.read().as_ref().map(|l| l.1.clone()).unwrap_or_default()}",
+                            oninput: { let id = id.clone(); move |e| limiting.set(Some((id.clone(), e.value()))) } }
+                        button { class: "go", id: "key-limit-save", onclick: move |_| set_limit(), "Save" }
+                    }
+                } else if limits() || facts.contains(" limit this month") {
+                    button { class: "bare key-limit", style: "padding-left: 0", onclick: { let id = id.clone(); move |_| limiting.set(Some((id.clone(), String::new()))) }, "Monthly limit…" }
                 }
                 if revoking.read().as_deref() == Some(id.as_str()) {
                     div { class: "row",
@@ -1156,12 +1293,12 @@ fn NamedKeys() -> Element {
 #[component]
 fn Account() -> Element {
     let app = use_context::<App>();
-    let mut tier = use_signal(|| Value::Null);
-    let mut tiers = use_signal(|| Value::Null);
-    let mut referral = use_signal(|| Value::Null);
+    let tier = use_signal(|| Value::Null);
+    let tiers = use_signal(|| Value::Null);
+    let referral = use_signal(|| Value::Null);
     let mut tx_rev = use_signal(|| 0u32);
-    // What this phone's private chats cost (the server can't list them).
-    let mut mine = use_signal(|| Value::Null);
+    // What this phone's wallet holds: counted as used by the server, not used yet.
+    let mine = use_signal(|| Value::Null);
     let mut refill = use_signal(|| Value::Null);
     let mut key = use_signal(|| None::<String>);
     let mut new_number = use_signal(|| None::<String>);
@@ -1180,18 +1317,20 @@ fn Account() -> Element {
     let mut plan_ask = use_signal(|| None::<String>);
     let mut deleting = use_signal(|| false);
 
+    // Outlives the screen (the answers come after it may have closed): nothing is set on a
+    // screen that's gone.
     let load = move || {
         app.refresh_balance();
         bg(async move {
-            if let Ok(v) = api::get("/account_tier").await { tier.set(v) }
+            if let Ok(v) = api::get("/account_tier").await { put(tier, v) }
             if !PLAY {
                 // With the account's key: the plans and prices are this account's.
-                if let Ok(v) = api::get("/available_tiers").await { tiers.set(v) }
-                if let Ok(v) = api::get("/referral_info").await { referral.set(v) }
+                if let Ok(v) = api::get("/available_tiers").await { put(tiers, v) }
+                if let Ok(v) = api::get("/referral_info").await { put(referral, v) }
             }
-            mine.set(private::spending().await);
-            tx_rev += 1;
-            if let Ok(v) = api::get("/auto_refill_status").await { refill.set(v) }
+            put(mine, private::spending().await);
+            if let Ok(mut r) = tx_rev.try_write() { *r += 1 }
+            if let Ok(v) = api::get("/auto_refill_status").await { put(refill, v) }
         });
     };
     use_hook(load);
@@ -1216,7 +1355,14 @@ fn Account() -> Element {
         let plan_id = listed(&t)["plan_id"].clone();
         bg(async move {
             match api::call("POST", "/change_tier", Some(json!({"tier": t, "payment_method": "balance", "plan_id": plan_id}))).await {
-                Ok(v) => { app.say(v["message"].as_str().unwrap_or("Plan changed").to_string()); load() }
+                Ok(v) => {
+                    app.say(v["message"].as_str().unwrap_or("Plan changed").to_string());
+                    load();
+                    // A plan bought here is a moment of the account's own: the wallet asks for
+                    // what the new plan gives now, so its models open in the next chat. On its own
+                    // task: it outlives this screen.
+                    bg(private::money_added())
+                }
                 Err(e) if api::status_of(&e).0 == 402 => buy_plan(&t),
                 Err(e) => app.say(api::msg(e)),
             }
@@ -1269,6 +1415,12 @@ fn Account() -> Element {
                         if t["included_credit"].as_f64().unwrap_or(0.0) > 0.0 {
                             p { class: "muted", "{usd(t[\"credit_used\"].as_f64().unwrap_or(0.0))} of {usd(t[\"included_credit\"].as_f64().unwrap_or(0.0))} included usage used" }
                         }
+                        // Plans that pace their included usage: this week and these 5 hours.
+                        for (label, key) in [("This week", "usage_week"), ("These 5 hours", "usage_5h")] {
+                            if t[key].is_object() {
+                                p { class: "muted", "{label}: {usd(t[key][\"used\"].as_f64().unwrap_or(0.0))} of {usd(t[key][\"limit\"].as_f64().unwrap_or(0.0))} of it" }
+                            }
+                        }
                         if let Some(d) = t["next_charge_date"].as_str() { p { class: "muted", "Renews {d.get(..10).unwrap_or(d)} from your balance" } }
                         p { class: "muted", "Tokens this period: {t[\"input_tokens_used\"]} in, {t[\"output_tokens_used\"]} out" }
                     }
@@ -1286,17 +1438,26 @@ fn Account() -> Element {
                             let pay = id.clone();
                             let credit = x["included_credit"].as_f64().unwrap_or(0.0);
                             let what = match id.as_str() {
-                                // Plans that sell usage only (every model open): the server words them.
-                                _ if x["all_models"].as_bool() == Some(true) => x["description"].as_str().unwrap_or("").to_string(),
+                                // A plan with terms of its own (weekly limits, a bonus, usage only): the server words it.
+                                _ if x["own_words"].as_bool() == Some(true) || x["all_models"].as_bool() == Some(true) => x["description"].as_str().unwrap_or("").to_string(),
                                 "casual" => format!("Frontier models, {} of usage included", usd(credit)),
                                 "pro" => format!("API access, frontier and uncensored models, {} of usage included", usd(credit)),
                                 _ => "Pay only for what you use".to_string(),
                             };
+                            // A plan worded by the server in parts: one point to a line, the terms under them, as on the web.
+                            let points: Vec<String> = if x["own_words"].as_bool() == Some(true) {
+                                x["points"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(str::to_string)).collect()
+                            } else { vec![] };
+                            let terms = x["terms"].as_str().unwrap_or("").to_string();
                             rsx! {
                                 div { class: "row",
                                     div { class: "grow",
                                         div { class: if on { "ok" } else { "" }, "{name} · {usd(fee)}/mo" }
-                                        div { class: "muted", "{what}" }
+                                        if points.is_empty() { div { class: "muted", "{what}" } }
+                                        else {
+                                            for p in points.iter() { div { class: "muted point", "{p}" } }
+                                            if !terms.is_empty() { div { class: "muted terms", "{terms}" } }
+                                        }
                                     }
                                     if on { span { class: "ok", "Current" } }
                                     else { button { onclick: { let i = id.clone(); move |_| ask(i.clone()) }, if up { "Upgrade" } else { "Switch" } } }
@@ -1450,7 +1611,7 @@ fn Account() -> Element {
                         }
                     }
                 }
-                History { rev: tx_rev, mine }
+                History { rev: tx_rev, mine, tier }
                 div { class: "section",
                     if *confirm.read() == Some("out") {
                         p { class: "muted", "Chats on this phone are deleted. Make sure you have your account code (or number)." }
@@ -1498,7 +1659,7 @@ fn Account() -> Element {
 /// Transaction history, like the web account page: spending per day, week or month (tap one for its
 /// charges), or every charge. Paged on the server: heavy accounts have tens of thousands of charges.
 #[component]
-fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
+fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>, tier: ReadSignal<Value>) -> Element {
     const PAGE: i64 = 50;
     const PERIODS: i64 = 31;
     let mut view = use_signal(|| "day");
@@ -1507,34 +1668,31 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
     let mut p_offset = use_signal(|| 0i64);
     let mut opened = use_signal(String::new); // the charge whose details show
     let data = use_resource(move || {
-        let (v, off, per, poff, _, mine) = (view(), offset(), period(), p_offset(), rev(), mine());
+        let (v, off, per, poff, _, mine, tier) = (view(), offset(), period(), p_offset(), rev(), mine(), tier());
         async move {
             let q = |s: &str| s.replace('+', "%2B");
-            // One row before the page too (when there is one): it bounds which of
-            // this device's private chats belong on this page.
-            let limit = |page: i64, o: i64| (page + (o > 0) as i64, (o - 1).max(0));
-            let spent = private_spent(&mine);
+            // While the plan's included credit lasts, it paid for the newest money moved into the
+            // wallet (credit goes first), so nothing comes off the account's charges.
+            let credit_left = tier["included_credit"].as_f64().unwrap_or(0.0) - tier["credit_used"].as_f64().unwrap_or(0.0);
+            let held = if credit_left < 0.005 { held_in(&mine) } else { 0.0 };
             if per.is_some() || v == "all" {
                 let o = if per.is_some() { poff } else { off };
-                let (l, st) = limit(PAGE, o);
-                let mut url = format!("/transactions?limit={l}&offset={st}");
+                let mut url = format!("/transactions?all=true&limit={PAGE}&offset={o}");
                 if let Some(p) = &per {
                     url += &format!("&from={}&to={}", q(p["from"].as_str().unwrap_or("")), q(p["to"].as_str().unwrap_or("")));
                 }
                 let mut d = api::get(&url).await?;
-                merge_private_charges(&mut d, per.as_ref(), o, &spent);
+                if o == 0 { cut_charges(&mut d, per.as_ref().map_or(held, |p| p["cut"].as_f64().unwrap_or(0.0))) }
                 Ok::<Value, String>(d)
             } else {
                 let tz = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into());
-                let (l, st) = limit(PERIODS, off);
-                let mut d = api::get(&format!("/transactions/summary?period={v}&tz={}&limit={l}&offset={st}", q(&tz))).await?;
-                merge_private_periods(&mut d, v, off, &spent);
+                let mut d = api::get(&format!("/transactions/summary?all=true&period={v}&tz={}&limit={PERIODS}&offset={off}", q(&tz))).await?;
+                if off == 0 { cut_periods(&mut d, held) }
                 Ok(d)
             }
         }
     });
     let n = |v: &Value| -> f64 { v.as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0) };
-    let plural = |k: i64, w: &str| format!("{k} {w}{}", if k == 1 { "" } else { "s" });
     let label = move |ymd: &str| -> String {
         let Ok(d) = chrono::NaiveDate::parse_from_str(ymd, "%Y-%m-%d") else { return ymd.to_string() };
         let this_year = d.format("%Y").to_string() == chrono::Local::now().format("%Y").to_string();
@@ -1544,12 +1702,19 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
             _ => d.format(if this_year { "%a, %b %-d" } else { "%a, %b %-d, %Y" }).to_string(),
         }
     };
-    let when = move |at: &str| -> String {
+    // `day_only`: money moved into a wallet keeps only its day (noon UTC on the server), so it has
+    // no time to show.
+    let when = move |at: &str, day_only: bool| -> String {
         let Ok(t) = chrono::DateTime::parse_from_rfc3339(at) else { return at.to_string() };
         let t = t.with_timezone(&chrono::Local);
-        if period().is_some() && view() == "day" { return t.format("%-I:%M %p").to_string() }
+        let in_a_day = period().is_some() && view() == "day";
         let this_year = t.format("%Y").to_string() == chrono::Local::now().format("%Y").to_string();
-        t.format(if this_year { "%b %-d, %-I:%M %p" } else { "%b %-d %Y, %-I:%M %p" }).to_string()
+        match (day_only, in_a_day) {
+            (true, true) => String::new(),
+            (true, false) => t.format(if this_year { "%b %-d" } else { "%b %-d %Y" }).to_string(),
+            (false, true) => t.format("%-I:%M %p").to_string(),
+            (false, false) => t.format(if this_year { "%b %-d, %-I:%M %p" } else { "%b %-d %Y, %-I:%M %p" }).to_string(),
+        }
     };
     let unit = match view() { "week" => "week", "month" => "month", _ => "day" };
     let result = data.read().clone();
@@ -1614,7 +1779,6 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
                     let rows = d["transactions"].as_array().cloned().unwrap_or_default();
                     let total = d["total"].as_i64().unwrap_or(0);
                     let server_rows = d["server_rows"].as_i64().unwrap_or(rows.len() as i64);
-                    let has_private = server_rows < rows.len() as i64;
                     let off = if period().is_some() { p_offset() } else { offset() };
                     let mut page = move |o: i64| if period().is_some() { p_offset.set(o) } else { offset.set(o) };
                     rsx! {
@@ -1631,7 +1795,7 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
                                 rsx! {
                                     div { class: if paid.is_some() { "row tap" } else { "row" },
                                         onclick: move |_| if paid.is_some() { opened.set(if opened() == id { String::new() } else { id.clone() }) },
-                                        div { class: "grow", div { "{name}" } div { class: "muted", {when(x["created_at"].as_str().unwrap_or(""))} }
+                                        div { class: "grow", div { "{name}" } div { class: "muted", {when(x["created_at"].as_str().unwrap_or(""), matches!(x["transaction_type"].as_str(), Some("voucher_withdrawal" | "free_to_wallet")))} }
                                             if open_this { div { class: "muted detail", {x["detail"].as_str().map(|d| format!("Paid with {}", match d { "Card" => "card", "Blind voucher" => "a blind voucher", o => o })).unwrap_or_default()} } }
                                         }
                                         span { class: if a > 0.0 { "ok" } else if a < 0.0 { "debit" } else { "" },
@@ -1642,8 +1806,7 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
                         }
                         div { class: "pager",
                             span { class: "muted grow",
-                                if has_private { {plural(rows.len() as i64, "charge")} }
-                                else if total > 0 { "{off + 1}–{off + rows.len() as i64} of {total}" }
+                                if total > 0 { "{off + 1}–{off + rows.len() as i64} of {total}" }
                             }
                             if period().is_some() { button { onclick: move |_| period.set(None), "Back" } }
                             button { disabled: off == 0, onclick: move |_| page((off - PAGE).max(0)), "Newer" }
@@ -1656,93 +1819,48 @@ fn History(rev: ReadSignal<u32>, mine: ReadSignal<Value>) -> Element {
     }
 }
 
-// ---- private chats in the history ----
-// The server can't list them (they're paid from money this phone holds for them,
-// which it can't tie to the account); this phone keeps what each one cost.
+// ---- money the wallet here still holds ----
+// The server counts money moved into the wallet as used (all=true); what this phone still holds
+// isn't yet, so it comes off the newest usage.
 
-fn private_spent(mine: &Value) -> Vec<(i64, f64)> {
-    mine["spent"].as_array().map(|a| a.iter().map(|e| (e["at"].as_i64().unwrap_or(0), e["millicents"].as_i64().unwrap_or(0) as f64 / 100_000.0)).collect()).unwrap_or_default()
-}
+/// Dollars this phone's wallet holds.
+fn held_in(mine: &Value) -> f64 { mine["prepaid_millicents"].as_i64().unwrap_or(0) as f64 / 100_000.0 }
 
 fn num(v: &Value) -> f64 { v.as_str().and_then(|s| s.parse().ok()).or(v.as_f64()).unwrap_or(0.0) }
 
-/// What a period cost: the account's charges plus this device's private chats.
-fn spent_in(p: &Value) -> f64 { num(&p["spent"]) + p["private_usd"].as_f64().unwrap_or(0.0) }
+/// What a period cost, without what isn't used yet.
+fn spent_in(p: &Value) -> f64 { (num(&p["spent"]) - p["cut"].as_f64().unwrap_or(0.0)).max(0.0) }
 
 fn period_detail(p: &Value) -> Vec<String> {
     let plural = |k: i64, w: &str| format!("{k} {w}{}", if k == 1 { "" } else { "s" });
     let mut d = vec![];
-    let chats = p["private_chats"].as_i64().unwrap_or(0);
-    if chats > 0 { d.push(plural(chats, "private chat")) }
     let reqs = p["requests"].as_i64().unwrap_or(0);
-    if reqs > 0 { d.push(plural(reqs, "request")) }
+    // Wallet money pays for requests nobody can count.
+    if reqs > 0 && num(&p["wallet"]) == 0.0 { d.push(plural(reqs, "request")) }
     if num(&p["plan"]) != 0.0 { d.push(format!("plan {}", usd(num(&p["plan"])))) }
     d
 }
 
-/// The local period (day, week from Monday, month) holding Unix time `at`: (start date, from, to).
-fn local_period(view: &str, at: i64) -> Option<(String, String, String)> {
-    use chrono::{Datelike, Duration, Months, TimeZone};
-    let day = chrono::Local.timestamp_opt(at, 0).single()?.date_naive();
-    let start = match view {
-        "week" => day - Duration::days(day.weekday().num_days_from_monday() as i64),
-        "month" => day.with_day(1)?,
-        _ => day,
-    };
-    let end = match view { "week" => start + Duration::days(7), "month" => start.checked_add_months(Months::new(1))?, _ => start + Duration::days(1) };
-    let at_midnight = |d: chrono::NaiveDate| chrono::Local.from_local_datetime(&d.and_hms_opt(0, 0, 0)?).earliest().map(|t| t.to_rfc3339());
-    Some((start.format("%Y-%m-%d").to_string(), at_midnight(start)?, at_midnight(end)?))
+/// Takes up to `left` dollars off the newest periods' wallet money.
+fn cut_periods(d: &mut Value, mut left: f64) {
+    for p in d["periods"].as_array_mut().into_iter().flatten() {
+        let cut = left.min(num(&p["wallet"]));
+        if cut > 0.0 { p["cut"] = json!(cut); left -= cut }
+    }
 }
 
-/// Adds this device's private chats to a page of `/transactions/summary` (fetched with one extra
-/// row before the page when `off > 0`).
-fn merge_private_periods(d: &mut Value, view: &str, off: i64, spent: &[(i64, f64)]) {
-    let has_more = d["has_more"].as_bool().unwrap_or(false);
-    let mut periods = d["periods"].as_array().cloned().unwrap_or_default();
-    let upper = if off > 0 { Some(if periods.is_empty() { String::new() } else { periods.remove(0)["date"].as_str().unwrap_or("").to_string() }) } else { None };
-    let lower = if has_more { periods.last().and_then(|p| p["date"].as_str()).map(str::to_string) } else { None };
-    let mut mine: std::collections::BTreeMap<String, (String, String, f64, i64)> = Default::default();
-    for &(at, usd) in spent {
-        if let Some((date, from, to)) = local_period(view, at) {
-            let e = mine.entry(date).or_insert((from, to, 0.0, 0));
-            e.2 += usd;
-            e.3 += 1;
-        }
-    }
-    for (date, (from, to, usd, chats)) in mine {
-        if upper.as_ref().is_some_and(|u| date >= *u) || lower.as_ref().is_some_and(|l| date < *l) { continue }
-        let i = match periods.iter().position(|p| p["date"] == date.as_str()) {
-            Some(i) => i,
-            None => {
-                periods.push(json!({"date": date, "from": from, "to": to, "spent": "0", "added": "0", "requests": 0, "plan": "0", "wallet": "0"}));
-                periods.len() - 1
-            }
-        };
-        periods[i]["private_usd"] = json!(usd);
-        periods[i]["private_chats"] = json!(chats);
-    }
-    periods.sort_by(|a, b| b["date"].as_str().cmp(&a["date"].as_str()));
-    d["periods"] = Value::Array(periods);
-}
-
-/// Adds this device's private chats to a page of `/transactions` (fetched with one extra row
-/// before the page when `off > 0`), as "Private chat" charges.
-fn merge_private_charges(d: &mut Value, period: Option<&Value>, off: i64, spent: &[(i64, f64)]) {
-    let total = d["total"].as_i64().unwrap_or(0);
-    let mut rows = d["transactions"].as_array().cloned().unwrap_or_default();
-    let ts = |v: &Value| chrono::DateTime::parse_from_rfc3339(v.as_str().unwrap_or("")).map(|t| t.timestamp()).ok();
-    let upper = if off > 0 { if rows.is_empty() { i64::MIN } else { ts(&rows.remove(0)["created_at"]).unwrap_or(i64::MAX) } } else { i64::MAX };
-    let lower = if off + (rows.len() as i64) < total { rows.last().and_then(|r| ts(&r["created_at"])).unwrap_or(i64::MIN) } else { i64::MIN };
-    let from = period.and_then(|p| ts(&p["from"])).unwrap_or(i64::MIN).max(lower);
-    let to = period.and_then(|p| ts(&p["to"])).unwrap_or(i64::MAX).min(upper);
-    let server_rows = rows.len();
-    for &(at, usd) in spent.iter().filter(|(at, _)| *at >= from && *at < to) {
-        let when = chrono::DateTime::from_timestamp(at, 0).map(|t| t.to_rfc3339()).unwrap_or_default();
-        rows.push(json!({"created_at": when, "label": "Private chat", "amount": format!("{}", -usd)}));
-    }
-    rows.sort_by_key(|r| std::cmp::Reverse(ts(&r["created_at"]).unwrap_or(0)));
-    d["transactions"] = Value::Array(rows);
-    d["server_rows"] = json!(server_rows);
+/// The same for a list of charges; one that isn't used at all yet isn't listed.
+fn cut_charges(d: &mut Value, mut left: f64) {
+    let Some(rows) = d["transactions"].as_array_mut() else { return };
+    let total = rows.len();
+    rows.retain_mut(|t| {
+        if !matches!(t["transaction_type"].as_str(), Some("voucher_withdrawal" | "free_to_wallet")) { return true }
+        let used = -num(&t["amount"]);
+        let cut = left.min(used);
+        if cut > 0.0 { left -= cut; t["amount"] = json!((cut - used).to_string()) }
+        used - cut > 0.000005
+    });
+    d["server_rows"] = json!(total);
 }
 
 fn capitalize(s: &str) -> String {
@@ -2212,7 +2330,7 @@ fn Funds() -> Element {
                                         }
                                         button { class: "go", onclick: move |_| bg(async move {
                                             let mut w = Wallet::load();
-                                            match wallet::redeem(&mut w, true).await { Ok(c) => { app.say(format!("{} added", usd(c))); app.refresh_balance() } Err(e) => app.say(e) }
+                                            match wallet::redeem(&mut w, true).await { Ok(c) => { app.say(format!("{} added", usd(c))); bg(private::money_added()); app.refresh_balance() } Err(e) => app.say(e) }
                                             let mut ws = app.wallet; ws.set(w);
                                         }), "Add now" }
                                     }
@@ -2233,7 +2351,7 @@ fn Funds() -> Element {
                         if codes.is_empty() { return }
                         bg(async move {
                             match api::post("/vouchers/redeem", json!({"vouchers": codes})).await {
-                                Ok(v) => { app.say(format!("{} added", usd(v["credited_usd"].as_f64().unwrap_or(0.0)))); app.refresh_balance(); code.set(String::new()); js("document.querySelector('textarea.field').value = ''") }
+                                Ok(v) => { app.say(format!("{} added", usd(v["credited_usd"].as_f64().unwrap_or(0.0)))); bg(private::money_added()); app.refresh_balance(); code.set(String::new()); js("document.querySelector('textarea.field').value = ''") }
                                 Err(e) => app.say(e),
                             }
                         })
