@@ -218,8 +218,9 @@ waiting for Tony's approval.
 
 - **The `ios` branch lags `main`**: every Android release is made from `main`, so iOS only gets it when
   `main` is merged in by hand (37 commits behind on 2026-11-26, guests still named Llama). The fix is
-  Tony's call: merge `ios` into `main` (all of it is `cfg`-gated or harmless on Android) so one
-  branch builds both, or merge `main` into `ios` and upload with every release.
+  Tony's call: merge `ios` into `main` so one branch builds both (most of it is `cfg`-gated; the
+  shared changes, `away()` gating, bare links, model names drawn again, would ship to Android
+  with the next release, so they want an Android e2e run first), or merge `main` into `ios` and upload with every release.
 - **On the test iPhone**: the attach picker, and the "answer ready" notification on screen (handed to
   iOS, never seen as a banner).
 - **More of the Android e2e on iOS**: sign in with a code and a number, sync, Encrypted, edit/retry/stop,

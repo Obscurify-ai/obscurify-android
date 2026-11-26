@@ -354,8 +354,17 @@ try {
   await controls();
 } catch (e) {
   ok(false, 'stopped: ' + (e && e.message || e));
-  // Never a screenshot of a real account code (artifacts are public).
+  // Never a screenshot of a real account code (artifacts are public): not on its screen, not typed
+  // into the sign-in field.
+  if ($('#login-words')) { $('#login-words').value = ''; $('#login-words').dispatchEvent(new Event('input', {bubbles: true})); }
   if (!byText('h1', 'Your account code')) await shot('error');
+  // Signed out by the sign-in step and not back in: sign in again so the account can be deleted.
+  if (madeAccount && accountCode && $('#login-words')) {
+    await type('#login-words', accountCode);
+    await click('.login button.go', 'Sign In').catch(() => {});
+    await until(() => $('#composer'), 60000, 'the chat').catch(() => {});
+    if ($('#login-words')) { $('#login-words').value = ''; $('#login-words').dispatchEvent(new Event('input', {bubbles: true})); }
+  }
   if (madeAccount) {
     if (byText('h1', 'Your account code')) { $('.login .check input').click(); await sleep(500); await click('button.go', 'Start Chatting').catch(() => {}); }
     await deleteAccount().then(() => log('the account made by this run was deleted'), e => ok(false, "couldn't delete the account this run made: " + e.message));
