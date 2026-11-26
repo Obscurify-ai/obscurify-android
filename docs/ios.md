@@ -65,7 +65,7 @@ is on the App Store in France. Under US rules this is mass-market encryption, an
 uses encryption, standard algorithms; then upload the French declaration or leave France out.
 **Tony, 2026-11-23: file the French declaration and keep France.**
 
-Not set in Info.plist for now (2026-11-25): with YES there, App Store validation wants the `ITSEncryptionExportComplianceCode` that approved documentation gives (error 90592), and the French declaration isn't filed yet. Each build's answer is given in App Store Connect until then; once Apple approves the documentation, its code goes in Info.plist (`tools/ios.sh` bundle).
+Not set in Info.plist for now (2026-11-25): with YES there, App Store validation wants the `ITSEncryptionExportComplianceCode` that approved documentation gives (error 90592), and the French declaration isn't filed yet. Each build's answer is given in App Store Connect until then; once Apple approves the documentation, its code goes in Info.plist (`tools/ios.sh` bundle). Builds are answered "standard encryption, not available in France" (exempt), so **France stays out of Pricing and Availability** until the French declaration is approved; then add France and the code.
 
 ## What's different on iOS
 
