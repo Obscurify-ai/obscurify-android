@@ -137,7 +137,7 @@ async function guest() {
 // Answers go on with the app in the background (another app in front), every way an answer is made,
 // each scripted at the proxy to take a while but less than the half minute iOS gives any app (the
 // simulator has no continued processing task, so past that it suspends the app; past the half
-// minute is checked on the test iPhone, docs/ios.md): Code Mode with code that runs 12 s, a tool
+// minute is checked on the test iPhone, docs/ios.md): Code Mode with code that runs 15 s, a tool
 // the model calls directly, and plain chat. The host sends the app away
 // as soon as the answer starts and judges each from the app's own log. Then the app must still
 // answer (dioxus#4374: the WebView's edits socket can die in the background). Last, because the
@@ -175,10 +175,10 @@ async function background(signedIn) {
   const who = signedIn ? 'signed-in ' : '';
   if (!signedIn) {
     await switches(true, true);
-    await script([{code: 'import time\nfor i in range(12):\n    print("tick", i, flush=True)\n    time.sleep(1)\nprint("ran 12 s")'},
-                  {text: 'The code ran. ' + words(60), slow: 6000}]);
+    await script([{code: 'import time\nfor i in range(15):\n    print("tick", i, flush=True)\n    time.sleep(1)\nprint("ran 15 s")'},
+                  {text: 'The code ran. ' + words(80), slow: 8000}]);
     await away('code', 'Run the slow code.', 120, r => {
-      ok(!!r.querySelector('.run.ok') && /ran 12 s/.test(text(r)), 'Code Mode in the background: the code ran to the end (' + text(r.querySelector('.run-head')) + ')');
+      ok(!!r.querySelector('.run.ok') && /ran 15 s/.test(text(r)), 'Code Mode in the background: the code ran to the end (' + text(r.querySelector('.run-head')) + ')');
       ok(/THE-END/.test(text(r)), 'Code Mode in the background: the answer after it finished');
     });
     await script([{tools: [{name: 'web_search', args: {query: 'Obscurify private AI chat'}}]}, {text: 'Searched. ' + words(150), slow: 15000}]);

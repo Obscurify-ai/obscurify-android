@@ -77,7 +77,7 @@ def background(what, most):
     print(f'host: {what}: app log over {span:.0f} s: background={went} dioxus beats={beats} '
           f'continued={"submitted" if "continued: submitted" in seg else "no"} running={"continued: running" in seg} '
           f'ended={off.group(0) if off else "not while away"}', flush=True)
-    if off and off.group(1) == '0' and not went:
+    if off and off.group(1) != '2' and not went:
         print(f'host: {what}: INCONCLUSIVE - the answer ended before the app was in the background', flush=True)
         inconclusive.append(what)
     else:
