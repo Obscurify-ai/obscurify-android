@@ -610,7 +610,8 @@ fn Root() -> Element {
     // Chat sync: a round now, then every 30 s while the app is on screen (and 1.5 s after a change).
     use_future(move || async move {
         loop {
-            if *app.visible.peek() && !matches!(*app.screen.peek(), Screen::Login | Screen::Signup) {
+            // `visible` comes from the page, which is frozen while the app is away: `away` too.
+            if *app.visible.peek() && !away() && !matches!(*app.screen.peek(), Screen::Login | Screen::Signup) {
                 sync::tick(app).await;
             }
             sleep(30_000).await;
@@ -623,12 +624,13 @@ fn Root() -> Element {
         let mut last_top_ups = store::now();
         loop {
             let w = app.wallet.peek().clone();
-            if *app.visible.peek() && (w.active() || w.vouchers.iter().any(|v| !v.invalid && v.due <= store::now())) {
+            let shown = *app.visible.peek() && !away();
+            if shown && (w.active() || w.vouchers.iter().any(|v| !v.invalid && v.due <= store::now())) {
                 app.work_wallet(false);
             }
             let screen = *app.screen.peek();
             let every = if screen == Screen::Funds { 10_000 } else if app.top_ups.peek().iter().any(|t| t.open) { 60_000 } else { i64::MAX };
-            if *app.visible.peek() && !matches!(screen, Screen::Login | Screen::Signup) && store::now() - last_top_ups >= every {
+            if shown && !matches!(screen, Screen::Login | Screen::Signup) && store::now() - last_top_ups >= every {
                 last_top_ups = store::now();
                 app.refresh_top_ups();
             }

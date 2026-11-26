@@ -250,7 +250,7 @@ fn continue_start() {
             });
             let _: () = msg_send![&*task, setExpirationHandler: &*expired];
             let progress: *mut AnyObject = msg_send![&*task, progress];
-            let _: () = msg_send![progress, setTotalUnitCount: 100i64];
+            let _: () = msg_send![progress, setTotalUnitCount: 1_000_000i64];
             *CONTINUED.lock().unwrap() = Some(Continued(task));
             log(&format!("continued: running (task {n})"));
             // The answer may have ended while the task waited to start.
@@ -268,15 +268,17 @@ fn continue_start() {
     }
 }
 
-/// Progress the Live Activity shows, from what has come in so far: it keeps rising while anything
-/// arrives and stands still when nothing does (iOS stops a task that shows none).
+/// Progress the Live Activity shows, from what has come in so far (`a` pieces): it keeps rising,
+/// ever more slowly, while anything arrives (half way at 400 pieces, 91% at 4000) and stands still
+/// when nothing does (iOS stops a task that shows none). An answer's length isn't known ahead.
 fn report_progress() {
     let Some(task) = CONTINUED.lock().unwrap().as_ref().map(|c| c.0.clone()) else { return };
-    let a = ACTIVITY.load(Ordering::Relaxed) as i64;
+    let a = ACTIVITY.load(Ordering::Relaxed) as f64;
+    let done = (1_000_000.0 * a / (a + 400.0)) as i64;
     unsafe {
         let progress: *mut AnyObject = msg_send![&*task, progress];
-        let _: () = msg_send![progress, setTotalUnitCount: a + (a / 9).max(20)];
-        let _: () = msg_send![progress, setCompletedUnitCount: a];
+        let _: () = msg_send![progress, setTotalUnitCount: 1_000_000i64];
+        let _: () = msg_send![progress, setCompletedUnitCount: done];
     }
 }
 

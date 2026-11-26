@@ -1039,7 +1039,9 @@ fn soon(app: App) {
     SOON.store(at, Ordering::SeqCst);
     dioxus::core::spawn_forever(async move {
         crate::sleep(1500).await;
-        if SOON.load(Ordering::SeqCst) == at {
+        // Not while the app is away (its renders would wait for the frozen page): the round
+        // every 30 s picks the change up once it's back.
+        if SOON.load(Ordering::SeqCst) == at && !crate::away() {
             tick(app).await;
         }
     });
