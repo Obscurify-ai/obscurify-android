@@ -46,7 +46,7 @@ const host = async (what, ms = 0) => { dioxus.send({host: what}); await dioxus.r
 // The next answers, scripted at the e2e proxy (flaky-proxy.mjs): no model is called.
 const script = s => host('script ' + JSON.stringify(s));
 const words = n => Array.from({length: n}, (_, i) => 'word' + (i + 1)).join(' ') + ' THE-END';
-const replies = () => $$('.msg.assistant');
+const replies = () => $$('.msg.assistant, .msg.err');
 const answering = () => !!$('.send.stop');
 // Sends a message and waits for the whole answer.
 async function ask(t, ms = 240000) {
@@ -67,7 +67,9 @@ async function guest() {
   await click('button.guest');
   await until(() => $('#composer'), 15000, 'the chat');
   // The server answers guests with its guest model (DEFAULT_FREE_MODEL); the app names that one.
-  ok(/DeepSeek/i.test(text($('.title.model'))), 'the guest model is DeepSeek: ' + text($('.title.model')));
+  // By its name once the model list is in (until then the id's last part).
+  await until(() => /DeepSeek V4 Flash/.test(text($('.title.model'))), 20000, 'the guest model named').catch(() => {});
+  ok(/DeepSeek V4 Flash/.test(text($('.title.model'))), 'the guest model is DeepSeek V4 Flash: ' + text($('.title.model')));
 
   // App Store 5.1.2(i): nothing goes to a model before the sheet is agreed to.
   const first = 'Give me three short tips for keeping my online life private, as a numbered list with one bold phrase each.';
@@ -228,7 +230,7 @@ async function controls() {
   await script([{error: 'The provider had a problem (scripted).'}, {text: 'Answered on the retry.'}]);
   await type('#composer', 'This one fails first.');
   await click('.send');
-  const retry = await until(() => !answering() && byText('.msg.assistant .meta button', 'Retry'), 60000, 'Retry on a failed answer').catch(() => null);
+  const retry = await until(() => !answering() && byText('.msg.err .meta button', 'Retry'), 60000, 'Retry on a failed answer').catch(() => null);
   ok(!!retry, 'a failed answer shows Retry');
   if (retry) {
     retry.click();
