@@ -209,7 +209,7 @@ async fn hold() -> bool {
     struct Shown;
     impl Drop for Shown {
         fn drop(&mut self) {
-            *REFILLING.write() = None;
+            if dioxus::prelude::ReadableExt::peek(&REFILLING).is_some() { *REFILLING.write() = None }
         }
     }
     let _shown = Shown;
@@ -219,7 +219,9 @@ async fn hold() -> bool {
             STOPPED.store(true, std::sync::atomic::Ordering::SeqCst);
             return false;
         }
-        *REFILLING.write() = Some(when);
+        // Only when it changes: a write while the iPhone app is in the background waits for the
+        // suspended page and holds up every task (src/ios.rs).
+        if *dioxus::prelude::ReadableExt::peek(&REFILLING) != Some(when) && !crate::away() { *REFILLING.write() = Some(when) }
         crate::sleep(2000).await;
         let Some(mut g) = ready().await else { break };
         let Some(m) = g.as_mut() else { break };
