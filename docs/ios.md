@@ -107,6 +107,26 @@ screenshots), so the permission request has never run anywhere yet; the log says
 ready" notification was handed to iOS and the authorization status (not asked, in CI), so it isn't
 shown there.
 
+### Answers in the background, on the test iPhone (iOS 26.1), 2026-11-26
+
+TestFlight build 1000860 and the fixed build (796d122, installed with xtool after
+`tools/ios-xtool-ipa.py`), read from the phone's system log (`idevicesyslog | grep obscurify-ios`):
+
+- Each answer asks for a continued processing task (iOS 26): iOS shows a Live Activity,
+  "Obscurify · Writing your answer", with a stop button, and keeps the app running past the half
+  minute `beginBackgroundTask` gives ("background time ran out" in the log, then the answer goes on).
+- A signed-in answer (Claude Opus, 1 to 600 in words) streamed 32 s in the background, finished
+  there and handed "answer ready" to iOS (notifications allowed); the whole answer was there on return.
+- A guest answer finished in the background and notified too.
+- Found and fixed (796d122): the cipher tail under a starting answer redrew every 110 ms; on an
+  iPhone the WebView is suspended in the background, so that render held up every task (the
+  simulator doesn't suspend it, so CI didn't see it), the task showed no progress and iOS ended it
+  ("required criterion is not satisfied"). Nothing on a timer draws while the app is away now.
+- Code Mode: the sandbox is a WebView, and iOS suspends it in the background (no public way
+  around that), so code waits there; the run carries on when the app is back and finishes (a 90 s
+  run: "done after 90 seconds"). iOS ends the continued task when nothing comes in for ~45 s.
+- A cold start draws within about a second.
+
 ## Parity with the Play build
 
 ### On the test iPhone 13 (iOS 26.1), 2026-11-23

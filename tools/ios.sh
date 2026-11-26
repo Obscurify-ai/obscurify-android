@@ -24,6 +24,9 @@ cd "$(dirname "$0")/.."
 id=$(sed -n '/^\[ios\]/,/^\[/s/^identifier = "\(.*\)"/\1/p' Dioxus.toml)
 min_ios=$(sed -n '/^\[ios\]/,/^\[/s/^deployment_target = "\(.*\)"/\1/p' Dioxus.toml)
 version_code=$(sed -n 's/^version-code = \([0-9]*\)/\1/p' Cargo.toml)
+# The build number: the Android version code, then IOS_BUILD (CI's run number), so each upload of the
+# same version is a new build without a version bump (which would release the Android app).
+build_number="$version_code.${IOS_BUILD:-0}"
 # rustc puts this in the binary (LC_BUILD_VERSION minos); MinimumOSVersion says the same.
 export IPHONEOS_DEPLOYMENT_TARGET=$min_ios
 
@@ -57,8 +60,8 @@ bundle() { # app, sdk, scratch dir
     --target-device iphone --output-format human-readable-text --errors --warnings
   cp ios/PrivacyInfo.xcprivacy "$app/"
   plutil -replace MinimumOSVersion -string "$min_ios" "$plist"
-  # Every upload needs a higher build number: the Android version code.
-  plutil -replace CFBundleVersion -string "$version_code" "$plist"
+  # Every upload needs a higher build number (build_number above).
+  plutil -replace CFBundleVersion -string "$build_number" "$plist"
   # An app, as Xcode writes it (App Store validation, error 90183).
   plutil -replace CFBundlePackageType -string APPL "$plist"
   # Export compliance is answered in App Store Connect, not here: with ITSAppUsesNonExemptEncryption
@@ -104,7 +107,7 @@ check() { # app, sdk
   for k in BGTaskSchedulerPermittedIdentifiers CFBundlePackageType MinimumOSVersion CFBundleVersion CFBundleShortVersionString CFBundleIcons UILaunchStoryboardName DTPlatformName; do
     plutil -extract "$k" raw "$plist" >/dev/null 2>&1 || plutil -extract "$k" xml1 -o - "$plist" >/dev/null 2>&1 || { echo "missing in Info.plist: $k" >&2; bad=1; }
   done
-  [ "$(plutil -extract CFBundleVersion raw "$plist")" = "$version_code" ] || { echo "CFBundleVersion isn't $version_code" >&2; bad=1; }
+  [ "$(plutil -extract CFBundleVersion raw "$plist")" = "$build_number" ] || { echo "CFBundleVersion isn't $build_number" >&2; bad=1; }
   local minos
   minos=$(xcrun vtool -show-build "$bin" | awk '/minos/ {print $2; exit}')
   echo "binary minos $minos, MinimumOSVersion $(plutil -extract MinimumOSVersion raw "$plist")"
@@ -203,7 +206,7 @@ store() {
   codesign --verify --strict --verbose=2 "$app"
   codesign -d --entitlements - "$app"
   (cd target/ios-device && rm -rf Payload Obscurify-store.ipa && mkdir Payload && cp -R Obscurify.app Payload/ && zip -qry Obscurify-store.ipa Payload && rm -rf Payload)
-  echo "signed ipa $(pwd)/target/ios-device/Obscurify-store.ipa (team $team, build $version_code)"
+  echo "signed ipa $(pwd)/target/ios-device/Obscurify-store.ipa (team $team, build $build_number)"
   case "${STORE:-}" in
     '') return ;;
     validate|upload) ;;

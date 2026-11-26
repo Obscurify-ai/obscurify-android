@@ -21,6 +21,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # The iPhone build number's last part (tools/ios.sh build_number).
+  IOS_BUILD: ${{ github.run_number }}
   DX_VERSION: 0.7.10
 
 jobs:
