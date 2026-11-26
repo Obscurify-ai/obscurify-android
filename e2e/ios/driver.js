@@ -66,7 +66,8 @@ async function guest() {
   await until(() => $('.login'), 45000, 'the sign-in screen');
   await click('button.guest');
   await until(() => $('#composer'), 15000, 'the chat');
-  log('model: ' + text($('.title.model')));
+  // The server answers guests with its guest model (DEFAULT_FREE_MODEL); the app names that one.
+  ok(/DeepSeek/i.test(text($('.title.model'))), 'the guest model is DeepSeek: ' + text($('.title.model')));
 
   // App Store 5.1.2(i): nothing goes to a model before the sheet is agreed to.
   const first = 'Give me three short tips for keeping my online life private, as a numbered list with one bold phrase each.';
@@ -195,8 +196,76 @@ async function background(signedIn) {
   ok(/Still here after the background/.test(text(r)), who + 'after the background: a new message is answered');
 }
 
+// Stop, Edit, Retry, the drawer (a chat listed, then deleted), Temp and Wipe: the same Rust and page
+// as Android (app.mjs), scripted at the proxy so no model is called.
+async function controls() {
+  if (!PROXY) return log('no proxy: Stop, Edit, Retry and the drawer skipped');
+  if ($('.login')) await click('button.guest');
+  await until(() => $('#composer'), 15000, 'the chat');
+  await switches(false, false);
+
+  await script([{text: words(200), slow: 20000}]);
+  const before = replies().length;
+  await type('#composer', 'Count, and I will stop you.');
+  await click('.send');
+  await until(() => answering() && replies().length > before && /word3\b/.test(text(replies().at(-1))), 30000, 'the answer to stream');
+  await click('.send.stop');
+  await until(() => !answering(), 15000, 'Stop to end the answer');
+  await sleep(1500);
+  const stopped = text(replies().at(-1));
+  await sleep(2500);
+  ok(!/THE-END/.test(stopped) && text(replies().at(-1)) === stopped, 'Stop: the answer ends where it was and nothing more comes (' + stopped.length + ' characters)');
+
+  const edit = $$('.msg.assistant .meta button').filter(b => text(b) === 'Edit').at(-1);
+  ok(!!edit, 'Edit on the answer');
+  if (edit) {
+    edit.click();
+    await sleep(800);
+    ok($('#composer').value.includes('I will stop you') && !$$('.msg.user').some(m => text(m).includes('I will stop you')),
+      'Edit: the question is back in the box, it and its answer gone from the chat');
+  }
+
+  await script([{error: 'The provider had a problem (scripted).'}, {text: 'Answered on the retry.'}]);
+  await type('#composer', 'This one fails first.');
+  await click('.send');
+  const retry = await until(() => !answering() && byText('.msg.assistant .meta button', 'Retry'), 60000, 'Retry on a failed answer').catch(() => null);
+  ok(!!retry, 'a failed answer shows Retry');
+  if (retry) {
+    retry.click();
+    await until(() => !answering() && /Answered on the retry/.test(text(replies().at(-1))), 60000, 'the retried answer').catch(() => {});
+    ok(/Answered on the retry/.test(text(replies().at(-1))), 'Retry: answered');
+  }
+
+  await click('.bar .icon');
+  await until(() => $('.drawer'), 5000, 'the drawer');
+  const item = await until(() => byText('.drawer .item', 'This one fails first') || $('.drawer .item'), 10000, 'the chat in the drawer').catch(() => null);
+  ok(!!item, 'the chat is listed in the drawer');
+  const n = $$('.drawer .item').length;
+  if (item) {
+    item.querySelector('button.bare').click();
+    await sleep(400);
+    await click('.drawer .item button.danger', 'Delete');
+    ok($$('.drawer .item').length === n - 1, 'the chat is deleted from the drawer');
+  }
+  await click('#temp');
+  await sleep(800);
+  ok($('#composer').placeholder === 'Temporary chat', 'Temp: a temporary chat');
+  await script([{text: 'A temporary answer.'}]);
+  await ask('Something to forget.', 60000);
+  await click('.bar .icon');
+  await until(() => $('.drawer'), 5000, 'the drawer');
+  ok(!byText('.drawer .item', 'Something to forget'), 'and it is not kept in the drawer');
+  await click('#wipe');
+  await click('#wipe-yes');
+  await sleep(1500);
+  if (!$('.drawer')) await click('.bar .icon');
+  ok(await until(() => $$('.drawer .item').length === 0, 10000, 'no chats').catch(() => false), 'Wipe: no chats left');
+  if ($('.drawer')) await click('.drawer .bar .icon').catch(() => {});
+}
+
 // The account this run made, deleted from Account (also when the run fails after making it).
 let madeAccount = false;
+let accountCode = '';
 async function deleteAccount() {
   if (!$('.big')) {
     dismiss();
@@ -225,6 +294,7 @@ async function account() {
   await until(() => byText('h1', 'Your account code') || $('.login .err'), 30000, 'the account');
   if ($('.login .err')) return log('sign-up refused (skipped): ' + text($('.login .err')));
   madeAccount = true;
+  accountCode = text($('.number'));
   $('.login .check input').click();
   await click('button.go', 'Start Chatting');
   await until(() => $('#composer'), 15000, 'the chat, signed in');
@@ -251,6 +321,21 @@ async function account() {
   await sleep(1500);
   ok(!byText('button', 'Add funds') && !byText('p', 'Add funds'), 'Account: no Add funds, and no word about buying elsewhere (3.1.3(f))');
   await shot('account');
+
+  // Sign out, then back in with the account code typed loosely (lower case, spaces for dashes).
+  // The code stays in this page: never logged, never on screen in a screenshot.
+  if (accountCode) {
+    await click('.section button.danger', 'Sign out');
+    await click('.section .row button.danger', 'Sign out');
+    await until(() => $('.login'), 30000, 'signed out');
+    if (byText('h1', 'Create Account')) await click('a', 'Sign in');
+    await until(() => $('#login-words'), 10000, 'the sign-in field');
+    await type('#login-words', accountCode.toLowerCase().replace(/-/g, ' '));
+    await click('.login button.go', 'Sign In');
+    ok(await until(() => $('#composer'), 60000, 'the chat').catch(() => null), 'signed out, then back in with the account code');
+    await sleep(2000);
+    dismiss();
+  }
   await deleteAccount();
   ok(true, 'account deleted from the app');
 }
@@ -263,6 +348,7 @@ try {
   if (byText('h1', 'Create Account')) await click('a', 'Sign in');
   if (byText('h1', 'Sign In')) { await sleep(4000); await shot('signin'); }
   await background();
+  await controls();
 } catch (e) {
   ok(false, 'stopped: ' + (e && e.message || e));
   // Never a screenshot of a real account code (artifacts are public).
