@@ -46,7 +46,7 @@ checks it on every build (the build fails without it):
 | App icon | `AppIcon` from one 1024x1024 PNG with no alpha; `actool` makes `Assets.car` and the home screen sizes and adds `CFBundleIcons` | `ios/AppIcon.svg` (the split "o" of the Android launcher icon, on black) rendered to `ios/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png` with `rsvg-convert` |
 | Launch screen | Plain black, compiled with `ibtool` to `LaunchScreen.storyboardc` (the plist already names `LaunchScreen`) | `ios/LaunchScreen.storyboard` |
 | `MinimumOSVersion` | 16.0, the `deployment_target` in Dioxus.toml; the binary is linked for the same (`IPHONEOS_DEPLOYMENT_TARGET`, checked with `vtool`). Everything used is older: WKWebView, MessageChannel in the sandbox, UserNotifications, background tasks | Dioxus.toml |
-| `CFBundleVersion` | The Android `version-code` (1000860 for 0.8.60); `CFBundleShortVersionString` is the version | Cargo.toml |
+| `CFBundleVersion` | `<Android version-code>.<IOS_BUILD>` (1000865.42: 0.8.65, CI run number 42), so each upload is higher without an Android version bump; `CFBundleShortVersionString` is the version | Cargo.toml, `github.run_number` |
 | `ITSAppUsesNonExemptEncryption` | Not in Info.plist: answered in App Store Connect (below) | |
 | Privacy manifest | `PrivacyInfo.xcprivacy`: no tracking, the collected data types of the App Privacy answers, and the required-reason APIs the binary imports. The build lists the binary's imports and fails on a required-reason API the manifest doesn't declare. Today only `stat`/`fstat`/`lstat` (Rust's `std::fs`): file timestamps, reason C617.1 (files in the app's own container). No `NSUserDefaults`, boot time, disk space or keyboard APIs | `ios/PrivacyInfo.xcprivacy` |
 | Device family | iPhone only (`UIDeviceFamily` 1), portrait only: no iPad screenshots or iPad review | |
@@ -123,10 +123,17 @@ TestFlight build 1000860 and the fixed build (796d122, installed with xtool afte
   and notified.
 - Also fixed: chat sync (every 30 s) and the wallet poll ran in the background because
   `visible` comes from the frozen page; both write to the screen, so they now wait for `away()`.
-- Not checked on iOS in the background yet: Encrypted mode; a signed-in answer cut by iOS and
-  picked up with follow; a guest answer cut mid-stream; Stop in the Live Activity (it ends the
-  task, not the answer); compaction mid-answer (it writes the chat, a render that waits until
-  the app is back).
+- TestFlight build 1000865.42 (0.8.65, main merged in), 2026-11-26: a signed-in answer (Opus, 1 to
+  1200) streamed 77 s in the background past "background time ran out", finished and notified.
+  Encrypted mode (GLM 5.3 TEE, E2EE on): finished in the background and notified (20 s; the
+  model stops long counts early, so not past the half minute). Stop on the "Writing your answer"
+  banner: "continued: expired", the answer went on for iOS's half minute, then the app was
+  suspended; opened again two minutes later, the app picked the answer up from the server and
+  showed all of it (through "two thousand") within a second.
+- Not checked on iOS in the background yet: a guest answer cut mid-stream (a guest answer isn't
+  held by the server, so it ends where iOS cut it); compaction mid-answer (it writes the chat, a
+  render that waits until the app is back). The Stop button itself can only be reached in the app
+  or the Lock Screen: WebDriverAgent can't open Notification Center.
 - Found and fixed (796d122): the cipher tail under a starting answer redrew every 110 ms; on an
   iPhone the WebView is suspended in the background, so that render held up every task (the
   simulator doesn't suspend it, so CI didn't see it), the task showed no progress and iOS ended it
@@ -180,18 +187,18 @@ Runs: https://github.com/Obscurify-ai/obscurify-android/actions/runs/45132255600
 | Code Mode: pages full screen with Close | Works | Simulator: page opened full screen (screenshot); Close button itself not tapped (native, e2e closes it from Rust) |
 | Code Mode sandbox sealed off (no app bridges, no navigation away, no storage) | Built | Design as on Android (ios.rs); the Android checks from inside the sandbox (code.mjs) aren't ported |
 | Attach photos and files (PDF, Word, Excel, PowerPoint, CSV, text) | Device | The file input and reading are the same; the iOS picker (photos, camera, Files) needs a device |
-| Encrypted mode (TEE, checked on the phone) | Same code | Not driven on iOS (Android: encrypted.mjs) |
+| Encrypted mode (TEE, checked on the phone) | Works | Device: E2EE on, GLM 5.3 TEE answered with the app on screen and in the background (2026-11-26) |
 | Chat sync, end to end encrypted, "Combine chats?" | Same code | The Sync switch is on after sign-up (Account screenshot); syncing not driven |
-| Chat history drawer, Temp chats, Wipe | Same code | Not driven on iOS |
+| Chat history drawer, Temp chats, Wipe | Works | Simulator: a chat listed and deleted, a Temp chat not kept, Wipe leaves no chats |
 | Copy | Device | `UIPasteboard` (ios.rs); needs a device to see |
-| Raw, Edit, Retry, Stop, Continue | Same code | Not driven on iOS |
+| Raw, Edit, Retry, Stop, Continue | Works (Raw, Continue: same code) | Simulator: Stop ends the answer where it was, Edit puts the question back, Retry answers a failed reply (scripted at the proxy) |
 | Report on every answer | Works | Simulator: Report opens the form with reasons (not sent) |
 | Account: balance, plan, account code, API keys; no payments, no plan buying, no word about buying elsewhere | Works | Simulator: Account screen, no Add funds and no buy-elsewhere text |
 | Delete account in the app | Works | Simulator: the new account deleted from Account, back at sign-in |
-| Sign out | Same code | Not driven on iOS |
-| Long answers with the app in the background, "answer ready" notification | Partly | Simulator: with Settings in front, an answer kept streaming for 11 s and finished in the background, and the notification request was handed to iOS (`addNotificationRequest` succeeded; not authorized, so not shown). iOS gives about 30 s, not Android's foreground service; past that the server finishes a signed-in answer and the app picks it up (same code, not driven). The notification on screen and the permission prompt need a device |
+| Sign out | Works | Simulator: signed out and back in with the account code typed loosely |
+| Long answers with the app in the background, "answer ready" notification | Works | Device: a continued processing task (iOS 26) with a Live Activity keeps it going; a signed-in answer streamed 147 s in the background and notified (above). Simulator: plain, a direct tool call and Code Mode each finish in the background, guest and signed in. Code Mode's sandbox waits in the background on a device and goes on when the app is back |
 | Lost connection: waits and carries on | Same code | iOS uses the page's `online` event; not driven |
-| Answer picked up after the app was killed (server-held) | Same code | Not driven on iOS (Android: background.mjs) |
+| Answer picked up after the app was killed (server-held) | Works | Device: after Stop on the banner iOS suspended the app mid-answer; on return the whole answer came from the server (2026-11-26) |
 | Compaction of long chats, agent runs (100 steps) | Same code | Not driven on iOS |
 | Mirrors when the server is unreachable | Same code | Not driven on iOS |
 | Links open in the browser | Device | `webbrowser` → Safari; needs a device |
@@ -209,11 +216,12 @@ waiting for Tony's approval.
 
 ## Still to do
 
-- **TestFlight** (below): signing is set up; the App Store Connect app record, a validate run and the
-  first upload are next.
-- **On the test iPhone**: install `obscurify-ios-device` with xtool and check what the simulator can't
-  show: the attach picker, Copy, links to Safari, the keyboard, the notification prompt and the "answer
-  ready" notification on screen, a long answer past iOS's background time.
+- **The `ios` branch lags `main`**: every Android release is made from `main`, so iOS only gets it when
+  `main` is merged in by hand (37 commits behind on 2026-11-26, guests still named Llama). The fix is
+  Tony's call: merge `ios` into `main` (all of it is `cfg`-gated or harmless on Android) so one
+  branch builds both, or merge `main` into `ios` and upload with every release.
+- **On the test iPhone**: the attach picker, and the "answer ready" notification on screen (handed to
+  iOS, never seen as a banner).
 - **More of the Android e2e on iOS**: sign in with a code and a number, sync, Encrypted, edit/retry/stop,
   paid tools. Paid tools and Encrypted need a funded account as a CI secret: Tony's call.
 - **Server**: sign-ups from `Obscurify-iOS` aren't counted as the app yet.
@@ -255,13 +263,13 @@ API key): team **CryptoTalks, LLC**, team id `TZGL5RGW6K` (not the free team `97
   with the keychain group narrowed to the app, `codesign --generate-entitlement-der`). A manual run
   with `store: validate` also checks the `.ipa` with Apple (`altool --validate-app`), and
   `store: upload` sends it to TestFlight. The signed `Obscurify-store.ipa` stays out of the artifacts.
-- **Version.** `CFBundleShortVersionString` is `version` in `Cargo.toml`, `CFBundleVersion` the
-  Android `version-code`: every upload needs a higher one.
-- **Still to do:** the App Store Connect app record (the API can't create apps; the web form asks
-  for the company name shown on the App Store, which can't be changed: Tony's call), then a validate
-  run, then upload and internal TestFlight on the test iPhone. Apple also wants the EU trader status
-  (Digital Services Act) before EU distribution, and a support URL on a site that names the
-  company (Apple support, case 103023671995: obscurify.ai doesn't mention CryptoTalks, LLC).
+- **Version.** `CFBundleShortVersionString` is `version` in `Cargo.toml`, `CFBundleVersion`
+  `<version-code>.<CI run number>`: every upload needs a higher one, and the run number gives it.
+- **Done (2026-11-26):** the app record (Apple ID 6839360547, "Obscurify: Private AI Chat", seller
+  "Obscurify"), the EU trader status (verified), "Obscurify is a product of CryptoTalks, LLC" in the
+  obscurify.ai footer, and TestFlight: the internal group (all builds, tester tony@obscurify.ai)
+  takes every upload. Each build needs `usesNonExemptEncryption: false` set through the API
+  (`tools/asc.py`) or it waits in Missing Compliance.
 - **Renewals.** The certificate and profile expire 2027-11-24, the same day the membership renews
   ($98.99/yr, App Store subscription on the Apple Account, cancel in Settings → Apple Account).
 - The test iPhone can also run a development-signed build (a development certificate and a profile
