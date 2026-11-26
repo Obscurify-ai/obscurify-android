@@ -172,7 +172,7 @@ async function background(signedIn) {
       r => ok(text(r).length > 400, 'the story finished: ' + text(r).length + ' characters'));
     return;
   }
-  const who = signedIn ? 'signed-in ' : '';
+  const who = signedIn ? 'signed-in-' : '';  // no spaces: the host splits on them
   if (!signedIn) {
     await switches(true, true);
     await script([{code: 'import time\nfor i in range(15):\n    print("tick", i, flush=True)\n    time.sleep(1)\nprint("ran 15 s")'},
@@ -189,7 +189,7 @@ async function background(signedIn) {
   }
   await switches(false, false);
   await script([{text: words(300), slow: 20000}]);
-  await away(who + 'plain', 'Count slowly.', 120, r => ok(/THE-END/.test(text(r)), who + 'plain chat in the background: the whole 20 s answer is there'));
+  await away(who + 'plain', 'Count slowly.', 120, r => ok(/THE-END/.test(text(r)), who + 'plain: plain chat in the background, the whole 20 s answer is there'));
   await script([{text: 'Still here after the background.'}]);
   const r = await ask('Are you still there?', 60000);
   ok(/Still here after the background/.test(text(r)), who + 'after the background: a new message is answered');

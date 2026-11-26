@@ -124,7 +124,8 @@ while time.time() < deadline and done is None:
         elif line.startswith('E2E-HOST background'):
             # E2E-HOST background <name> <most seconds>
             parts = line.split()
-            background(parts[2] if len(parts) > 2 else 'answer', int(parts[3]) if len(parts) > 3 else 60)
+            most = int(parts[-1]) if parts[-1].isdigit() else 60
+            background('-'.join(parts[2:-1] if parts[-1].isdigit() else parts[2:]) or 'answer', most)
             ack('host')
         elif line.startswith('E2E-HOST script '):
             if proxied:
