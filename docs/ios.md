@@ -118,6 +118,15 @@ TestFlight build 1000860 and the fixed build (796d122, installed with xtool afte
 - A signed-in answer (Claude Opus, 1 to 600 in words) streamed 32 s in the background, finished
   there and handed "answer ready" to iOS (notifications allowed); the whole answer was there on return.
 - A guest answer finished in the background and notified too.
+- TestFlight build 1000860.35 (all fixes): a signed-in answer (Opus, 1 to 2000 in words) streamed
+  147 s in the background with no suspension, finished there (all of it, through "two thousand")
+  and notified.
+- Also fixed: chat sync (every 30 s) and the wallet poll ran in the background because
+  `visible` comes from the frozen page; both write to the screen, so they now wait for `away()`.
+- Not checked on iOS in the background yet: Encrypted mode; a signed-in answer cut by iOS and
+  picked up with follow; a guest answer cut mid-stream; Stop in the Live Activity (it ends the
+  task, not the answer); compaction mid-answer (it writes the chat, a render that waits until
+  the app is back).
 - Found and fixed (796d122): the cipher tail under a starting answer redrew every 110 ms; on an
   iPhone the WebView is suspended in the background, so that render held up every task (the
   simulator doesn't suspend it, so CI didn't see it), the task showed no progress and iOS ended it
