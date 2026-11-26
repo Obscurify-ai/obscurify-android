@@ -393,8 +393,10 @@ impl App {
         let model = self.settings.peek().model.clone();
         self.models.peek().iter().find(|m| m.id == model).is_none_or(|m| m.images)
     }
+    /// Read, not peeked: what shows a name is drawn again when the model list arrives (a guest's title
+    /// and a chat opened before it showed the id).
     fn model_name(&self, id: &str) -> String {
-        self.models.peek().iter().find(|m| m.id == id).map(|m| m.name.clone()).unwrap_or_else(|| id.rsplit('/').next().unwrap_or(id).to_string())
+        self.models.read().iter().find(|m| m.id == id).map(|m| m.name.clone()).unwrap_or_else(|| id.rsplit('/').next().unwrap_or(id).to_string())
     }
     /// After a reply: its cost comes off the balance shown. A private reply asks the server
     /// nothing: the account's own requests right after each reply would tie the two together by
