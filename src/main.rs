@@ -229,11 +229,19 @@ pub(crate) fn working(_on: bool) {
 /// WebView is suspended, and a render waiting for it would stop every task until the app is back.
 /// The next piece of the answer draws it once the app is on screen again.
 pub(crate) fn draw<T: 'static>(mut s: Signal<T>, v: T) {
-    if !backgrounded() { s.set(v) }
+    if !away() { s.set(v) }
 }
 /// A flag the screen shows, changed only when it changes and the app is on screen (`draw`).
 pub(crate) fn flag(mut s: Signal<bool>, v: bool) {
-    if *s.peek() != v && !backgrounded() { s.set(v) }
+    if *s.peek() != v && !away() { s.set(v) }
+}
+/// The app isn't on screen (iOS), so nothing should be drawn: anything on a timer checks this
+/// (`backgrounded` is for an answer's own loop, and says the answer is still coming in).
+pub(crate) fn away() -> bool {
+    #[cfg(target_os = "ios")]
+    return ios::backgrounded();
+    #[cfg(not(target_os = "ios"))]
+    false
 }
 /// The app isn't on screen (iOS). Its WebView is suspended there, and Dioxus polls no task while a
 /// render waits for the WebView, so an answer in the background stops drawing until it's back.
@@ -325,6 +333,8 @@ impl App {
         self.toast.set(Some(s.clone()));
         bg(async move {
             sleep(3500).await;
+            // Cleared once the app is on screen again (`away`).
+            while away() { sleep(1000).await }
             if self.toast.peek().as_deref() == Some(&s) {
                 self.toast.set(None)
             }

@@ -1196,7 +1196,8 @@ fn CipherTail() -> Element {
     let mut text = use_signal(String::new);
     use_future(move || async move {
         loop {
-            text.set(format!("{} {} {} ", group(), group(), group()));
+            // Never while the app is away: on an iPhone that render would stop the answer itself.
+            if !crate::away() { text.set(format!("{} {} {} ", group(), group(), group())) }
             crate::sleep(110).await;
         }
     });
