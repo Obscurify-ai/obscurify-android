@@ -1,12 +1,14 @@
 # The iPhone app on macOS runners: the store build for the simulator (launched, screenshot) and for
 # devices (an ad-hoc signed .ipa to re-sign for the test iPhone), also signed for the App Store when the
-# signing secrets exist (docs/ios.md). Only a manual run with store: upload sends a build to TestFlight;
-# nothing here releases to the App Store, and the Android and Play releases don't go through GitHub Actions.
+# signing secrets exist (docs/ios.md). Only a run with store: upload sends a build to TestFlight, and only
+# once the simulator e2e passed: the release timer (tools/release.mjs) starts one for each new version on
+# main. Nothing here releases to the App Store, and the Android and Play releases don't go through GitHub
+# Actions.
 name: iOS
 
 on:
   push:
-    branches: [ios]
+    branches: [main]
   workflow_dispatch:
     inputs:
       signup:
@@ -97,6 +99,9 @@ jobs:
 
   device:
     name: Device build (aarch64-apple-ios)
+    # A TestFlight upload waits for the simulator e2e and goes only if it passed.
+    needs: simulator
+    if: always() && (inputs.store != 'upload' || needs.simulator.result == 'success')
     runs-on: macos-latest
     timeout-minutes: 90
     env:

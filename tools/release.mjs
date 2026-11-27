@@ -6,6 +6,11 @@
 //   2. Play: `./build.sh play` (upload key) -> checks -> Google Play production track, with
 //      play/changelogs/<version-code>.txt as the notes if there is one (the Play app has no payments,
 //      so a release about them needs other notes there), else the same notes.
+//   3. iPhone: the iOS workflow on main with store: upload (built, signed and sent to TestFlight on
+//      GitHub's macOS runners once its simulator e2e passes; docs/ios.md), then, once Apple has
+//      processed the build, its export-compliance answer (standard encryption, exempt) through the App
+//      Store Connect API (tools/asc.py, key in ~/.config/apple-developer). A version TestFlight already
+//      has isn't uploaded again. Nothing goes to App Store review from here.
 // Each step is done once per version (state.json), checked against GitHub/Play before building, so
 // a retry never redoes a step that went through. A failure is retried on the next run and Signals
 // Tony once per version, step and error.
@@ -39,6 +44,8 @@ const RELEASE_CERT = '7ca401a8fed219c17f197af6b07c10d063097fb6399890b58b58d58cd8
 const UPLOAD_CERT = '1187182f16c62eefa59fa59501c3b1fc9075a0a64c7ef2b60b2bdd27e53ff065';
 const GUARD = 'Never write sexually explicit content';
 const DRY = process.argv.includes('--dry-run');
+const ASC_APP = '6839360547'; // ai.obscurify.ios in App Store Connect
+const ASC_KEY = join(HOME, '.config/apple-developer/account.env');
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: 'utf8', maxBuffer: 1 << 28, ...opts });
@@ -237,6 +244,47 @@ async function releasePlay(r) {
   log(`sent ${r.version} (${r.code}) to Play production review`);
 }
 
+// ---- iPhone (TestFlight) -----------------------------------------------------------------------
+
+const asc = (...a) => JSON.parse(run(join(REPO, 'tools/asc.py'), a));
+
+/** This version's TestFlight builds (build numbers <version-code>.<run>), each answered for export
+ *  compliance once Apple has processed it. True when one is ready to test. */
+function testflightReady(r) {
+  const q = `/v1/builds?filter[app]=${ASC_APP}&filter[preReleaseVersion.version]=${r.version}&fields[builds]=version,processingState,usesNonExemptEncryption&limit=50`;
+  const builds = asc('GET', q).data.filter((b) => b.attributes.version.startsWith(`${r.code}.`));
+  let ready = false;
+  for (const b of builds) {
+    if (b.attributes.processingState !== 'VALID') continue;
+    if (b.attributes.usesNonExemptEncryption == null) {
+      if (DRY) { log(`would answer export compliance for ${b.attributes.version}`); continue; }
+      asc('PATCH', `/v1/builds/${b.id}`, JSON.stringify({ data: { type: 'builds', id: b.id, attributes: { usesNonExemptEncryption: false } } }));
+      log(`answered export compliance for TestFlight ${b.attributes.version}`);
+    }
+    ready = true;
+  }
+  return ready;
+}
+
+function releaseIos(r, done, state) {
+  if (testflightReady(r)) {
+    log(`TestFlight has ${r.version}`);
+    if (!DRY) { done.ios = new Date().toISOString(); save(state); }
+    return;
+  }
+  if (!done.iosRun) {
+    if (DRY) return log(`would start the iOS workflow on main to upload ${r.version} to TestFlight`);
+    run('gh', ['workflow', 'run', 'ios.yml', '-R', GH_REPO, '--ref', 'main', '-f', 'store=upload', '-f', 'signup=true']);
+    done.iosRun = new Date().toISOString();
+    save(state);
+    return log(`started the iOS workflow for ${r.version} (TestFlight)`);
+  }
+  // The run takes about half an hour, then Apple processes the build.
+  if (Date.now() - Date.parse(done.iosRun) > 3 * 3600e3) {
+    notify(state, `${r.version}:ios:late`, `iPhone ${r.version}: no TestFlight build 3 hours after the iOS workflow started; see https://github.com/${GH_REPO}/actions/workflows/ios.yml (run it again with store: upload, or delete iosRun for ${r.version} in ${STATE}).`);
+  }
+}
+
 // ---- one run -----------------------------------------------------------------------------------
 
 // `--check-apk FILE CODE` / `--check-aab FILE`: only run the checks on a built file.
@@ -292,6 +340,20 @@ if (!done.play) {
       failed = true;
       log('Play release failed:', e.stderr || e.message);
       notify(state, `${r.version}:play:${e.message.slice(0, 80)}`, `Android ${r.version}: the Play upload failed, retrying every few minutes. ${String(e.stderr || e.message).slice(-400)}`);
+    }
+  }
+}
+if (!done.ios) {
+  if (!existsSync(ASC_KEY)) {
+    log('iPhone skipped: no App Store Connect key at', ASC_KEY);
+    notify(state, 'ios:no-key', `iPhone releases: TestFlight uploads need the App Store Connect key in ${ASC_KEY}.`);
+  } else {
+    try {
+      releaseIos(r, done, state);
+    } catch (e) {
+      failed = true;
+      log('iPhone release failed:', e.stderr || e.message);
+      notify(state, `${r.version}:ios:${e.message.slice(0, 80)}`, `iPhone ${r.version}: the TestFlight step failed, retrying every few minutes. ${String(e.stderr || e.message).slice(-400)}`);
     }
   }
 }

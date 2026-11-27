@@ -18,7 +18,8 @@ tools/ios.sh listing   # App Store character limits of ios/listing/
 ```
 
 There's no Mac on our side, so `.github/workflows/ios.yml` does this on GitHub macOS runners for every
-push to the `ios` branch (and by hand from the Actions tab once the workflow is on main):
+push to `main` (the iPhone app lives on `main` with the Android app since 2026-11-26), and for each
+new version through the release timer (below):
 
 - **Simulator e2e and screenshots**: lints for iOS with `-D warnings`, runs `tools/ios.sh e2e`, and
   uploads the e2e app, the screenshots and the app's own log as `obscurify-ios-simulator`.
@@ -218,19 +219,15 @@ waiting for Tony's approval.
 
 ## Still to do
 
-- **The `ios` branch lags `main`**: every Android release is made from `main`, so iOS only gets it when
-  `main` is merged in by hand (37 commits behind on 2026-11-26, guests still named Llama). The fix is
-  Tony's call: merge `ios` into `main` so one branch builds both (most of it is `cfg`-gated; the
-  shared changes, `away()` gating, bare links, model names drawn again, would ship to Android
-  with the next release, so they want an Android e2e run first), or merge `main` into `ios` and upload with every release.
 - **On the test iPhone**: the attach picker, and the "answer ready" notification on screen (handed to
   iOS, never seen as a banner).
 - **More of the Android e2e on iOS**: sign in with a code and a number, sync, Encrypted, edit/retry/stop,
   paid tools. Paid tools and Encrypted need a funded account as a CI secret: Tony's call.
-- **Server**: sign-ups from `Obscurify-iOS` aren't counted as the app yet.
-- **Release**: `tools/release.mjs` doesn't build or upload the iPhone app; a version bump doesn't either.
+- **App Store releases**: the release timer stops at TestFlight. Once Apple has approved the first
+  version, each new one still has to be submitted for review (by hand, or a step in `release.mjs`).
 - **App Review risks**: Code Mode under 2.5.2 (fallback: Code off on iOS through `code::code_blocked`);
-  models that need a plan bought on the website ("needs the Pro plan") under 3.1.1/3.1.3(f).
+  models that need a plan bought on the website ("needs the Pro plan") under 3.1.1/3.1.3(f), a risk
+  Tony accepted (2026-11-26).
 
 ### Decided (Tony, 2026-11-23)
 
@@ -278,5 +275,9 @@ API key): team **CryptoTalks, LLC**, team id `TZGL5RGW6K` (not the free team `97
 - The test iPhone can also run a development-signed build (a development certificate and a profile
   listing its UDID) without TestFlight.
 
-The release path stays Android-only for now: `tools/release.mjs` doesn't know about iOS, and a
-version bump doesn't build the iPhone app.
+**Releases.** A version bump on `main` releases the iPhone app with the Android one: the release timer
+(`tools/release.mjs`, step 3) starts `ios.yml` on `main` with `store: upload`, whose device job uploads
+only once the simulator e2e (signed in: an account made and deleted) has passed. When Apple has processed the
+build, the timer answers its export compliance (`usesNonExemptEncryption: false`) and marks the version
+done in its `state.json`. A version TestFlight already has isn't uploaded again. No build goes to App
+Store review from there.
