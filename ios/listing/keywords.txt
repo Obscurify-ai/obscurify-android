@@ -1,1 +1,1 @@
-ai,chat,chatbot,assistant,private,anonymous,llm,encrypted,writing,translate,code,python,search,ask
+chatbot,assistant,llm,encrypted,writing,translate,code,python,search,ask,questions,models,secure
