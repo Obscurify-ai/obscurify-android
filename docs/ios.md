@@ -130,7 +130,9 @@ TestFlight build 1000860 and the fixed build (796d122, installed with xtool afte
   banner: "continued: expired", the answer went on for iOS's half minute, then the app was
   suspended; opened again two minutes later, the app picked the answer up from the server and
   showed all of it (through "two thousand") within a second.
-- Not checked on iOS in the background yet: a guest answer cut mid-stream (a guest answer isn't
+- TestFlight build 1000865.49 (model names drawn again, the wallet wait gated), 2026-11-26: a
+  signed-in answer (Opus, 1 to 1500) streamed 101 s in the background, finished and notified.
+- Not checked on iOS in the background yet: an Encrypted answer past the half minute; a guest answer cut mid-stream (a guest answer isn't
   held by the server, so it ends where iOS cut it); compaction mid-answer (it writes the chat, a
   render that waits until the app is back). The Stop button itself can only be reached in the app
   or the Lock Screen: WebDriverAgent can't open Notification Center.
