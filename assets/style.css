@@ -198,6 +198,9 @@ h2.group { font-size: 13px; font-weight: 500; text-transform: uppercase; letter-
 .meta .continue { padding: 6px 14px; }
 .refusal-suggestion { display: flex; justify-content: flex-end; margin-top: 6px; }
 .waiting { padding: 6px 12px; font-size: 13px; text-align: center; color: #fbbf24; border-top: 1px solid var(--l); }
+.waiting.low-balance { display: flex; justify-content: center; align-items: center; gap: 6px; }
+.waiting.low-balance a { color: #fbbf24; text-decoration: underline; }
+.waiting.low-balance button.bare { color: inherit; padding: 0 4px; }
 /* A file the code or a paid tool produced: real player, and a way to keep it before the link expires. */
 .run-media { display: flex; flex-direction: column; gap: 6px; margin: 10px 12px; }
 .run-media .run-img { margin: 0; max-width: 100%; }

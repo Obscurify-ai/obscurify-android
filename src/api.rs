@@ -247,6 +247,12 @@ fn error_text(status: u16, v: &Value, body: &str) -> String {
     }
 }
 
+static LOW_BALANCE_HEADER: std::sync::Mutex<Option<f64>> = std::sync::Mutex::new(None);
+
+pub fn take_low_balance_header() -> Option<f64> {
+    LOW_BALANCE_HEADER.lock().ok().and_then(|mut g| g.take())
+}
+
 /// One request. `signed_in` adds the session cookie; it also returns any session the response sets.
 async fn send(signed_in: bool, method: &str, path: &str, body: Option<&Value>, timeout: u64) -> Result<(u16, Value, Option<String>), String> {
     let m = reqwest::Method::from_bytes(method.as_bytes()).unwrap();
@@ -260,6 +266,18 @@ async fn send(signed_in: bool, method: &str, path: &str, body: Option<&Value>, t
     let r = req.go().await.map_err(|_| error_text(0, &Value::Null, ""))?;
     let status = r.status().as_u16();
     let session = session_cookie(&r);
+    let low_hdr = r
+        .headers()
+        .get("x-obscurify-balance-low")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<f64>().ok());
+    if let Ok(mut g) = LOW_BALANCE_HEADER.lock() {
+        if let Some(v) = low_hdr {
+            *g = Some(v);
+        } else if signed_in && status == 200 && (path == "/get_user_balance" || path.starts_with("/v1/")) {
+            *g = None;
+        }
+    }
     let text = r.text().await.map_err(|e| e.to_string())?;
     let v = serde_json::from_str(&text).unwrap_or(Value::Null);
     if (200..300).contains(&status) { Ok((status, v, session)) } else { Err(format!("{status}\u{1}{}", error_text(status, &v, &text))) }

@@ -359,6 +359,8 @@ struct App {
     /// The plan payments already seen to have switched their plan on.
     plans_seen: Signal<Option<Vec<String>>>,
     balance: Signal<Option<f64>>,
+    low_balance: Signal<Option<f64>>,
+    low_dismissed: Signal<bool>,
     /// `/account_tier`, as last read (usage bars in the menu).
     plan: Signal<Value>,
     toast: Signal<Option<String>>,
@@ -408,7 +410,13 @@ impl App {
         }
         if cost <= 0.0 { return }
         let now = *self.balance.peek();
-        self.balance.set(now.map(|b| (b - cost).max(0.0)));
+        let next = now.map(|b| (b - cost).max(0.0));
+        self.balance.set(next);
+        if let Some(rem) = next {
+            if rem < 0.25 {
+                self.low_balance.set(Some(rem));
+            }
+        }
         bg(async move { private::note_cost(cost).await });
     }
     /// Balance, and what the plan unlocks (the model picker lists the rest last).
@@ -420,7 +428,20 @@ impl App {
             if let Ok(v) = api::get("/get_user_balance").await {
                 // Plus what this phone's wallet holds: still the customer's money.
                 let held = private::spending().await["prepaid_millicents"].as_i64().unwrap_or(0) as f64 / 100_000.0;
-                self.balance.set(v["balance"].as_f64().map(|b| b + held))
+                let spendable = v["spendable_balance"]
+                    .as_f64()
+                    .or_else(|| v["balance"].as_f64())
+                    .map(|b| b + held);
+                self.balance.set(spendable);
+                let threshold = v["low_balance_threshold"].as_f64().unwrap_or(0.25);
+                let server_low = v["low_balance"].as_bool().unwrap_or(false)
+                    || api::take_low_balance_header().is_some();
+                if server_low && spendable.is_some_and(|s| s < threshold) {
+                    self.low_balance.set(spendable);
+                } else {
+                    self.low_balance.set(None);
+                    self.low_dismissed.set(false);
+                }
             }
             if let Ok(v) = api::get("/account_tier").await {
                 sync::note_plan(&v);
@@ -454,6 +475,8 @@ impl App {
         self.convs.set(vec![]);
         self.conv.set(Conv::new());
         self.balance.set(None);
+        self.low_balance.set(None);
+        self.low_dismissed.set(false);
         self.plan.set(Value::Null);
         self.access.set(None);
         self.plan_defaults.set(vec![]);
@@ -606,6 +629,8 @@ fn Root() -> Element {
             plans_seen: Signal::new(None),
             top_up_seen: Signal::new(None),
             balance: Signal::new(None),
+            low_balance: Signal::new(None),
+            low_dismissed: Signal::new(false),
             plan: Signal::new(Value::Null),
             toast: Signal::new(None),
             visible: Signal::new(true),

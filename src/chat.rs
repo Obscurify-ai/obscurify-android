@@ -1120,6 +1120,16 @@ pub fn ChatView() -> Element {
             if let Some(at) = *crate::private::REFILLING.read() {
                 div { class: "waiting", id: "private-wait", {refilling_text(at)} }
             }
+            if api::has_session() && !*app.low_dismissed.read() {
+                if let Some(rem) = *app.low_balance.read() {
+                    div { class: "waiting low-balance",
+                        "Low balance (" {crate::usd(rem)} " left) · "
+                        a { onclick: move |_| app.screen.set(Screen::Funds), "Add funds" }
+                        " "
+                        button { class: "bare", onclick: move |_| app.low_dismissed.set(true), "✕" }
+                    }
+                }
+            }
             div { class: "composer",
                 if !app.docs.read().is_empty() {
                     div { class: "docs",
